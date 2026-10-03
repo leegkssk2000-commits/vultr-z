@@ -268,6 +268,131 @@ def inspect_metadata_export(export_path: Path | None, *, expected_export_sha256:
     return result
 
 
+
+def _payload_number(value: Any, label: str, *, positive: bool = False) -> float:
+    if type(value) not in (int, float):
+        raise adapter.PrepError("SERIALIZED_NUMBER_REQUIRED:" + label)
+    return adapter._number(value, label, positive=positive)
+
+
+def _preflight_quotes_wrapper(event: Mapping[str, Any]) -> None:
+    """Validate shape/provenance only; late/future/missing quotes remain HOLD."""
+    quotes = event["quotes"]
+    if not isinstance(quotes, dict):
+        raise adapter.PrepError("SERIALIZED_QUOTE_MAP_REQUIRED")
+    for symbol, quote in quotes.items():
+        if symbol not in adapter.SYMBOLS or not isinstance(quote, dict) or quote.get("symbol") != symbol:
+            raise adapter.PrepError("SERIALIZED_QUOTE_OBJECT_AND_SYMBOL_REQUIRED")
+        for field in ("requested_at_ms", "received_at_ms", "usable_at_ms"):
+            adapter._time(quote[field], "quote_" + field)
+        if quote.get("source_ts_ms") is not None:
+            adapter._time(quote["source_ts_ms"], "quote_native")
+        if not isinstance(quote.get("quote_id"), str) or not quote["quote_id"]:
+            raise adapter.PrepError("SERIALIZED_QUOTE_ID_REQUIRED")
+        bid = _payload_number(quote["bid"], "bid", positive=True)
+        ask = _payload_number(quote["ask"], "ask", positive=True)
+        if bid >= ask:
+            raise adapter.PrepError("SERIALIZED_QUOTE_PRICE_RANGE")
+        for field in ("body_sha256", "receipt_sha256"):
+            _sha(quote[field], "quote_" + field)
+        adapter.paper._usable(quote)  # Structural clock proof, no eligibility check.
+    wrapper = event["wrapper"]
+    if wrapper is None:
+        return
+    if not isinstance(wrapper, dict) or not isinstance(wrapper.get("signal"), dict):
+        raise adapter.PrepError("SERIALIZED_SIGNAL_WRAPPER_REQUIRED")
+    signal = wrapper["signal"]
+    if signal.get("legs") not in (None, []):
+        raise adapter.PrepError("KP_SINGLE_SYMBOL_SIGNAL_REQUIRED")
+    if not isinstance(signal.get("segment_id"), str) or not signal["segment_id"]:
+        raise adapter.PrepError("SERIALIZED_SIGNAL_SEGMENT_REQUIRED")
+    if type(signal.get("side")) is not int:
+        raise adapter.PrepError("SERIALIZED_SIGNAL_SIDE_REQUIRED")
+    _payload_number(signal["stop_price"], "signal_stop", positive=True)
+    meta = signal["meta"]
+    if not isinstance(meta, dict) or not isinstance(meta.get("entry_cost_gate"), dict):
+        raise adapter.PrepError("SERIALIZED_SIGNAL_META_REQUIRED")
+    for field in ("atr_at_signal", "close_at_signal", "frozen_cost_bps"):
+        _payload_number(meta[field], "signal_" + field, positive=True)
+    _payload_number(meta["entry_cost_gate"]["atr_price"], "signal_gate_atr", positive=True)
+    adapter.validate_signal_clock(wrapper, event["now_ms"])
+    if wrapper.get("execution_eligibility") not in (None, "CURRENT_DECISION_BAR_REQUIRES_NEW_QUOTE"):
+        raise adapter.PrepError("SERIALIZED_SIGNAL_ELIGIBILITY_UNSUPPORTED")
+
+
+def _preflight_cashflow_shapes(args: Any) -> None:
+    """Check supplied receipt containers, without calculating any cashflows."""
+    allowed = {"original_qty", "quantity_lineage", "pit_costs", "funding", "funding_coverage"}
+    if not isinstance(args, dict) or set(args) - allowed:
+        raise adapter.PrepError("UNSUPPORTED_CASHFLOW_INPUTS")
+    if args.get("original_qty") is not None:
+        _payload_number(args["original_qty"], "original_qty", positive=True)
+    lineage = args.get("quantity_lineage")
+    if lineage is not None:
+        if not isinstance(lineage, dict):
+            raise adapter.PrepError("SERIALIZED_QUANTITY_RECEIPT_REQUIRED")
+        _sha(lineage["body_sha256"], "quantity")
+        adapter._time(lineage["known_at_ms"], "quantity_known")
+        _payload_number(lineage["original_qty"], "lineage_qty", positive=True)
+        if lineage.get("kind") not in ("PAPER_ORIGINAL_QUANTITY_MODEL", "ACCOUNT_SOURCE_QUANTITY"):
+            raise adapter.PrepError("SERIALIZED_QUANTITY_KIND_REQUIRED")
+        if args.get("original_qty") is not None and lineage["original_qty"] != args["original_qty"]:
+            raise adapter.PrepError("SERIALIZED_QUANTITY_BINDING_MISMATCH")
+    costs = args.get("pit_costs", {})
+    if not isinstance(costs, dict):
+        raise adapter.PrepError("SERIALIZED_PIT_COST_MAP_REQUIRED")
+    for kind, receipt in costs.items():
+        if kind not in ("ENTRY", "PARTIAL", "EXIT") or not isinstance(receipt, dict):
+            raise adapter.PrepError("SERIALIZED_PIT_COST_RECEIPT_REQUIRED")
+        for field in ("fee_bps", "spread_bps", "slippage_bps"):
+            if receipt.get(field) is not None and _payload_number(receipt[field], "cost_" + field) < 0:
+                raise adapter.PrepError("SERIALIZED_NONNEGATIVE_COST_REQUIRED")
+        if receipt.get("known_at_ms") is not None:
+            adapter._time(receipt["known_at_ms"], "cost_known")
+        if receipt.get("body_sha256") is not None:
+            _sha(receipt["body_sha256"], "cost")
+        if "symbol" in receipt and receipt["symbol"] not in adapter.SYMBOLS:
+            raise adapter.PrepError("SERIALIZED_COST_SYMBOL_REQUIRED")
+        complete_cost = all(receipt.get(field) is not None for field in
+                            ("fee_bps", "spread_bps", "slippage_bps", "known_at_ms", "body_sha256"))
+        if complete_cost and (receipt.get("symbol") not in adapter.SYMBOLS
+                or receipt.get("spread_semantics") != "EMBEDDED_IN_OBSERVED_BID_ASK"
+                or receipt.get("slippage_semantics") not in (
+                    "ADDITIONAL_MODEL_DEBIT_NOT_EMBEDDED_IN_QUOTED_PRICE", "EMBEDDED_IN_OBSERVED_PRICE")):
+            raise adapter.PrepError("SERIALIZED_COST_SEMANTICS_REQUIRED")
+    funding = args.get("funding")
+    if funding is not None:
+        if not isinstance(funding, list):
+            raise adapter.PrepError("SERIALIZED_FUNDING_LIST_REQUIRED")
+        settlements = set()
+        for receipt in funding:
+            if not isinstance(receipt, dict) or receipt.get("symbol") not in adapter.SYMBOLS:
+                raise adapter.PrepError("SERIALIZED_FUNDING_RECEIPT_REQUIRED")
+            stamp = adapter._time(receipt["settlement_ms"], "funding_settlement")
+            received = adapter._time(receipt["received_at_ms"], "funding_receipt")
+            if received < stamp or stamp in settlements:
+                raise adapter.PrepError("SERIALIZED_FUNDING_CLOCK_OR_DUPLICATE")
+            settlements.add(stamp)
+            _payload_number(receipt["signed_rate"], "funding_rate")
+            _payload_number(receipt["mark_price"], "funding_mark", positive=True)
+            _sha(receipt["body_sha256"], "funding")
+    coverage = args.get("funding_coverage")
+    if coverage is not None:
+        if not isinstance(coverage, dict):
+            raise adapter.PrepError("SERIALIZED_FUNDING_COVERAGE_REQUIRED")
+        if "complete" in coverage and type(coverage["complete"]) is not bool:
+            raise adapter.PrepError("SERIALIZED_FUNDING_COMPLETENESS_REQUIRED")
+        for field in ("start_ms", "end_ms"):
+            if coverage.get(field) is not None:
+                adapter._time(coverage[field], "funding_" + field)
+        if coverage.get("body_sha256") is not None:
+            _sha(coverage["body_sha256"], "funding_coverage")
+        if coverage.get("complete") is True:
+            adapter._time(coverage["start_ms"], "funding_coverage_start")
+            adapter._time(coverage["end_ms"], "funding_coverage_end")
+            _sha(coverage["body_sha256"], "funding_coverage")
+
+
 def run_supplied_synthetic(bundle_path: Path, *, expected_input_sha256: str, output_root: Path,
                            recover: bool = False) -> dict[str, Any]:
     """Call the real preparation adapter only for a caller-pinned synthetic file.
@@ -291,9 +416,19 @@ def run_supplied_synthetic(bundle_path: Path, *, expected_input_sha256: str, out
     _exact(bundle["config"], {"t0_ms", "window_end_ms", "runtime_identity", "reference_costs_bps"}, "synthetic_config")
     if not isinstance(bundle["events"], list) or not isinstance(bundle["cashflow_inputs"], dict):
         raise adapter.PrepError("SYNTHETIC_EVENTS_AND_CASHFLOWS_REQUIRED")
-    for args in bundle["cashflow_inputs"].values():
-        if not isinstance(args, dict) or set(args) - {"original_qty", "quantity_lineage", "pit_costs", "funding", "funding_coverage"}:
-            raise adapter.PrepError("UNSUPPORTED_CASHFLOW_INPUTS")
+    costs = bundle["config"]["reference_costs_bps"]
+    if not isinstance(costs, dict) or not isinstance(bundle["config"]["runtime_identity"], str):
+        raise adapter.PrepError("SERIALIZED_CONFIG_MAP_AND_IDENTITY_REQUIRED")
+    for symbol, value in costs.items():
+        if symbol not in adapter.SYMBOLS:
+            raise adapter.PrepError("SERIALIZED_CONFIG_SYMBOL_REQUIRED")
+        _payload_number(value, "reference_cost", positive=True)
+    hard_end = adapter._time(bundle["config"]["window_end_ms"], "config_window_end")
+    try:
+        for args in bundle["cashflow_inputs"].values():
+            _preflight_cashflow_shapes(args)
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        raise adapter.PrepError("SERIALIZED_CASHFLOW_RECEIPT_SHAPE:" + str(exc)) from exc
     events = []
     prior = -1
     seen = set()
@@ -304,6 +439,16 @@ def run_supplied_synthetic(bundle_path: Path, *, expected_input_sha256: str, out
             raise adapter.PrepError("SYNTHETIC_EVENT_ORDER_OR_DUPLICATE_ID")
         prior = stamp
         seen.add(event["event_id"])
+        try:
+            _preflight_quotes_wrapper(event)
+            if event["wrapper"] is not None:
+                signal = event["wrapper"]["signal"]
+                if signal["symbol"] not in costs or signal["meta"]["frozen_cost_bps"] != costs[signal["symbol"]]:
+                    raise adapter.PrepError("FROZEN_SIGNAL_REFERENCE_COST_BINDING")
+                if stamp >= hard_end:
+                    raise adapter.PrepError("NEW_SIGNAL_AFTER_HARD_WINDOW_END")
+        except (KeyError, TypeError, ValueError, AttributeError, adapter.paper.PaperError) as exc:
+            raise adapter.PrepError("SERIALIZED_EVENT_PAYLOAD_SHAPE:" + str(exc)) from exc
         frames: dict[int, Any] = {}
         if not isinstance(event["frames"], dict):
             raise adapter.PrepError("SERIALIZED_FRAME_MAP_REQUIRED")
@@ -314,7 +459,21 @@ def run_supplied_synthetic(bundle_path: Path, *, expected_input_sha256: str, out
             for symbol, records in symbols.items():
                 if symbol not in adapter.SYMBOLS or not isinstance(records, list) or any(not isinstance(row, dict) for row in records):
                     raise adapter.PrepError("SERIALIZED_FRAME_RECORDS_REQUIRED")
-                frames[30][symbol] = pd.DataFrame(records)
+                try:
+                    for row in records:
+                        for field in ("open_ts_ms", "close_ts_ms", "available_ts_ms"):
+                            adapter._time(row[field], "frame_" + field)
+                        if not isinstance(row.get("segment_id"), str) or not row["segment_id"]:
+                            raise adapter.PrepError("SERIALIZED_FRAME_SEGMENT_REQUIRED")
+                        for field in ("open", "high", "low", "close"):
+                            _payload_number(row[field], "frame_" + field, positive=True)
+                        if "volume" in row and _payload_number(row["volume"], "frame_volume") < 0:
+                            raise adapter.PrepError("SERIALIZED_NONNEGATIVE_VOLUME_REQUIRED")
+                    core = ["open_ts_ms", "close_ts_ms", "available_ts_ms", "segment_id", "open", "high", "low", "close"]
+                    frame = pd.DataFrame(records) if records else pd.DataFrame(columns=core)
+                    frames[30][symbol] = adapter.parent._validated(frame)
+                except (KeyError, TypeError, ValueError, AttributeError) as exc:
+                    raise adapter.PrepError("SERIALIZED_FRAME_PAYLOAD_SHAPE:" + str(exc)) from exc
         events.append({**event, "frames": frames})
     cfg = adapter.build_candidate_config(output_root, **bundle["config"])
     cfg["synthetic_input_sha256"] = expected  # config_sha256 is durable in STATE.

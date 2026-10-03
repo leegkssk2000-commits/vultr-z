@@ -329,3 +329,96 @@ def test_malformed_cashflow_inputs_are_denied_before_checkpoint(tmp_path: Path) 
     with pytest.raises(prep.PrepError, match="UNSUPPORTED_CASHFLOW"):
         run(path, sha, tmp_path)
     assert not (tmp_path/prep.NAMESPACE).exists()
+
+
+@pytest.mark.parametrize("case", ["quotes_list", "quote_value", "quote_clock", "quote_id",
+    "wrapper_list", "signal_value", "missing_wrapper_field", "signal_meta", "signal_legs",
+    "missing_frame_field", "frame_segment", "frame_price", "cashflow_value", "costs_list",
+    "cost_receipt_list", "funding_map", "funding_receipt_list", "coverage_list", "lineage_list",
+    "cost_semantics", "config_cost_list", "frozen_cost_binding", "signal_after_window"])
+def test_malformed_serialized_payload_never_binds_checkpoint_and_correction_can_run(
+    tmp_path: Path, case: str,
+) -> None:
+    path, valid_sha = synthetic(tmp_path)
+    valid_bytes = path.read_bytes()
+    doc = json.loads(valid_bytes)
+    event = doc["events"][0]
+    quote = doc["events"][1]["quotes"][SYMBOL]
+    args = doc["cashflow_inputs"]["synthetic-signal-one"]
+    frame = event["frames"]["30"][SYMBOL][0]
+    if case == "quotes_list":
+        event["quotes"] = []
+    elif case == "quote_value":
+        doc["events"][1]["quotes"][SYMBOL] = []
+    elif case == "quote_clock":
+        quote["clock_proof"]["clock_samples"] = []
+    elif case == "quote_id":
+        quote["quote_id"] = {}
+    elif case == "wrapper_list":
+        event["wrapper"] = []
+    elif case == "signal_value":
+        event["wrapper"]["signal"] = []
+    elif case == "missing_wrapper_field":
+        del event["wrapper"]["bar_available_ts_ms"]
+    elif case == "signal_meta":
+        event["wrapper"]["signal"]["meta"] = []
+    elif case == "signal_legs":
+        event["wrapper"]["signal"]["legs"] = ["BTC-USDT"]
+    elif case == "missing_frame_field":
+        del frame["available_ts_ms"]
+    elif case == "frame_segment":
+        frame["segment_id"] = []
+    elif case == "frame_price":
+        frame["high"] = []
+    elif case == "cashflow_value":
+        doc["cashflow_inputs"]["synthetic-signal-one"] = []
+    elif case == "costs_list":
+        args["pit_costs"] = []
+    elif case == "cost_receipt_list":
+        args["pit_costs"]["ENTRY"] = []
+    elif case == "funding_map":
+        args["funding"] = {}
+    elif case == "funding_receipt_list":
+        args["funding"] = [[]]
+    elif case == "coverage_list":
+        args["funding_coverage"] = []
+    elif case == "lineage_list":
+        args["quantity_lineage"] = []
+    elif case == "cost_semantics":
+        args["pit_costs"]["ENTRY"]["spread_semantics"] = "UNKNOWN"
+    elif case == "config_cost_list":
+        doc["config"]["reference_costs_bps"] = []
+    elif case == "frozen_cost_binding":
+        event["wrapper"]["signal"]["meta"]["frozen_cost_bps"] = 9.0
+    elif case == "signal_after_window":
+        doc["config"]["window_end_ms"] = BASE
+    malformed_sha = write(path, doc)["sha256"]
+    with pytest.raises(prep.PrepError):
+        run(path, malformed_sha, tmp_path)
+    assert not (tmp_path/prep.NAMESPACE).exists()
+    path.write_bytes(valid_bytes)
+    report = run(path, valid_sha, tmp_path)
+    assert report["closed_synthetic_trades"] == 1
+    assert report["consumed_full_credit"] == 0
+
+
+@pytest.mark.parametrize("mode", ["late", "future_usable", "missing", "empty_frames"])
+def test_well_shaped_unusable_or_missing_inputs_preserve_pending_hold(tmp_path: Path, mode: str) -> None:
+    path, _ = synthetic(tmp_path, terminal=False, costs=False)
+    doc = json.loads(path.read_bytes())
+    event = doc["events"][1]
+    if mode == "late":
+        event["now_ms"] = BASE + 6000
+        event["quotes"] = fixtures.quotes(BASE + 6000)
+        event["quotes"][SYMBOL]["requested_at_ms"] = BASE + 102
+    elif mode == "future_usable":
+        event["quotes"] = fixtures.quotes(BASE + 120)
+    elif mode == "missing":
+        event["quotes"] = {}
+    elif mode == "empty_frames":
+        event["frames"]["30"][SYMBOL] = []
+    sha = write(path, doc)["sha256"]
+    report = run(path, sha, tmp_path)
+    assert report["pending_signals"] == 1 and report["open_positions"] == 0
+    assert report["closed_synthetic_trades"] == 0 and report["consumed_full_credit"] == 0
+    assert not report["execution_ready"]

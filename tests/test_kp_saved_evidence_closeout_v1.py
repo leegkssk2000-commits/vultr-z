@@ -79,6 +79,20 @@ class AmountAuditTests(unittest.TestCase):
         self.assertEqual(result["net_2x_bps"], -12)
         self.assertFalse(result["cost_multiplier_is_leverage"])
 
+    def test_partial_then_fee_be_terminal_price_is_counted_separately(self):
+        row = fixture(partial=True)
+        row["signal"]["stop_price"] = 99.5
+        row["exit_prices"]["BTC-USDT"] = 100.16
+        row.update(reason="STOP_FIRST", gross_bps=24.4, net_bps=10.4)
+        result = audit.reconstruct_amount(row)
+        self.assertTrue(result["fee_be_plus2_price_match"])
+        self.assertTrue(result["partial_inferred_from_saved_model_state"])
+        self.assertTrue(result["net_positive_1x_to_nonpositive_2x"])
+        self.assertNotAlmostEqual(result["net_1x_bps"], 2.0)
+        report = audit.analyze([row])
+        self.assertEqual(report["cost_flip"]["fee_be_plus2_matches"], 1)
+        self.assertEqual(report["cost_flip"]["fee_be_plus2_without_partial_matches"], 0)
+
     def test_wrong_identity_and_tf(self):
         for key, value in (("identity", "legacy_keltner"), ("timeframe_min", 60)):
             row = fixture(); row[key] = value

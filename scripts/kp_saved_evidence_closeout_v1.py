@@ -133,7 +133,7 @@ def reconstruct_amount(row: dict[str, Any]) -> dict[str, Any]:
         "net_2x_bps": saved_gross - 2 * cost,
         "cost_multiplier_is_leverage": False,
         "net_positive_1x_to_nonpositive_2x": saved_net > 0 and saved_gross - 2 * cost <= 0,
-        "fee_be_plus2_price_match": (not partial and row["reason"] == "STOP_FIRST"
+        "fee_be_plus2_price_match": (row["reason"] == "STOP_FIRST"
               and abs(side * (terminal / entry - 1) * 10000 - cost - 2.0) <= TOL_BPS),
     }
 
@@ -178,6 +178,7 @@ def analyze(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "rolling1x": metrics(rolling, 1), "rolling2x": metrics(rolling, 2),
         "cost_flip": {"T": len(flips), "reason_counts": dict(Counter(c["reason"] for c in flips)),
                       "fee_be_plus2_matches": sum(c["fee_be_plus2_price_match"] for c in flips),
+                      "fee_be_plus2_without_partial_matches": sum(c["fee_be_plus2_price_match"] and not c["partial_inferred_from_saved_model_state"] for c in flips),
                       "net1x_bps": math.fsum(c["net_1x_bps"] for c in flips),
                       "net2x_bps": math.fsum(c["net_2x_bps"] for c in flips)},
         "post_outcome_cohorts": cohorts, "exit_reason_groups": reasons, "trade_amount_checks": checks,

@@ -1,0 +1,113 @@
+name: A1 Break R4 Current Context V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/production_economic_guard_v1.py'
+      - 'backend/research/rebuild/a1_break_box_iterative_dd_repair_v1.py'
+      - 'backend/research/rebuild/a1_break_box_iterative_dd_repair_v2.py'
+      - 'backend/research/rebuild/a1_break_r4_current_context_v1.py'
+      - '.github/workflows/a1-break-r4-current-context-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/production_economic_guard_v1.py'
+      - 'backend/research/rebuild/a1_break_box_iterative_dd_repair_v1.py'
+      - 'backend/research/rebuild/a1_break_box_iterative_dd_repair_v2.py'
+      - 'backend/research/rebuild/a1_break_r4_current_context_v1.py'
+      - '.github/workflows/a1-break-r4-current-context-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-break-r4-current-context-v1
+  cancel-in-progress: true
+
+jobs:
+  current-context-r4:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/production_economic_guard_v1.py \
+            backend/research/rebuild/a1_break_box_iterative_dd_repair_v1.py \
+            backend/research/rebuild/a1_break_box_iterative_dd_repair_v2.py \
+            backend/research/rebuild/a1_break_r4_current_context_v1.py
+          python -m backend.research.production_economic_guard_v1
+          python -m backend.research.rebuild.a1_break_box_iterative_dd_repair_v2 --self-test
+          python -m backend.research.rebuild.a1_break_r4_current_context_v1 --self-test
+      - name: Replay exact R4 against current Break incumbent
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_break_r4_current_context_v1 \
+            --routes backend/research/rebuild/a1_finalist_sample_stall_no_idle_latest.json \
+            --out out/a1_break_r4_current_context_latest.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_break_r4_current_context_latest.json'))
+          assert r['strategy_id']=='break_and_continue',r
+          assert r['state'] in {'READY_BREAK_R4_CURRENT_CONTEXT_ONE_SLOT','REJECT_BREAK_R4_CURRENT_CONTEXT'},r
+          assert int(r['challenger_slot_count']) in {0,1},r
+          assert r['incumbent_mutated'] is False and r['restart_from_zero'] is False,r
+          assert r['strategy_parameters_changed'] is False,r
+          assert r['canonical_ledger_mutation'] is False and r['canonical_inventory_mutation'] is False,r
+          assert r['selection_authority'] is False and r['promotion_authority'] is False,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED',r
+          c=r['R4_candidate']
+          g=c['production_economic_guard']
+          if r['state']=='READY_BREAK_R4_CURRENT_CONTEXT_ONE_SLOT':
+              assert r['challenger_slot_count']==1,r
+              assert c['development_upgrade_gate_pass'] is True and g['pass'] is True,c
+              assert g['child']['trades'] >= g['parent']['trades'],g
+          else:
+              assert r['challenger_slot_count']==0,r
+              assert r['next']=='BUILD_NEW_BREAK_EXIT_OR_LOSS_PATH_MECHANISM_WITHOUT_RESET',r
+          print(json.dumps({
+              'state':r['state'],
+              'parent':r['current_incumbent'],
+              'box':r['current_box_child'],
+              'r4':c['metrics'],
+              'r4_original_gate':r['R4_original_development_gate_pass'],
+              'production_guard_pass':r['production_guard_pass'],
+              'production_guard_reasons':r['production_guard_reasons'],
+              'challenger_slot_count':r['challenger_slot_count'],
+              'next':r['next'],
+          },sort_keys=True))
+          PY
+      - name: Persist current-context R4 receipt on master
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+        run: |
+          set -euo pipefail
+          target=backend/research/rebuild/a1_break_r4_current_context_latest.json
+          cp out/a1_break_r4_current_context_latest.json "$target"
+          git config user.name 'a1-break-r4-current-context-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 Break: persist current-context R4 verdict [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-break-r4-current-context-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_break_r4_current_context_latest.json
+          if-no-files-found: warn
+          retention-days: 30

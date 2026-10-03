@@ -48,7 +48,7 @@ def _keep_one_per_timestamp_by_lowest_chase(rows: Sequence[Mapping[str, Any]], r
             out.extend(group)
             continue
         ranked = sorted(
-            (( _box_chase_atr(x, receipt, bars_by, maps), str(x.get("symbol") or ""), str(x.get("side") or ""), x) for x in group),
+            ((_box_chase_atr(x, receipt, bars_by, maps), str(x.get("symbol") or ""), str(x.get("side") or ""), x) for x in group),
             key=lambda z: (z[0], z[1], z[2]),
         )
         keep = ranked[0][3]
@@ -175,12 +175,13 @@ def self_test() -> int:
     fake_receipt = {"source": {"symbols": []}, "trades": []}
     base = {"trades": 10, "net_pnl_bps": 1000.0, "net_expectancy_bps": 100.0, "profit_factor": 2.0, "drawdown_bps": 200.0}
     row = _candidate(
-        [{"signal_ts": i, "exit_ts": i, "entry_ts": i, "symbol": "BTC-USDT", "net_bps": 150.0} for i in range(8)],
+        [{"signal_ts": i, "exit_ts": i, "entry_ts": i, "symbol": "BTC-USDT", "net_bps": -50.0 if i == 0 else 150.0} for i in range(8)],
         base,
         [],
     )
     assert row["minimum_development_trades"] == 8
     assert row["metrics"]["trades"] == 8
+    assert math.isfinite(float(row["metrics"]["profit_factor"]))
     assert row["selection_authority"] is False
     print("PASS_A1_BREAK_BOX_ITERATIVE_DD_REPAIR_V2_SELF_TEST")
     return 0

@@ -1,0 +1,66 @@
+name: Active5 Entry Quality Candidate Branch Replay
+
+on:
+  push:
+    branches:
+      - research/active5-entry-quality-v1
+    paths:
+      - backend/research/rebuild/a1_active5_entry_quality_candidate_v1.py
+      - tests/test_a1_active5_entry_quality_candidate_v1.py
+      - .github/workflows/a1_active5_entry_quality_candidate_branch_only.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  PYTHONPATH: "."
+
+jobs:
+  economic-replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test dependency
+        run: python -m pip install --disable-pip-version-check pytest
+      - name: Candidate self-test
+        run: python backend/research/rebuild/a1_active5_entry_quality_candidate_v1.py --self-test
+      - name: Unit test
+        run: python -m pytest -q tests/test_a1_active5_entry_quality_candidate_v1.py
+      - name: Baseline six-symbol shared-cache replay
+        run: >-
+          python backend/research/rebuild/a1_strategy25_active_deep_replay_v1.py
+          --league backend/research/rebuild/a1_strategy25_improvement_league_latest.json
+          --out-dir out/active5_baseline_1h
+          --aggregate out/active5_baseline_1h_aggregate.json
+          --symbols BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,LINK-USDT,DOGE-USDT
+      - name: Candidate six-symbol shared-cache replay
+        run: >-
+          python backend/research/rebuild/a1_active5_entry_quality_candidate_v1.py
+          --league backend/research/rebuild/a1_strategy25_improvement_league_latest.json
+          --out-dir out/active5_entry_quality_v1
+          --aggregate out/active5_entry_quality_v1_aggregate.json
+          --baseline-dir out/active5_baseline_1h
+          --symbols BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,LINK-USDT,DOGE-USDT
+      - name: Print comparison
+        run: |
+          python - <<'PY'
+          import json
+          p='out/active5_entry_quality_v1_aggregate_comparison.json'
+          d=json.load(open(p))
+          print(json.dumps(d, indent=2, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: active5-entry-quality-candidate-v1
+          path: |
+            out/active5_baseline_1h_aggregate.json
+            out/active5_baseline_1h/*.json
+            out/active5_entry_quality_v1_aggregate.json
+            out/active5_entry_quality_v1_aggregate_comparison.json
+            out/active5_entry_quality_v1/*.json

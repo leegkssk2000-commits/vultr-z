@@ -12,6 +12,8 @@ from backend.research.rebuild import a1_trend_rider_transition_freshness_frozen_
 from backend.research.rebuild import a1_trend_rider_momentum_ab_v1 as helper
 
 SCHEMA = "zel.a1_trend_rider_transition_freshness_hardening_router.v1"
+MIN_PROFIT_PILOT_TRADES = 10
+MIN_CERT_PILOT_TRADES = 12
 MIN_HARDENING_TRADES = 25
 CHILD_POLICY = "backend/research/rebuild/trend_rider_transition_freshness_child_policy_v1.py"
 
@@ -47,8 +49,18 @@ def run(out: Path) -> dict:
             "changed_axis": "TRANSITION_FRESHNESS_REENTRY_SUPPRESSION_ONLY",
             "policy_path": CHILD_POLICY,
             "completed_trades": completed,
+            "minimum_profit_pilot_trades": MIN_PROFIT_PILOT_TRADES,
+            "minimum_cert_pilot_trades": MIN_CERT_PILOT_TRADES,
             "minimum_hardening_trades": MIN_HARDENING_TRADES,
+            "profit_pilot_sample_met": completed >= MIN_PROFIT_PILOT_TRADES,
+            "cert_pilot_sample_met": completed >= MIN_CERT_PILOT_TRADES,
+            "strict_hardening_sample_met": completed >= MIN_HARDENING_TRADES,
+            "strict_reference_only": True,
+            "blocks_top3_profit_a2_a3_pilot": False,
+            "primary_progress_route": "A1_TOP3_PROFITABILITY_TWO_LANE_ROUTER_V4",
+            "strict_reference_contract": "25T_H4_H5_CONTINUES_IN_PARALLEL_AND_DOES_NOT_RESET_OR_BLOCK_10T_12T_PILOT_ROUTE",
             "sample_gap": max(0, MIN_HARDENING_TRADES - completed),
+            "pilot_sample_gap": max(0, MIN_CERT_PILOT_TRADES - completed),
             "child_current_receipt_sha256": child.get("receipt_sha256"),
             "child_current_metrics": child.get("metrics"),
             "source_quality_state": (child.get("source_quality_gate") or {}).get("state") if isinstance(child.get("source_quality_gate"), dict) else None,
@@ -67,7 +79,7 @@ def run(out: Path) -> dict:
                 "state": "WAIT_TRANSITION_FRESHNESS_H4_H5_MIN_SAMPLE",
                 "h4_state": "NOT_RUN_MIN_SAMPLE",
                 "h5_state": "NOT_RUN_MIN_SAMPLE",
-                "next": "COLLECT_FRESH_TRANSITION_CHILD_TRADES_UNTIL_25_THEN_RUN_H4_H5",
+                "next": "COLLECT_STRICT_REFERENCE_IN_PARALLEL__DO_NOT_BLOCK_TOP3_V4_PILOT",
             })
             _write(out, base)
             return base
@@ -95,7 +107,10 @@ def run(out: Path) -> dict:
 
 
 def self_test() -> int:
+    assert MIN_PROFIT_PILOT_TRADES == 10
+    assert MIN_CERT_PILOT_TRADES == 12
     assert MIN_HARDENING_TRADES == 25
+    assert MIN_PROFIT_PILOT_TRADES < MIN_CERT_PILOT_TRADES < MIN_HARDENING_TRADES
     assert CHILD_POLICY.endswith("trend_rider_transition_freshness_child_policy_v1.py")
     print("PASS_A1_TREND_RIDER_TRANSITION_FRESHNESS_HARDENING_ROUTER_V1_SELF_TEST")
     return 0
@@ -112,8 +127,12 @@ def main() -> int:
     print("A1_TREND_RIDER_TRANSITION_HARDENING=" + json.dumps({
         "state": row["state"],
         "completed_trades": row["completed_trades"],
+        "minimum_profit_pilot_trades": row["minimum_profit_pilot_trades"],
+        "minimum_cert_pilot_trades": row["minimum_cert_pilot_trades"],
         "minimum_hardening_trades": row["minimum_hardening_trades"],
+        "pilot_sample_gap": row["pilot_sample_gap"],
         "sample_gap": row["sample_gap"],
+        "blocks_top3_profit_a2_a3_pilot": row["blocks_top3_profit_a2_a3_pilot"],
         "h4_state": row["h4_state"],
         "h5_state": row["h5_state"],
         "next": row["next"],

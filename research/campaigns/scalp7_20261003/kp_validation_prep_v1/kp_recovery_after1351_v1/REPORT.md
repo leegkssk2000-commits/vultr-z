@@ -20,7 +20,7 @@ P2 was reproduced before modification. `P2_BEFORE_FIX.json` records that an inje
 | Durable caller input binding | Original input SHA is included in config/STATE; changed bundle rejected; recovery reuses the same event bindings and attempt | No retry credit or new economic identity |
 | Inspection CLI | A concrete blocked report when export is absent; inspect and synthetic modes remain separate | CLI status/report never grants execution authority |
 
-Synthetic caller event decisions reuse the frozen parent and ObservedPaper. New file loading does not implement a collector, scheduler, venue trading client, production ledger, terminal scorer, PLUS_ONE_BAR or adjacent strategy paths.
+Synthetic caller event decisions reuse the frozen parent and ObservedPaper. The first PR CI exposed a direct-file import-path defect that local inherited PYTHONPATH had masked (1931 passed, one new CLI test failed). FIRST_CI_FAILURE.json preserves exact-head/check/job evidence. The CLI now supplies its resolved checkout root only in its direct-file entrypoint; the regression removes PYTHONPATH/PYTHONHOME and executes from checkout and unrelated directories. No environment/workflow/guard was changed. New file loading does not implement a collector, scheduler, venue trading client, production ledger, terminal scorer, PLUS_ONE_BAR or adjacent strategy paths.
 
 ## Current blockers: four distinct classes
 

@@ -11,12 +11,17 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
 import pandas as pd
+
+if __name__ == "__main__":
+    # Direct file execution needs the checkout root for the frozen backend imports.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
 _SPEC = importlib.util.spec_from_file_location("kp30_binding_adapter", Path(__file__).with_name("adapter.py"))
 assert _SPEC and _SPEC.loader

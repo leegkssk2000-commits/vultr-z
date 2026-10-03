@@ -5,6 +5,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -183,12 +184,15 @@ def test_absent_export_and_unpinned_export_are_concrete_connection_blocks(tmp_pa
     assert report["metadata_receipts_opened"] == []
 
 
-def test_cli_inspect_reports_blocked_without_receipts() -> None:
-    process = subprocess.run([sys.executable, str(PATH), "inspect"], cwd=ROOT,
-                             check=True, capture_output=True, text=True)
-    report = json.loads(process.stdout)
-    assert not report["execution_ready"] and report["new_full_credit"] == 0
-    assert any(b["category"] == "CONNECTION" for b in report["blockers"])
+def test_cli_inspect_reports_blocked_without_receipts(tmp_path: Path) -> None:
+    environment = {key: value for key, value in os.environ.items()
+                   if key not in ("PYTHONPATH", "PYTHONHOME")}
+    for cwd in (ROOT, tmp_path):
+        process = subprocess.run([sys.executable, str(PATH), "inspect"], cwd=cwd,
+                                 env=environment, check=True, capture_output=True, text=True)
+        report = json.loads(process.stdout)
+        assert not report["execution_ready"] and report["new_full_credit"] == 0
+        assert any(b["category"] == "CONNECTION" for b in report["blockers"])
 
 
 def test_serialized_synthetic_pipeline_partial_exit_cashflow_and_single_artifact(tmp_path: Path) -> None:

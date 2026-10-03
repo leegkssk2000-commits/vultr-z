@@ -7,7 +7,7 @@ This is a preparation format implemented by `../input_binding.py`. It does not c
 Use the existing authenticated operator path to supply metadata summaries. Deliver the export file's SHA256 independently through that path. `--pin-origin` describes that path; the code verifies hashes, not origin authentication. Do not use a self-declared hash as provider authentication.
 
 ```bash
-PYTHONPATH=. python research/campaigns/scalp7_20261003/kp_validation_prep_v1/input_binding.py inspect \
+python research/campaigns/scalp7_20261003/kp_validation_prep_v1/input_binding.py inspect \
   --export /authorized/operator-export/export.metadata.json \
   --expected-export-sha256 <OUT_OF_BAND_EXACT_SHA256> \
   --pin-origin <EXISTING_AUTHENTICATED_OPERATOR_PATH>
@@ -37,7 +37,7 @@ All complete exports still report `execution_ready=false`, `currentness_certifie
 ## Supplied synthetic caller
 
 ```bash
-PYTHONPATH=. python research/campaigns/scalp7_20261003/kp_validation_prep_v1/input_binding.py synthetic \
+python research/campaigns/scalp7_20261003/kp_validation_prep_v1/input_binding.py synthetic \
   --input /supplied/generated-input.json \
   --expected-input-sha256 <EXACT_SYNTHETIC_BUNDLE_SHA256> \
   --output-root /isolated/preparation/kp30_validation_prep_v1

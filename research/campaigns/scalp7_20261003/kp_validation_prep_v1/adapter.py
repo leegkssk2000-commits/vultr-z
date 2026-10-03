@@ -480,9 +480,22 @@ class PrepCheckpoint:
         return self
 
     def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
-        if exc_type is not None:
-            self.interrupt(str(exc), failed=not issubclass(exc_type, KeyboardInterrupt))
-        self.close()
+        try:
+            if exc_type is not None:
+                try:
+                    self.interrupt(str(exc), failed=not issubclass(exc_type, KeyboardInterrupt))
+                except BaseException as save_error:
+                    # The body exception remains primary even if its failure
+                    # receipt cannot be persisted. Returning leaves its object
+                    # and traceback intact; the note exposes the second error.
+                    exc.add_note(f"CHECKPOINT_INTERRUPT_SAVE_FAILED: {type(save_error).__name__}: {save_error}")
+        finally:
+            try:
+                self.close()
+            except BaseException as close_error:
+                if exc is None:
+                    raise
+                exc.add_note(f"CHECKPOINT_CLOSE_FAILED: {type(close_error).__name__}: {close_error}")
 
     def save(self) -> None:
         payload = copy.deepcopy(self.state)
@@ -491,8 +504,10 @@ class PrepCheckpoint:
 
     def close(self) -> None:
         if not self.lock.closed:
-            fcntl.flock(self.lock.fileno(), fcntl.LOCK_UN)
-            self.lock.close()
+            try:
+                fcntl.flock(self.lock.fileno(), fcntl.LOCK_UN)
+            finally:
+                self.lock.close()
 
     def interrupt(self, reason: str, *, failed: bool = False) -> None:
         self.state["attempt_status"] = "FAILED" if failed else "INTERRUPTED"

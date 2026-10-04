@@ -15,7 +15,7 @@ def complete_prefix(primary_raw, expected_code_hashes):
     require(data['deployed_code_hashes'] == expected_code_hashes, 'DEPENDENCY_PIN_CHANGED')
     config_raw, meta = saved_file(ROOT/'FRESH_FORWARD_CONFIG_V2.json')
     require(meta['sha256'] == data['config_source']['sha256'], 'ORIGINAL_CONFIG_CHANGED')
-    config = load(config_raw)
+    config = frozen_config(config_raw)
     require(config['sources'] == [
         {'path': str(ROOT/'fresh_1m'), 'identity_sha256': PREFIX_IDENTITY_SHA},
         {'path': str(SOURCE_ROOT), 'identity_sha256': IDENTITY_SHA}], 'CONFIGURED_SOURCES_CHANGED')

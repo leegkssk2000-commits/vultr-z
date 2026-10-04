@@ -27,9 +27,15 @@ SOURCE_ROOT = ROOT / 'fresh_1m_verified'
 CANDIDATE = 'scalp7_keltner_hg_parent_utc30m_v2'
 SNAPSHOT_SHA = 'f8391ea2ea907d3e52b144688111a733757713b5acd72992992bdc4d99662666'
 IDENTITY_SHA = 'a5c2d7d6888b1cbf5e5c851c66b11127736fda94fd58f0484e19381c7e1efca9'
+CONFIG_SHA = 'd75239c6282c1baa88648ccd594d32beb719de0bdf3fd1d2123f6361593fff9b'
 FIELDS = ('timestamp_ms', 'open', 'high', 'low', 'close', 'volume')
 COMMON_END = 1791075300000  # 2026-10-04 00:55 UTC, fixed BEFORE body/performance read.
 START = 1789498080000       # 2026-09-15 18:48 UTC; no outcome-dependent selection.
+
+
+def frozen_config(raw):
+    require(sha(raw) == CONFIG_SHA, 'PRECOMMITTED_FORWARD_CONFIG_CHANGED')
+    return load(raw)
 
 
 def normalize_body(raw, receipt):
@@ -154,7 +160,7 @@ def export_prices(payload_raw, expected_code_hashes, max_seconds=240):
         stamps = [r[0] for r in rows]
         require(stamps == list(range(START, COMMON_END, 60000)), 'NONCONTIGUOUS_CUT:' + symbol)
     config_raw, config_meta = saved_file(ROOT / 'FRESH_FORWARD_CONFIG_V2.json')
-    config = load(config_raw)
+    config = frozen_config(config_raw)
     keep = ('fresh_start_ms', 'frozen_at_ms', 'historical_context', 'regime_fit', 'cost_snapshot', 'campaign_contract', 'code_hashes', 'producer_role', 'sources', 'source_dir', 'source_identity_sha256')
     projected = {k: config[k] for k in keep if k in config}
     context_files = {}

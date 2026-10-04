@@ -59,6 +59,10 @@ class PriceInputTests(unittest.TestCase):
     def test_snapshot_hash_rejected_before_host_io(self):
         with self.assertRaisesRegex(Exception,'PINNED_SNAPSHOT_BYTES_CHANGED'): p.export_prices(b'{}',{})
 
+    def test_mutable_config_cannot_repin_its_own_inputs(self):
+        with self.assertRaisesRegex(Exception,'PRECOMMITTED_FORWARD_CONFIG_CHANGED'):
+            p.frozen_config(b'{"historical_context":{},"new_parameters":true}')
+
     def test_source_paths_are_not_arbitrary(self):
         with self.assertRaisesRegex(Exception,'UNAPPROVED_ROOT'): p.saved_file('/etc/passwd')
 

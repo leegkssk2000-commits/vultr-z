@@ -1,0 +1,118 @@
+name: Keltner committed snapshot diagnosis 20261004
+on:
+  push:
+    branches: [codex/kp-committed-snapshot-20261004]
+    paths: ['ops/kp_committed_cursor_snapshot_v1.py', 'ops/kp_snapshot_diagnosis_20261004.py', 'tests/test_kp_committed_cursor_snapshot_v1.py', '.github/workflows/kp-committed-snapshot-20261004.yml']
+  pull_request:
+    branches: [master]
+    paths: ['ops/kp_committed_cursor_snapshot_v1.py', 'ops/kp_snapshot_diagnosis_20261004.py', 'tests/test_kp_committed_cursor_snapshot_v1.py', '.github/workflows/kp-committed-snapshot-20261004.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: kp-github-access-diagnosis-20261004
+  cancel-in-progress: false
+jobs:
+  verify-snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Required canonical precheck
+        run: |
+          pwd
+          ls -la frontend/z-os-app-source
+          cat frontend/z-os-app-source/package.json
+          npm run --prefix frontend/z-os-app-source validate
+      - name: Reproduce frozen reader rejection and test committed-prefix repair
+        run: |
+          python3 -m pip install --disable-pip-version-check pandas numpy requests
+          mkdir -p "$RUNNER_TEMP/kp-snapshot"
+          python3 -m unittest discover -s tests -p test_kp_committed_cursor_snapshot_v1.py -v 2>&1 | tee "$RUNNER_TEMP/kp-snapshot/tests.log"
+          python3 - <<'PY'
+          import ast,hashlib,json,os,shutil
+          from pathlib import Path
+          out=Path(os.environ['RUNNER_TEMP'])/'kp-snapshot'
+          paths=['ops/kp_committed_cursor_snapshot_v1.py','ops/kp_snapshot_diagnosis_20261004.py','tests/test_kp_committed_cursor_snapshot_v1.py']
+          paths += ['backend/research/rebuild/'+x for x in ('scalp7_fresh_source_v2.py','scalp7_fresh_forward_v2.py','scalp7_observed_paper_v3.py','scalp7_positive_lanes_v2.py')]
+          manifest={p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in paths}
+          (out/'source_hashes.json').write_text(json.dumps(manifest,indent=2))
+          for p in paths:
+              dest=out/'sources'/p;dest.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(p,dest)
+          remote=Path(paths[0]).read_text()+'\n'+Path(paths[1]).read_text()
+          ast.parse(remote)
+          (Path(os.environ['RUNNER_TEMP'])/'kp-snapshot-remote.py').write_text(remote)
+          PY
+      - name: Bounded authenticated metadata read only
+        if: github.event_name != 'pull_request' && github.event.sender.id == 232057951
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          OUT="$RUNNER_TEMP/kp-snapshot"
+          KEY="$RUNNER_TEMP/kp-snapshot-key"
+          KNOWN="$RUNNER_TEMP/kp-snapshot-hosts"
+          ERR="$RUNNER_TEMP/kp-snapshot-error"
+          export OUT
+          trap 'rm -f "$KEY" "$KNOWN" "$ERR"' EXIT
+          python3 - <<'PY'
+          import os,re
+          assert all(os.environ.get(k,'').strip() for k in ('VPS_HOST','VPS_USER','VPS_SSH_KEY'))
+          assert re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.:-]*',os.environ['VPS_HOST'])
+          assert re.fullmatch(r'[A-Za-z_][A-Za-z0-9_-]*',os.environ['VPS_USER'])
+          PY
+          printf '%s\n' "$VPS_SSH_KEY" > "$KEY"
+          chmod 600 "$KEY"
+          ssh-keyscan -T 10 -t ed25519 -H "$VPS_HOST" > "$KNOWN" 2>/dev/null
+          FP=$(ssh-keygen -lf "$KNOWN" | awk '{print $2}')
+          [ "$FP" = 'SHA256:pI/PzwvzWLNJDkOfG98IrC/3NLzh0dIOEUgyqEWta/U' ] || { echo HOST_KEY_CONTINUITY_REJECTED; exit 1; }
+          set +e
+          timeout 190 ssh -T -i "$KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 -o ConnectionAttempts=1 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o UserKnownHostsFile="$KNOWN" "$VPS_USER@$VPS_HOST" 'PYTHONDONTWRITEBYTECODE=1 python3 -B -' < "$RUNNER_TEMP/kp-snapshot-remote.py" > "$OUT/REMOTE_SNAPSHOT.json" 2> "$ERR"
+          RC=$?
+          set -e
+          export RC
+          python3 - <<'PY'
+          import gzip,hashlib,json,os
+          from pathlib import Path
+          out=Path(os.environ['OUT']);rc=int(os.environ['RC'])
+          r={'schema':'kp30.snapshot_transport.v1','ssh_exit_code':rc,'hostkey_continuity_verified':True,'initial_trust_basis':'PR1353_AUTHORIZED_TOFU_NOT_NEW_ATTESTATION','service_changes':0,'market_runs':0}
+          if rc==0:
+              raw=(out/'REMOTE_SNAPSHOT.json').read_bytes();data=json.loads(raw)
+              r['snapshot_payload_sha256']=hashlib.sha256(raw).hexdigest()
+              expected=json.loads((out/'source_hashes.json').read_text())
+              r['deployed_source_matches_checkout']={k:(v==expected['backend/research/rebuild/'+k]) for k,v in data['live_module_hashes'].items()}
+              summary={**data,'snapshot':{k:v for k,v in data['snapshot'].items() if k!='receipt_metadata'}}
+              (out/'SUMMARY.json').write_text(json.dumps(summary,indent=2))
+              (out/'REMOTE_SNAPSHOT.json.gz').write_bytes(gzip.compress(raw,mtime=0))
+              (out/'REMOTE_SNAPSHOT.json').unlink()
+              print(json.dumps(summary['snapshot'],indent=2))
+          else:
+              (out/'REMOTE_SNAPSHOT.json').unlink(missing_ok=True)
+              r['failure']='SSH_OR_REMOTE_PROBE_FAILURE_NO_CREDENTIAL_OUTPUT'
+          (out/'TRANSPORT.json').write_text(json.dumps(r,indent=2))
+          print(json.dumps(r,indent=2))
+          if rc:raise SystemExit(rc)
+          assert all(r['deployed_source_matches_checkout'].values()), 'DEPLOYED_SOURCE_DIFFERS_FROM_REVIEWED_CODE'
+          assert data['snapshot'].get('metadata_snapshot_pass') is True, 'METADATA_SNAPSHOT_NOT_COMPLETE'
+          PY
+      - name: Canonical postcheck and unchanged tracked checkout
+        if: always()
+        run: |
+          npm run --prefix frontend/z-os-app-source validate
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kp-committed-snapshot-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kp-snapshot/
+          if-no-files-found: error
+          retention-days: 14

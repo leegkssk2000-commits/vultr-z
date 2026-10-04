@@ -64,10 +64,15 @@ def read_relative(root: Path, relative: str, limit: int) -> bytes:
     parts = relative.split('/')
     require(all(p not in ('', '.', '..') for p in parts), 'PATH_TRAVERSAL')
     base = Path(root).absolute()
-    require(not any(p.is_symlink() for p in (base, *base.parents)), 'ROOT_SYMLINK')
+    require(all(p not in ('.', '..') for p in base.parts[1:]), 'ROOT_TRAVERSAL')
     flags = os.O_RDONLY | os.O_NOFOLLOW
-    fd = os.open(base, flags | os.O_DIRECTORY)
+    fd = os.open('/', flags | os.O_DIRECTORY)
     try:
+        # Walk the supplied root as well, avoiding lstat/open ancestor races.
+        for component in base.parts[1:]:
+            nxt = os.open(component, flags | os.O_DIRECTORY, dir_fd=fd)
+            os.close(fd)
+            fd = nxt
         for part in parts[:-1]:
             nxt = os.open(part, flags | os.O_DIRECTORY, dir_fd=fd)
             os.close(fd)

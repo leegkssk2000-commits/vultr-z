@@ -58,7 +58,7 @@ def load(raw: bytes) -> dict[str, Any]:
     return data
 
 
-def read_relative(root: Path, relative: str, limit: int) -> bytes:
+def read_relative_record(root: Path, relative: str, limit: int) -> tuple[bytes, dict[str, int]]:
     """Use descriptor-relative O_NOFOLLOW on every component; no path TOCTOU."""
     require(isinstance(relative, str) and relative and not relative.startswith('/'), 'RELATIVE_PATH_REQUIRED')
     parts = relative.split('/')
@@ -96,11 +96,16 @@ def read_relative(root: Path, relative: str, limit: int) -> bytes:
             require((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) ==
                     (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns), 'INPLACE_CHANGE_DURING_READ')
             require(len(raw) == before.st_size, 'READ_LENGTH_CHANGED')
-            return raw
+            return raw, {'device': before.st_dev, 'inode': before.st_ino, 'bytes': before.st_size,
+                         'mtime_ns': before.st_mtime_ns, 'ctime_ns': before.st_ctime_ns}
         finally:
             os.close(child)
     finally:
         os.close(fd)
+
+
+def read_relative(root: Path, relative: str, limit: int) -> bytes:
+    return read_relative_record(root, relative, limit)[0]
 
 
 def validate_cursor(data: dict[str, Any], identity_hash: str, symbols: tuple[str, ...]) -> None:

@@ -5,7 +5,7 @@ import time
 
 # CI concatenates the reviewed helper above this file for stdin-only SSH.
 if 'capture' not in globals():
-    from ops.kp_committed_cursor_snapshot_v1 import capture, load, read_relative, sha
+    from ops.kp_committed_cursor_snapshot_v1 import capture, load, read_relative, read_relative_record, sha
 
 ROOT = Path('/home/z/z/runtime/scalp7_broad_v2_20260915')
 WORKTREE = Path('/home/z/worktrees/scalp7-broad-v2-20260915')
@@ -17,9 +17,9 @@ def state_metadata(folder: str) -> dict:
     result = {'folder': folder}
     for filename in ('FREEZE.json', 'STATUS.json', 'STATE.json'):
         try:
-            raw = read_relative(ROOT, folder + '/' + filename, 64 * 1024 * 1024)
+            raw, identity = read_relative_record(ROOT, folder + '/' + filename, 64 * 1024 * 1024)
             d = load(raw)
-            item = {'sha256': sha(raw), 'file_mtime_ns': (ROOT/folder/filename).stat().st_mtime_ns,
+            item = {'sha256': sha(raw), 'file_mtime_ns': identity['mtime_ns'], 'read_file_identity': identity,
                     'metadata': {k:d[k] for k in ('schema', 'state', 'reason', 'observed_at_ms', 'last_poll_ms',
                                                 'poll_count', 'cursors', 'source_cursor_sha256', 'freeze_sha256',
                                                 'config_sha256', 'state_or_signal_cursor_advanced') if k in d}}

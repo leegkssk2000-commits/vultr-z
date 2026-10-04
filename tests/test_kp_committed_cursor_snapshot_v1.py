@@ -88,6 +88,32 @@ class SnapshotTests(unittest.TestCase):
     def test_symlink_parent_rejected(self):
         p = self.root/'requests'/s.SYMBOLS[0]; other = self.root/'otherdir'; p.rename(other); p.symlink_to(other,target_is_directory=True)
         with self.assertRaises(OSError): self.run_capture()
+    def test_symlink_root_rejected(self):
+        alias=self.root/'alias';alias.symlink_to(self.root,target_is_directory=True)
+        with self.assertRaises(OSError):s.capture(alias,self.pin)
+    def test_symlink_root_ancestor_rejected(self):
+        with tempfile.TemporaryDirectory() as other:
+            alias=Path(other)/'alias';alias.symlink_to(self.root.parent,target_is_directory=True)
+            with self.assertRaises(OSError):s.capture(alias/self.root.name,self.pin)
+    def test_atomic_replacement_keeps_old_bytes_and_mtime_bound(self):
+        from ops import kp_snapshot_diagnosis_20261004 as probe
+        from unittest.mock import patch
+        folder=self.root/'observed_paper_clock_v3';folder.mkdir()
+        for name in ('FREEZE.json','STATE.json','STATUS.json'):
+            p=folder/name;p.write_bytes(encode({'schema':'old','last_poll_ms':123}))
+            os.utime(p,ns=(1000000000,1000000000))
+        real_read=s.read_relative_record
+        def replace_after_read(root, relative, limit):
+            raw, info=real_read(root,relative,limit)
+            path=root/relative; new=path.with_suffix('.next')
+            new.write_bytes(encode({'schema':'new','last_poll_ms':999}))
+            os.utime(new,ns=(2000000000,2000000000));new.replace(path)
+            return raw,info
+        with patch.object(probe,'ROOT',self.root),patch.object(probe,'read_relative_record',side_effect=replace_after_read):
+            report=probe.state_metadata(folder.name)
+        self.assertEqual(report['STATE.json']['metadata']['last_poll_ms'],123)
+        self.assertEqual(report['STATE.json']['file_mtime_ns'],1000000000)
+        self.assertNotEqual(report['STATE.json']['read_file_identity']['inode'],(folder/'STATE.json').stat().st_ino)
     def test_traversal_rejected(self):
         self.mutate(lambda c:c['symbols'][s.SYMBOLS[0]][0].update(path='requests/'+s.SYMBOLS[0]+'/../bad.receipt.json'))
         with self.assertRaisesRegex(s.SnapshotError, 'TRAVERSAL'): self.run_capture()

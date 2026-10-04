@@ -1,11 +1,15 @@
 name: Keltner GitHub SSH read-only access diagnosis 20261004
-# Explicit current user request: use GitHub to resolve the existing access blocker.
-# Reuses the existing VPS_* secret references, not the production or SR workflow.
-# No restart, deployment, strategy execution, market-data read, or authority change.
+# User explicitly requested GitHub-operated access recovery and current metadata.
+# This workflow never restarts a service, executes a strategy, or reads raw prices.
 on:
   push:
     branches: [codex/kp-github-access-diagnosis-20261004]
-    paths: [.github/workflows/kp-github-access-diagnosis-20261004.yml]
+    paths:
+      - .github/workflows/kp-github-access-diagnosis-20261004.yml
+      - ops/kp_host_metadata_readonly_20261004.py
+  workflow_dispatch:
+  issue_comment:
+    types: [created]
 permissions:
   contents: read
 concurrency:
@@ -13,20 +17,26 @@ concurrency:
   cancel-in-progress: false
 jobs:
   diagnose:
+    if: github.event_name != 'issue_comment' || (github.event.sender.id == 232057951 && github.event.issue.number == 1352 && github.event.comment.body == '/kp-readonly-census')
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 5ec3b3590f0afb788d9001fdb20457bfebc4d301
           persist-credentials: false
-      - name: Canonical source validation before any remote action
+      - name: Validate canonical source and parse the read-only probe
         run: |
           pwd
           ls -la frontend/z-os-app-source
           cat frontend/z-os-app-source/package.json
           npm run --prefix frontend/z-os-app-source validate
-      - name: Diagnose through the existing configured SSH endpoint
+          python3 - <<'PY'
+          import ast
+          from pathlib import Path
+          ast.parse(Path('ops/kp_host_metadata_readonly_20261004.py').read_text())
+          print('PROBE_SYNTAX_PASS_NOT_A_MARKET_TEST')
+          PY
+      - name: Read current metadata using the existing SSH identity
         shell: bash
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
@@ -41,140 +51,59 @@ jobs:
           python3 - <<'PY'
           import json, os, re
           from pathlib import Path
-          names = ('VPS_HOST', 'VPS_USER', 'VPS_SSH_KEY')
-          present = {n: bool(os.environ.get(n, '').strip()) for n in names}
-          valid = bool(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.:-]*', os.environ.get('VPS_HOST', ''))) and bool(re.fullmatch(r'[A-Za-z_][A-Za-z0-9_-]*', os.environ.get('VPS_USER', '')))
-          result = {'secret_references_present': present, 'endpoint_format_valid': valid, 'secret_values_exported': False, 'service_mutations': 0, 'market_runs': 0}
-          Path(os.environ['OUT'], 'transport.json').write_text(json.dumps(result, indent=2))
-          print(json.dumps(result))
+          names = ('VPS_HOST','VPS_USER','VPS_SSH_KEY')
+          present = {n: bool(os.environ.get(n,'').strip()) for n in names}
+          valid = bool(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.:-]*',os.environ.get('VPS_HOST',''))) and bool(re.fullmatch(r'[A-Za-z_][A-Za-z0-9_-]*',os.environ.get('VPS_USER','')))
+          r = {'secret_references_present':present,'endpoint_format_valid':valid,'secret_values_exported':False,'service_mutations':0,'market_runs':0,'hostkey_basis':'CONTINUITY_FROM_AUTHORIZED_RUN_37164129391'}
+          Path(os.environ['OUT'],'transport.json').write_text(json.dumps(r,indent=2))
+          print(json.dumps(r))
           if not all(present.values()) or not valid:
               raise SystemExit('CONFIGURED_SSH_INPUT_UNAVAILABLE')
           PY
           KEY="$RUNNER_TEMP/kp-access-key"
           KNOWN="$RUNNER_TEMP/kp-access-known-hosts"
-          trap 'rm -f "$KEY" "$KNOWN" "$RUNNER_TEMP/kp-ssh-error"' EXIT
+          ERR="$RUNNER_TEMP/kp-ssh-error"
+          trap 'rm -f "$KEY" "$KNOWN" "$ERR"' EXIT
           printf '%s\n' "$VPS_SSH_KEY" > "$KEY"
           chmod 600 "$KEY"
-          if ! ssh-keyscan -T 10 -H "$VPS_HOST" > "$KNOWN" 2>/dev/null; then
+          if ! ssh-keyscan -T 10 -t ed25519 -H "$VPS_HOST" > "$KNOWN" 2>/dev/null; then
             echo '{"stage":"HOST_KEY_SCAN","status":"FAILED","remote_script_started":false}' > "$OUT/failure.json"
             exit 1
           fi
-          # Preserve the existing workflow's keyscan/TOFU trust model explicitly.
-          # This is not independently pre-pinned host identity certification.
-          ssh-keygen -lf "$KNOWN" | awk '{print $1, $2, $NF}' > "$OUT/observed_hostkey_fingerprints.txt"
-          cat > "$RUNNER_TEMP/kp-readonly.py" <<'PY'
-          import datetime, hashlib, json, os, re, shlex, subprocess
-          from pathlib import Path
-          def cmd(args):
-              try:
-                  p = subprocess.run(args, capture_output=True, text=True, timeout=20)
-                  return p.returncode, p.stdout
-              except Exception as e:
-                  return -1, type(e).__name__
-          def digest(path):
-              p = Path(path)
-              if p.is_symlink() or not p.is_file() or p.stat().st_size > 1000000:
-                  return None
-              return hashlib.sha256(p.read_bytes()).hexdigest()
-          r = {'schema':'kp.github_readonly_host_diagnosis.v1', 'observed_at_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(), 'uid':os.geteuid(), 'remote_mutation':False, 'market_payloads_read':False, 'credential_values_exported':False, 'transport_hostkey_policy':'EXISTING_KEYSCAN_TOFU_NOT_INDEPENDENTLY_PINNED'}
-          props = ('LoadState','ActiveState','SubState','Result','MainPID','ControlGroup','KillMode','FragmentPath','DropInPaths','UnitFileState','Restart','NRestarts','ExecMainCode','ExecMainStatus','ActiveEnterTimestamp','InactiveEnterTimestamp','MemoryCurrent','MemoryPeak')
-          rc, text = cmd(['systemctl','show','desktop-commander-remote.service','--no-pager'] + ['--property='+x for x in props])
-          service = dict(line.split('=',1) for line in text.splitlines() if '=' in line) if rc == 0 else {}
-          r['service'] = {'returncode':rc, 'properties':service}
-          r['service_file_evidence'] = []
-          for path in [service.get('FragmentPath','')] + service.get('DropInPaths','').split():
-              if not path:
-                  continue
-              item = {'path':path,'sha256':digest(path)}
-              try:
-                  raw = Path(path).read_text()
-                  selected = {}
-                  for line in raw.splitlines():
-                      if '=' not in line or line.lstrip().startswith('#'):
-                          continue
-                      k,v = line.split('=',1)
-                      if k in ('User','Group','WorkingDirectory','Restart','RestartSec','KillMode','Type','EnvironmentFile'):
-                          selected[k] = v
-                      elif k == 'ExecStart':
-                          a = shlex.split(v)
-                          selected[k] = {'executable':a[0] if a else None,'argument_count':max(len(a)-1,0),'remote_argument_present':'remote' in a,'script_paths':[x for x in a[1:] if x.startswith('/') and x.endswith('.js')]}
-                  item['safe_fields'] = selected
-              except Exception as e:
-                  item['error'] = type(e).__name__
-              r['service_file_evidence'].append(item)
-          cgroup = service.get('ControlGroup','')
-          r['process_scan_errors'] = []
-          r['scoped_processes'] = []
-          for p in Path('/proc').iterdir():
-              if not p.name.isdigit():
-                  continue
-              try:
-                  cg = (p/'cgroup').read_text()
-                  comm = (p/'comm').read_text().strip()
-                  try:
-                      cwd = str((p/'cwd').resolve(strict=True))
-                  except FileNotFoundError:
-                      cwd = ''
-                  in_service = bool(cgroup) and any(x.split(':',2)[-1] == cgroup or x.split(':',2)[-1].startswith(cgroup+'/') for x in cg.splitlines())
-                  kp_work = cwd.startswith('/home/z/') and any(x in cwd.lower() for x in ('keltner','kp_','kp-','scalp7','sr-continuous'))
-                  if in_service or kp_work:
-                      status = (p/'status').read_text()
-                      ppid = next((x.split(':',1)[1].strip() for x in status.splitlines() if x.startswith('PPid:')),None)
-                      r['scoped_processes'].append({'pid':int(p.name),'ppid':ppid,'comm':comm,'cwd':cwd,'cgroup':cg.strip(),'in_dc_service':in_service})
-              except FileNotFoundError:
-                  continue
-              except Exception as e:
-                  r['process_scan_errors'].append({'pid':int(p.name),'error':type(e).__name__})
-          rc, logs = cmd(['journalctl','-u','desktop-commander-remote.service','--no-pager','-n','300','-o','json'])
-          r['service_journal'] = {'returncode':rc,'classified_events':[],'raw_messages_exported':False}
-          patterns = {'OUT_OF_MEMORY':r'out of memory|oom-kill','AUTHENTICATION':r'unauthorized|invalid.token|token.expired|401|authentication.failed','DNS':r'ENOTFOUND|EAI_AGAIN','RESET':r'ECONNRESET|socket hang up','TIMEOUT':r'ETIMEDOUT|timed out|timeout','CONNECTION_REFUSED':r'ECONNREFUSED','DISCONNECTED':r'disconnect|connection.closed','CONNECTED':r'connected|connection.established','EXIT_FAILURE':r'main process exited|failed with result'}
-          if rc == 0:
-              for line in logs.splitlines():
-                  try:
-                      entry = json.loads(line)
-                      message = str(entry.get('MESSAGE',''))
-                      tags = [k for k,v in patterns.items() if re.search(v,message,re.I)]
-                      if tags:
-                          r['service_journal']['classified_events'].append({'realtime_us':entry.get('__REALTIME_TIMESTAMP'),'tags':tags})
-                  except ValueError:
-                      pass
-          r['candidate_directory_observations'] = []
-          for root in ('/home/z/z/runtime','/home/z/worktrees'):
-              item = {'root':root,'directories':[]}
-              try:
-                  for p in sorted(Path(root).iterdir()):
-                      if p.is_dir() and not p.is_symlink() and any(x in p.name.lower() for x in ('keltner','kp_','kp-','scalp7')):
-                          item['directories'].append({'path':str(p),'mtime_ns':p.stat().st_mtime_ns})
-              except Exception as e:
-                  item['error'] = type(e).__name__
-              r['candidate_directory_observations'].append(item)
-          r['resource_summary'] = {'loadavg':Path('/proc/loadavg').read_text().strip(),'memory':[x for x in Path('/proc/meminfo').read_text().splitlines() if x.startswith(('MemTotal:','MemAvailable:','SwapTotal:','SwapFree:'))]}
-          r['restart_authorized_by_this_probe'] = False
-          print(json.dumps(r, ensure_ascii=False, indent=2))
-          PY
+          FP=$(ssh-keygen -lf "$KNOWN" | awk '{print $2}')
+          if [ "$FP" != 'SHA256:pI/PzwvzWLNJDkOfG98IrC/3NLzh0dIOEUgyqEWta/U' ]; then
+            echo '{"stage":"HOST_IDENTITY_CONTINUITY","status":"MISMATCH","remote_script_started":false}' > "$OUT/failure.json"
+            exit 1
+          fi
+          printf '%s\n' "$FP" > "$OUT/observed_hostkey_fingerprint.txt"
           set +e
-          timeout 160 ssh -T -i "$KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 -o ConnectionAttempts=1 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN" "$VPS_USER@$VPS_HOST" 'PYTHONDONTWRITEBYTECODE=1 python3 -B -' < "$RUNNER_TEMP/kp-readonly.py" > "$OUT/host_diagnosis.json" 2> "$RUNNER_TEMP/kp-ssh-error"
+          timeout 160 ssh -T -i "$KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 -o ConnectionAttempts=1 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o UserKnownHostsFile="$KNOWN" "$VPS_USER@$VPS_HOST" 'PYTHONDONTWRITEBYTECODE=1 python3 -B -' < ops/kp_host_metadata_readonly_20261004.py > "$OUT/host_metadata_projection.json" 2> "$ERR"
           RC=$?
           set -e
           export RC
           python3 - <<'PY'
-          import json, os
+          import hashlib,json,os
           from pathlib import Path
-          p = Path(os.environ['OUT'])/'transport.json'
-          r = json.loads(p.read_text())
-          rc = int(os.environ['RC'])
-          err = (Path(os.environ['RUNNER_TEMP'])/'kp-ssh-error').read_text(errors='replace').lower()
-          r['ssh_exit_code'] = rc
-          r['failure_class'] = ('NONE' if rc == 0 else 'AUTHENTICATION_REJECTED' if 'permission denied' in err else 'CONNECTION_REFUSED' if 'connection refused' in err else 'NAME_RESOLUTION' if 'resolve hostname' in err else 'TIMEOUT' if rc == 124 or 'timed out' in err else 'HOST_KEY_VERIFICATION' if 'host key verification failed' in err else 'SSH_OR_REMOTE_COMMAND_ERROR')
-          p.write_text(json.dumps(r, indent=2))
+          p=Path(os.environ['OUT'])/'transport.json'
+          r=json.loads(p.read_text()); rc=int(os.environ['RC'])
+          err=(Path(os.environ['RUNNER_TEMP'])/'kp-ssh-error').read_text(errors='replace').lower()
+          r['ssh_exit_code']=rc
+          r['failure_class']=('NONE' if rc==0 else 'AUTHENTICATION_REJECTED' if 'permission denied' in err else 'CONNECTION_REFUSED' if 'connection refused' in err else 'TIMEOUT' if rc==124 or 'timed out' in err else 'SSH_OR_REMOTE_SCRIPT_ERROR')
+          r['probe_sha256']=hashlib.sha256(Path('ops/kp_host_metadata_readonly_20261004.py').read_bytes()).hexdigest()
+          if rc==0:
+              raw=(Path(os.environ['OUT'])/'host_metadata_projection.json').read_bytes()
+              h=json.loads(raw)
+              assert h['economic_runs']==0 and h['service_changes']==0
+              r['projection_sha256']=hashlib.sha256(raw).hexdigest()
+              r['observed_at_utc']=h['observed_at_utc']
+              print('REMOTE_METADATA_READ_SUCCESS',h['observed_at_utc'])
+              print('ORIGINAL_PARENT_HASH_MATCH',h['parent_module'].get('frozen_match'))
+              print('OBSERVED_METADATA_FILES',len(h['metadata_documents']))
+          p.write_text(json.dumps(r,indent=2))
           print(json.dumps(r))
-          if rc == 0:
-              h = json.loads((Path(os.environ['OUT'])/'host_diagnosis.json').read_text())
-              print('REMOTE_READ_SUCCESS', h['observed_at_utc'])
-              print('SERVICE_STATE',h['service']['properties'].get('ActiveState'),h['service']['properties'].get('SubState'))
           PY
           exit "$RC"
-      - name: Canonical source validation after diagnosis
+      - name: Validate canonical source and preserve a clean checkout
         if: always()
         run: |
           npm run --prefix frontend/z-os-app-source validate

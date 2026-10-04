@@ -1,0 +1,160 @@
+name: Keltner GitHub SSH read-only access diagnosis 20261004
+# User-authorized GitHub access and metadata only. No economic/service mutation.
+on:
+  push:
+    branches: [codex/kp-github-access-diagnosis-20261004]
+    paths:
+      - .github/workflows/kp-github-access-diagnosis-20261004.yml
+      - ops/kp_host_metadata_readonly_20261004.py
+  workflow_dispatch:
+  issue_comment:
+    types: [created]
+permissions:
+  contents: read
+concurrency:
+  group: kp-github-access-diagnosis-20261004
+  cancel-in-progress: false
+jobs:
+  diagnose:
+    if: github.event_name != 'issue_comment' || (github.event.sender.id == 232057951 && github.event.issue.number == 1352 && github.event.comment.body == '/kp-readonly-census')
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate canonical source and parse the read-only probe
+        run: |
+          pwd
+          ls -la frontend/z-os-app-source
+          cat frontend/z-os-app-source/package.json
+          npm run --prefix frontend/z-os-app-source validate
+          python3 - <<'PY'
+          import ast
+          from pathlib import Path
+          ast.parse(Path('ops/kp_host_metadata_readonly_20261004.py').read_text())
+          print('PROBE_SYNTAX_PASS_NOT_A_MARKET_TEST')
+          PY
+      - name: Read current metadata using the existing SSH identity
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          OUT="$RUNNER_TEMP/kp-access-diagnosis"
+          mkdir -p "$OUT"
+          export OUT
+          python3 - <<'PY'
+          import json,os,re
+          from pathlib import Path
+          names=('VPS_HOST','VPS_USER','VPS_SSH_KEY')
+          present={n:bool(os.environ.get(n,'').strip()) for n in names}
+          valid=bool(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.:-]*',os.environ.get('VPS_HOST',''))) and bool(re.fullmatch(r'[A-Za-z_][A-Za-z0-9_-]*',os.environ.get('VPS_USER','')))
+          r={'secret_references_present':present,'endpoint_format_valid':valid,'secret_values_exported':False,'service_mutations':0,'market_runs':0,'hostkey_basis':'CONTINUITY_FROM_AUTHORIZED_RUN_37164129391'}
+          Path(os.environ['OUT'],'transport.json').write_text(json.dumps(r,indent=2)); print(json.dumps(r))
+          if not all(present.values()) or not valid: raise SystemExit('CONFIGURED_SSH_INPUT_UNAVAILABLE')
+          PY
+          KEY="$RUNNER_TEMP/kp-access-key"
+          KNOWN="$RUNNER_TEMP/kp-access-known-hosts"
+          ERR="$RUNNER_TEMP/kp-ssh-error"
+          trap 'rm -f "$KEY" "$KNOWN" "$ERR"' EXIT
+          printf '%s\n' "$VPS_SSH_KEY" > "$KEY"
+          chmod 600 "$KEY"
+          if ! ssh-keyscan -T 10 -t ed25519 -H "$VPS_HOST" > "$KNOWN" 2>/dev/null; then
+            echo '{"stage":"HOST_KEY_SCAN","status":"FAILED","remote_script_started":false}' > "$OUT/failure.json"
+            exit 1
+          fi
+          FP=$(ssh-keygen -lf "$KNOWN" | awk '{print $2}')
+          if [ "$FP" != 'SHA256:pI/PzwvzWLNJDkOfG98IrC/3NLzh0dIOEUgyqEWta/U' ]; then
+            echo '{"stage":"HOST_IDENTITY_CONTINUITY","status":"MISMATCH","remote_script_started":false}' > "$OUT/failure.json"
+            exit 1
+          fi
+          printf '%s\n' "$FP" > "$OUT/observed_hostkey_fingerprint.txt"
+          set +e
+          timeout 160 ssh -T -i "$KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 -o ConnectionAttempts=1 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o UserKnownHostsFile="$KNOWN" "$VPS_USER@$VPS_HOST" 'PYTHONDONTWRITEBYTECODE=1 python3 -B -' < ops/kp_host_metadata_readonly_20261004.py > "$OUT/host_metadata_projection.json" 2> "$ERR"
+          RC=$?
+          set -e
+          export RC
+          python3 - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          p=Path(os.environ['OUT'])/'transport.json'; r=json.loads(p.read_text()); rc=int(os.environ['RC'])
+          err=(Path(os.environ['RUNNER_TEMP'])/'kp-ssh-error').read_text(errors='replace').lower()
+          r['ssh_exit_code']=rc
+          r['failure_class']=('NONE' if rc==0 else 'AUTHENTICATION_REJECTED' if 'permission denied' in err else 'CONNECTION_REFUSED' if 'connection refused' in err else 'TIMEOUT' if rc==124 or 'timed out' in err else 'SSH_OR_REMOTE_SCRIPT_ERROR')
+          r['probe_sha256']=hashlib.sha256(Path('ops/kp_host_metadata_readonly_20261004.py').read_bytes()).hexdigest()
+          if rc==0:
+              raw=(Path(os.environ['OUT'])/'host_metadata_projection.json').read_bytes(); h=json.loads(raw)
+              assert h['economic_runs']==0 and h['service_changes']==0
+              r['projection_sha256']=hashlib.sha256(raw).hexdigest(); r['observed_at_utc']=h['observed_at_utc']
+              print('REMOTE_METADATA_READ_SUCCESS',h['observed_at_utc'])
+              print('ORIGINAL_PARENT_HASH_MATCH',h['parent_module'].get('frozen_match'))
+              print('OBSERVED_METADATA_FILES',len(h['metadata_documents']))
+          p.write_text(json.dumps(r,indent=2)); print(json.dumps(r))
+          PY
+          exit "$RC"
+      - name: Normalize actual partial observations without inventing completeness
+        run: |
+          python3 - <<'PY'
+          import datetime,hashlib,json,os
+          from pathlib import Path
+          out=Path(os.environ['RUNNER_TEMP'])/'kp-access-diagnosis'
+          raw=(out/'host_metadata_projection.json').read_bytes(); h=json.loads(raw)
+          transport=json.loads((out/'transport.json').read_text())
+          assert hashlib.sha256(raw).hexdigest()==transport['projection_sha256']
+          pins={'candidate':h['candidate'],'parent_identity':h['parent_identity'],'parent_module_sha256':'b0919c9e3542d6d2e14ab8f545179c7bfc43d661379bc1f6d0714a6603ea9aa2'}
+          assert h['parent_module'].get('frozen_match') is True
+          root=out/'partial_export'; root.mkdir()
+          collected=int(datetime.datetime.fromisoformat(h['observed_at_utc']).timestamp()*1000)
+          def save(name,body):
+              data=(json.dumps(body,sort_keys=True,indent=2,allow_nan=False)+'\n').encode()
+              (root/name).write_bytes(data)
+              return {'path':name,'sha256':hashlib.sha256(data).hexdigest()}
+          records={k:[] for k in ('ledger','reservations','locks','processes','state')}
+          for c in h['candidate_registry'].get('claims',[]):
+              if c['identity_key']==pins['parent_identity'] and c['state']=='COMPLETED':
+                  records['ledger'].append({'identity':c['identity_key'],'status':'COMPLETE'})
+          # Completed old claims do not prove absence/release of other reservations.
+          for item in h['locks']:
+              if '/fresh_forward/' not in item['path'] and '/observed_paper_clock_v3/' not in item['path']: continue
+              held=item['kernel_entries']
+              records['locks'].append({'identity':item['path'],'status':'LOCKED' if held else 'UNLOCKED'})
+              for line in held:
+                  records['processes'].append({'identity':'observed_lock_owner_pid:'+line.split()[4],'status':'RUNNING'})
+          for item in h['metadata_documents']:
+              if item['path'].endswith('/STATE.json') and ('/fresh_forward/' in item['path'] or '/observed_paper_clock_v3/' in item['path']):
+                  records['state'].append({'identity':item['path'],'status':'PRESENT'})
+          refs={k:save(k+'.metadata.json',{'schema':'kp30.'+k+'_metadata.v1',**pins,'collected_at_ms':collected,'complete':False,'records':rows}) for k,rows in records.items()}
+          census=save('census.metadata.json',{'schema':'kp30.candidate_census_metadata.v1',**pins,'collected_at_ms':collected,**refs})
+          usage=save('usage.metadata.json',{'schema':'kp30.usage_inventory_metadata.v1',**pins,'complete':False,'seen':[]})
+          index=save('index.metadata.json',{'schema':'kp30.source_index_metadata.v1',**pins,'sources':[]})
+          exported=save('export.metadata.json',{'schema':'kp30.metadata_export.v1',**pins,'census':census,'usage':usage,'index':index})
+          note={'source_projection_sha256':transport['projection_sha256'],'export_sha256':exported['sha256'],'actual_observation_export':True,'complete_census_claimed':False,'raw_source_body_hashes_not_yet_joined':True,'usage_list_is_unknown_not_empty_history':True,'reason':'Known canonical registry and shared writer/state observations acquired; no complete candidate-only host census or source/use receipts yet. Preserve inherited seen witnesses. The unchanged inspector must keep this partial evidence blocked.'}
+          (out/'partial_export_provenance.json').write_text(json.dumps(note,indent=2))
+          print('ACTUAL_PARTIAL_EXPORT_SHA256='+exported['sha256'])
+          PY
+      - name: Inspect actual partial export with the unchanged PR1352 inspector
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+          PYTHONPATH: .
+        run: |
+          python3 -m pip install --disable-pip-version-check pandas numpy requests
+          OUT="$RUNNER_TEMP/kp-access-diagnosis"
+          SHA=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["export_sha256"])' "$OUT/partial_export_provenance.json")
+          python3 -B research/campaigns/scalp7_20261003/kp_validation_prep_v1/input_binding.py inspect --export "$OUT/partial_export/export.metadata.json" --expected-export-sha256 "$SHA" --pin-origin "GITHUB_ACTIONS_${{ github.run_id }}_AUTHENTICATED_SSH_METADATA_PROJECTION_NOT_COMPLETE_ORIGINAL_SOURCE_CERTIFICATE" > "$OUT/INPUT_BINDING_RESULT.json"
+          cat "$OUT/INPUT_BINDING_RESULT.json"
+      - name: Validate canonical source and preserve a clean checkout
+        if: always()
+        run: |
+          npm run --prefix frontend/z-os-app-source validate
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kp-access-diagnosis-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kp-access-diagnosis/
+          if-no-files-found: warn
+          retention-days: 7

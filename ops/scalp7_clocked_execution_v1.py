@@ -266,7 +266,57 @@ def run_lanes(data, contract, out):
     return summary
 
 
+def execute_reserved_comparison(data, contract, activation, output, contract_sha):
+    """Prepare a writable fresh destination BEFORE the permanent batch claim.
+
+    No owner creation/transfer, claim deletion, budget reset or automatic retry.
+    Post-claim setup/execution/completion failures keep the original exception.
+    A failed failure-receipt write is disclosed, never reported as durable success.
+    """
+    output.mkdir(parents=True, exist_ok=False)
+    # An existing/unwritable destination must never consume the comparison.
+    write_once(output, 'OUTPUT_PREPARED.json', {
+        'contract_sha256': contract_sha, 'economic_execution_started': False,
+        'utc': datetime.now(timezone.utc).isoformat(),
+    })
+    stage = 'RESERVATION_ATTEMPT'
+    acquired = False
+    start = time.monotonic()
+    try:
+        claim = acquire_reservation(contract, activation, output)
+        acquired = True
+        stage = 'RESERVATION_RECEIPT'
+        write_once(output, 'RESERVATION.json', claim)
+        stage = 'STARTED_RECEIPT'
+        write_once(output, 'STARTED.json', {
+            'contract_sha256': contract_sha, 'maximum_lane_executions': 2,
+            'utc': datetime.now(timezone.utc).isoformat(),
+        })
+        stage = 'LANE_EXECUTION'
+        result = run_lanes(data, contract, output)
+        stage = 'COMPLETION_RECEIPT'
+        write_once(output, 'COMPLETED.json', {
+            'summary_sha256': sha((output/'SUMMARY.json').read_bytes()),
+            'lane_executions': 2, 'elapsed_s': time.monotonic()-start,
+        })
+        return result
+    except BaseException as exc:
+        failure = {
+            'error': str(exc), 'error_type': type(exc).__name__, 'stage': stage,
+            'reservation_state': ('ACQUIRED' if acquired else 'NOT_CONFIRMED_INSPECT_OWNER'),
+            'automatic_retry': False, 'started_budget_not_reset': True,
+        }
+        try:
+            write_once(output, 'FAILED.json', failure)
+        except BaseException as receipt_error:
+            # Disk/full/permission errors may also prevent the failure receipt.
+            # Do not suppress the original exception or release its durable claim.
+            exc.add_note('FAILED_RECEIPT_NOT_SAVED: ' + repr(receipt_error))
+        raise
+
+
 def main():
+    require(not (ROOT/'research/campaigns/scalp7_20261004/clocked_lanes_v1/OWNER_TRANSFER.json').exists(), 'LEGACY_LOCAL_OWNER_RETIRED_NO_ACTIVATION')
     require(not (ROOT/'research/campaigns/scalp7_20261004/clocked_lanes_v1/COMPLETION.json').exists(), 'COMPLETED_BATCH_NO_REPLAY')
     parser=argparse.ArgumentParser(description=__doc__)
     for name in ('input','contract','activation','output'):parser.add_argument('--'+name,type=Path,required=True)
@@ -282,15 +332,7 @@ def main():
     require(d['configured_sources_verified'] is True and d['price_bodies_verified'] is True,'INPUT_UNVERIFIED')
     require(d['config_source']['sha256']==CONFIG_SHA and d['fields']==INPUT_FIELDS and set(d['minutes'])==set(SYMBOLS),'INPUT_SCHEMA')
     require(d['config_projection']['regime_fit']==contract['frozen_regime_fit'],'FIT_CHANGED')
-    claim=acquire_reservation(contract,activation,a.output)
-    a.output.mkdir(parents=True,exist_ok=False)
-    write_once(a.output,'RESERVATION.json',claim)
-    write_once(a.output,'STARTED.json',{'contract_sha256':sha(raw_contract),'maximum_lane_executions':2,'utc':datetime.now(timezone.utc).isoformat()})
-    start=time.monotonic()
-    try:r=run_lanes(d,contract,a.output)
-    except BaseException as exc:
-        write_once(a.output,'FAILED.json',{'error':str(exc),'automatic_retry':False,'started_budget_not_reset':True});raise
-    write_once(a.output,'COMPLETED.json',{'summary_sha256':sha((a.output/'SUMMARY.json').read_bytes()),'lane_executions':2,'elapsed_s':time.monotonic()-start})
+    r=execute_reserved_comparison(d,contract,activation,a.output,sha(raw_contract))
     print(encoded(r).decode())
 
 if __name__=='__main__':main()

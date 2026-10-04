@@ -36,17 +36,23 @@ CLAIM_ROOT = Path('/mnt/data/scalp7_economic_claims')
 
 
 def owner_fingerprint():
-    # An execution-owner binding, not a trading credential; never exported raw.
-    return sha(Path('/proc/sys/kernel/random/boot_id').read_bytes()
-               + b'|' + Path('/etc/hostname').read_bytes())
+    # Persistent identity on the SAME volume as claims. No auto-recreation.
+    # Missing/replaced volume cannot silently inherit execution authority.
+    fd = os.open(CLAIM_ROOT / 'OWNER_ID', os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        require(stat.S_ISREG(info.st_mode) and info.st_size == 32, 'OWNER_ID_PROFILE')
+        return sha(os.read(fd, 33))
+    finally:
+        os.close(fd)
 
 
 def acquire_reservation(contract, activation, output):
     """Atomic, persistent, single-owner claim independent of caller output.
 
-    The reviewed batch is executable only on its predeclared host. Different
-    checkouts/outputs on that host share this fixed namespace. Claim is never
-    released on failure or completion. Cross-host continuation is NOT supported.
+    The reviewed batch is executable only on its predeclared persistent owner
+    volume. Different checkouts/outputs share the fixed namespace. The owner
+    survives a restart; a lost volume cannot be automatically recreated.
     """
     require(contract['batch_id'] == BATCH and activation['batch_id'] == BATCH,
             'RESERVATION_BATCH_MISMATCH')
@@ -177,8 +183,12 @@ def simulate(signal, frame, minute_rows, ready, cost, admission, callback):
             last_eval=fi
             require(ready[bar_open] < effective <= t and bar_close <= ready[bar_open], 'CALLBACK_BEFORE_AVAILABILITY')
             known_end=(bar_close-first)//MINUTE
-            known=minute_rows[offset:known_end]
-            require(bool(known) and max(x[6] for x in known) < effective, 'POSITION_PREFIX_NOT_YET_RECEIVED')
+            full_bar_prefix=minute_rows[offset:known_end]
+            require(bool(full_bar_prefix) and max(x[6] for x in full_bar_prefix) < effective, 'POSITION_PREFIX_NOT_YET_RECEIVED')
+            # Include any additionally received closed minutes, never merely a
+            # future market-time slice. Momentum still uses its closed30m bar.
+            known=[x for x in minute_rows[offset:mi] if x[6] < effective]
+            require(bool(known), 'NO_RECEIVED_POSTENTRY_MINUTES')
             highs=max(float(x[2]) for x in known); lows=min(float(x[3]) for x in known)
             p['mfe_R']=max(0.0,(highs-entry)/risk if side==1 else (entry-lows)/risk)
             p['mae_R']=max(0.0,(entry-lows)/risk if side==1 else (highs-entry)/risk)

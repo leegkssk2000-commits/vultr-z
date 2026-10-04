@@ -77,6 +77,21 @@ class ClockedTests(unittest.TestCase):
         self.call(lambda s,f,rows,r:rows[91].__setitem__(2,1000.),cb)
         self.assertAlmostEqual(observed[0],.05)
 
+    def test_received_minute_after_decision_close_is_in_mfe(self):
+        observed=[]
+        def cb(p,b,h):observed.append(p['mfe_R']);return hold(p,b,h)
+        self.call(lambda s,f,rows,r:rows[90].__setitem__(2,103.),cb)
+        self.assertEqual(observed[0],1.5)
+
+    def test_native_be_arms_from_additionally_received_minute(self):
+        from backend.research.rebuild import scalp7_positive_lanes_v2 as native
+        s,f,rows,r=sample();s['max_hold_bars']=20;s['meta']['be_arm_r']=1.0
+        rows[90][2]=103.
+        result=m.simulate(s,f,rows,r,14.,native.entry_update,native.exit_update)
+        self.assertEqual(result[0]['exit_ts_ms'],92*m.MINUTE)
+        self.assertEqual(result[0]['exit_prices']['BTC-USDT'],100.)
+        self.assertGreater(result[4][0]['update']['next_stop'],100.)
+
     def test_stop_update_cannot_backdate(self):
         def cb(p,b,h):return {'next_stop':100.2,'exit_next_open':False}
         def change(s,f,rows,r):s['max_hold_bars']=20
@@ -148,6 +163,15 @@ class ReservationTests(unittest.TestCase):
     def setup_claim(self, root):
         return ({'batch_id':m.BATCH,'execution_owner_sha256':'owner'},
                 {'batch_id':m.BATCH,'contract_sha256':'a'*64})
+
+    def test_stable_volume_owner_and_missing_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);p=root/'OWNER_ID';p.write_bytes(b'a'*32)
+            with patch.object(m,'CLAIM_ROOT',root):
+                first=m.owner_fingerprint()
+                self.assertEqual(first,m.owner_fingerprint())
+                p.unlink()
+                with self.assertRaises(FileNotFoundError):m.owner_fingerprint()
 
     def test_atomic_concurrent_one_winner(self):
         with tempfile.TemporaryDirectory() as tmp:

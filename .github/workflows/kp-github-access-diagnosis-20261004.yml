@@ -1,0 +1,117 @@
+name: Keltner GitHub SSH read-only access diagnosis 20261004
+# User explicitly requested GitHub-operated access recovery and current metadata.
+# This workflow never restarts a service, executes a strategy, or reads raw prices.
+on:
+  push:
+    branches: [codex/kp-github-access-diagnosis-20261004]
+    paths:
+      - .github/workflows/kp-github-access-diagnosis-20261004.yml
+      - ops/kp_host_metadata_readonly_20261004.py
+  workflow_dispatch:
+  issue_comment:
+    types: [created]
+permissions:
+  contents: read
+concurrency:
+  group: kp-github-access-diagnosis-20261004
+  cancel-in-progress: false
+jobs:
+  diagnose:
+    if: github.event_name != 'issue_comment' || (github.event.sender.id == 232057951 && github.event.issue.number == 1352 && github.event.comment.body == '/kp-readonly-census')
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate canonical source and parse the read-only probe
+        run: |
+          pwd
+          ls -la frontend/z-os-app-source
+          cat frontend/z-os-app-source/package.json
+          npm run --prefix frontend/z-os-app-source validate
+          python3 - <<'PY'
+          import ast
+          from pathlib import Path
+          ast.parse(Path('ops/kp_host_metadata_readonly_20261004.py').read_text())
+          print('PROBE_SYNTAX_PASS_NOT_A_MARKET_TEST')
+          PY
+      - name: Read current metadata using the existing SSH identity
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          OUT="$RUNNER_TEMP/kp-access-diagnosis"
+          mkdir -p "$OUT"
+          export OUT
+          python3 - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          names = ('VPS_HOST','VPS_USER','VPS_SSH_KEY')
+          present = {n: bool(os.environ.get(n,'').strip()) for n in names}
+          valid = bool(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.:-]*',os.environ.get('VPS_HOST',''))) and bool(re.fullmatch(r'[A-Za-z_][A-Za-z0-9_-]*',os.environ.get('VPS_USER','')))
+          r = {'secret_references_present':present,'endpoint_format_valid':valid,'secret_values_exported':False,'service_mutations':0,'market_runs':0,'hostkey_basis':'CONTINUITY_FROM_AUTHORIZED_RUN_37164129391'}
+          Path(os.environ['OUT'],'transport.json').write_text(json.dumps(r,indent=2))
+          print(json.dumps(r))
+          if not all(present.values()) or not valid:
+              raise SystemExit('CONFIGURED_SSH_INPUT_UNAVAILABLE')
+          PY
+          KEY="$RUNNER_TEMP/kp-access-key"
+          KNOWN="$RUNNER_TEMP/kp-access-known-hosts"
+          ERR="$RUNNER_TEMP/kp-ssh-error"
+          trap 'rm -f "$KEY" "$KNOWN" "$ERR"' EXIT
+          printf '%s\n' "$VPS_SSH_KEY" > "$KEY"
+          chmod 600 "$KEY"
+          if ! ssh-keyscan -T 10 -t ed25519 -H "$VPS_HOST" > "$KNOWN" 2>/dev/null; then
+            echo '{"stage":"HOST_KEY_SCAN","status":"FAILED","remote_script_started":false}' > "$OUT/failure.json"
+            exit 1
+          fi
+          FP=$(ssh-keygen -lf "$KNOWN" | awk '{print $2}')
+          if [ "$FP" != 'SHA256:pI/PzwvzWLNJDkOfG98IrC/3NLzh0dIOEUgyqEWta/U' ]; then
+            echo '{"stage":"HOST_IDENTITY_CONTINUITY","status":"MISMATCH","remote_script_started":false}' > "$OUT/failure.json"
+            exit 1
+          fi
+          printf '%s\n' "$FP" > "$OUT/observed_hostkey_fingerprint.txt"
+          set +e
+          timeout 160 ssh -T -i "$KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 -o ConnectionAttempts=1 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o UserKnownHostsFile="$KNOWN" "$VPS_USER@$VPS_HOST" 'PYTHONDONTWRITEBYTECODE=1 python3 -B -' < ops/kp_host_metadata_readonly_20261004.py > "$OUT/host_metadata_projection.json" 2> "$ERR"
+          RC=$?
+          set -e
+          export RC
+          python3 - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          p=Path(os.environ['OUT'])/'transport.json'
+          r=json.loads(p.read_text()); rc=int(os.environ['RC'])
+          err=(Path(os.environ['RUNNER_TEMP'])/'kp-ssh-error').read_text(errors='replace').lower()
+          r['ssh_exit_code']=rc
+          r['failure_class']=('NONE' if rc==0 else 'AUTHENTICATION_REJECTED' if 'permission denied' in err else 'CONNECTION_REFUSED' if 'connection refused' in err else 'TIMEOUT' if rc==124 or 'timed out' in err else 'SSH_OR_REMOTE_SCRIPT_ERROR')
+          r['probe_sha256']=hashlib.sha256(Path('ops/kp_host_metadata_readonly_20261004.py').read_bytes()).hexdigest()
+          if rc==0:
+              raw=(Path(os.environ['OUT'])/'host_metadata_projection.json').read_bytes()
+              h=json.loads(raw)
+              assert h['economic_runs']==0 and h['service_changes']==0
+              r['projection_sha256']=hashlib.sha256(raw).hexdigest()
+              r['observed_at_utc']=h['observed_at_utc']
+              print('REMOTE_METADATA_READ_SUCCESS',h['observed_at_utc'])
+              print('ORIGINAL_PARENT_HASH_MATCH',h['parent_module'].get('frozen_match'))
+              print('OBSERVED_METADATA_FILES',len(h['metadata_documents']))
+          p.write_text(json.dumps(r,indent=2))
+          print(json.dumps(r))
+          PY
+          exit "$RC"
+      - name: Validate canonical source and preserve a clean checkout
+        if: always()
+        run: |
+          npm run --prefix frontend/z-os-app-source validate
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kp-access-diagnosis-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kp-access-diagnosis/
+          if-no-files-found: warn
+          retention-days: 7

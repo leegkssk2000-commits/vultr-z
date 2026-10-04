@@ -1,0 +1,73 @@
+name: Scalp7 clock-aware shared execution 20261004
+on:
+  push:
+    branches: [codex/scalp7-clocked-lanes-20261004]
+    paths: ['.github/workflows/scalp7-clocked-lanes-20261004.yml', 'ops/scalp7_clocked_execution_v1.py', 'tests/test_scalp7_clocked_execution_v1.py', 'research/campaigns/scalp7_20261004/clocked_lanes_v1/**']
+  pull_request:
+    branches: [master]
+    paths: ['.github/workflows/scalp7-clocked-lanes-20261004.yml', 'ops/scalp7_clocked_execution_v1.py', 'tests/test_scalp7_clocked_execution_v1.py', 'research/campaigns/scalp7_20261004/clocked_lanes_v1/**']
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: scalp7-clocked-lanes-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Canonical precheck
+        run: |
+          pwd
+          ls -la frontend/z-os-app-source
+          cat frontend/z-os-app-source/package.json
+          npm run --prefix frontend/z-os-app-source validate
+      - name: Recover existing inputs only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/clocked"
+          tar -czf "$RUNNER_TEMP/clocked/canonical-source.tar.gz" AGENTS.md frontend/z-os-app-source
+          curl --fail --silent --show-error --location --proto '=https' -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' https://api.github.com/repos/leegkssk2000-commits/vultr-z/actions/artifacts/11305382754/zip -o "$RUNNER_TEMP/clocked/ORIGINAL_INPUT.zip"
+          python3 - <<'PY'
+          import hashlib,json,os,zipfile,gzip
+          from pathlib import Path
+          out=Path(os.environ['RUNNER_TEMP'])/'clocked'
+          raw=(out/'ORIGINAL_INPUT.zip').read_bytes()
+          assert hashlib.sha256(raw).hexdigest()=='a656836ac36ab2dd8b90344513f567b296c6f092213a84e4d195e9b5bbabe299'
+          with zipfile.ZipFile(out/'ORIGINAL_INPUT.zip') as z:
+              p=z.read('PRICE_INPUT.json.gz')
+          assert hashlib.sha256(gzip.decompress(p)).hexdigest()=='3da2f940e532be2c04ea25386782ef5732b12eb99d6f8203473ee3d57433d0b3'
+          (out/'PRICE_INPUT.json.gz').write_bytes(p)
+          (out/'PRECHECK.json').write_text(json.dumps({'input_reused':True,'new_collection':0,'strategy_invocations':0,'new_economic_executions':0,'canonical_validation':'PASS'},indent=2))
+          PY
+      - name: Generated regressions when implementation is present
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f ops/scalp7_clocked_execution_v1.py ]; then
+            python3 -m pip install --disable-pip-version-check numpy==2.2.6 pandas==2.2.3 requests==2.32.5
+            python3 -m unittest discover -s tests -p test_scalp7_clocked_execution_v1.py -v 2>&1 | tee "$RUNNER_TEMP/clocked/tests.log"
+          fi
+      - name: Canonical postcheck
+        if: always()
+        run: |
+          npm run --prefix frontend/z-os-app-source validate
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scalp7-clocked-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/clocked/
+          if-no-files-found: error
+          retention-days: 14

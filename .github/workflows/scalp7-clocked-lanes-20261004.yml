@@ -1,0 +1,77 @@
+name: Scalp7 clock-aware shared execution 20261004
+on:
+  push:
+    branches: [codex/scalp7-clocked-lanes-20261004]
+    paths: ['.github/workflows/scalp7-clocked-lanes-20261004.yml', 'ops/scalp7_clocked*.py', 'ops/verify_scalp7_clocked_saved_v1.py', 'tests/test_scalp7_clocked*.py', 'research/campaigns/scalp7_20261004/clocked_lanes_v1/**']
+  pull_request:
+    branches: [master]
+    paths: ['.github/workflows/scalp7-clocked-lanes-20261004.yml', 'ops/scalp7_clocked*.py', 'ops/verify_scalp7_clocked_saved_v1.py', 'tests/test_scalp7_clocked*.py', 'research/campaigns/scalp7_20261004/clocked_lanes_v1/**']
+permissions:
+  contents: read
+concurrency:
+  group: scalp7-clocked-lanes-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Canonical precheck
+        run: |
+          pwd
+          ls -la frontend/z-os-app-source
+          cat frontend/z-os-app-source/package.json
+          npm run --prefix frontend/z-os-app-source validate
+      - name: Generated regressions only
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/clocked"
+          python3 -m pip install --disable-pip-version-check numpy==2.2.6 pandas==2.2.3 requests==2.32.5 PyYAML==6.0.2
+          python3 -m unittest discover -s tests -p 'test_scalp7_clocked*.py' -v 2>&1 | tee "$RUNNER_TEMP/clocked/tests.log"
+      - name: Saved completed comparison audit; never execute the consumed model
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,lzma,os,pathlib,subprocess,yaml
+          c=pathlib.Path('research/campaigns/scalp7_20261004/clocked_lanes_v1')
+          contract=json.loads((c/'CONTRACT_GITHUB.json').read_text())
+          receipt=json.loads((c/'COMPLETION.json').read_text())
+          assert receipt['model_lane_executions']==2 and receipt['remaining_lane_executions']==0
+          assert receipt['contract_sha256']==hashlib.sha256((c/'CONTRACT_GITHUB.json').read_bytes()).hexdigest()
+          pins={**contract['source_pins'],'ops/scalp7_clocked_execution_v1.py':contract['script_sha256'],'ops/scalp7_clocked_github_owner_v1.py':contract['driver_sha256'],str(c/'OWNER_TRANSFER.json'):contract['owner_transfer_sha256'],str(c/'CONTRACT.json'):contract['predecessor_contract_sha256']}
+          for name,expected in pins.items():
+              assert hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest()==expected,name
+          out=pathlib.Path(os.environ['RUNNER_TEMP'])/'clocked'/'SAVED_AUDIT.json'
+          subprocess.run(['python3','ops/verify_scalp7_clocked_saved_v1.py','--bundle',str(c/'RESULT_BUNDLE.json.xz'),'--sha256',receipt['result_bundle_sha256'],'--output',str(out)],check=True)
+          assert hashlib.sha256(out.read_bytes()).hexdigest()==receipt['saved_audit_sha256']
+          files=json.loads(lzma.decompress((c/'RESULT_BUNDLE.json.xz').read_bytes()))
+          assert {name:hashlib.sha256(text.encode()).hexdigest() for name,text in files.items()}==receipt['original_files_sha256']
+          workflow=yaml.safe_load(pathlib.Path('.github/workflows/scalp7-clocked-lanes-20261004.yml').read_text())
+          assert set(workflow['jobs'])=={'verify'} and workflow['permissions']=={'contents':'read'}
+          for job in workflow['jobs'].values():
+              for step in job['steps']:
+                  if 'run' in step:subprocess.run(['bash','-n'],input=step['run'],text=True,check=True)
+          print('SAVED_ONLY_NEW_ECONOMIC_EXECUTIONS=0')
+          PY
+          tar -czf "$RUNNER_TEMP/clocked/source-and-results.tar.gz" AGENTS.md ops/scalp7_clocked*py ops/verify_scalp7_clocked_saved_v1.py tests/test_scalp7_clocked*py research/campaigns/scalp7_20261004/clocked_lanes_v1 .github/workflows/scalp7-clocked-lanes-20261004.yml
+      - name: Canonical postcheck
+        if: always()
+        run: |
+          npm run --prefix frontend/z-os-app-source validate
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scalp7-clocked-closeout-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/clocked/
+          if-no-files-found: error
+          retention-days: 90

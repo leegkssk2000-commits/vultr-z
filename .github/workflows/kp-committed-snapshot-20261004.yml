@@ -30,7 +30,9 @@ jobs:
           cat frontend/z-os-app-source/package.json
           npm run --prefix frontend/z-os-app-source validate
       - name: Reproduce frozen reader rejection and test committed-prefix repair
+        shell: bash
         run: |
+          set -euo pipefail
           python3 -m pip install --disable-pip-version-check pandas numpy requests
           mkdir -p "$RUNNER_TEMP/kp-snapshot"
           python3 -m unittest discover -s tests -p test_kp_committed_cursor_snapshot_v1.py -v 2>&1 | tee "$RUNNER_TEMP/kp-snapshot/tests.log"
@@ -65,16 +67,41 @@ jobs:
           export OUT
           trap 'rm -f "$KEY" "$KNOWN" "$ERR"' EXIT
           python3 - <<'PY'
-          import os,re
-          assert all(os.environ.get(k,'').strip() for k in ('VPS_HOST','VPS_USER','VPS_SSH_KEY'))
-          assert re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.:-]*',os.environ['VPS_HOST'])
-          assert re.fullmatch(r'[A-Za-z_][A-Za-z0-9_-]*',os.environ['VPS_USER'])
+          import json,os,re
+          from pathlib import Path
+          present=all(os.environ.get(k,'').strip() for k in ('VPS_HOST','VPS_USER','VPS_SSH_KEY'))
+          valid=bool(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.:-]*',os.environ.get('VPS_HOST',''))) and bool(re.fullmatch(r'[A-Za-z_][A-Za-z0-9_-]*',os.environ.get('VPS_USER','')))
+          r={'schema':'kp30.snapshot_transport.v1','stage':'CONFIG_VALIDATION','secret_references_present':present,'endpoint_format_valid':valid,'credential_values_exported':False,'remote_script_started':False,'service_changes':0,'market_runs':0}
+          Path(os.environ['OUT'],'TRANSPORT.json').write_text(json.dumps(r,indent=2))
+          if not present or not valid:raise SystemExit('CONFIGURED_SSH_INPUT_UNAVAILABLE')
           PY
           printf '%s\n' "$VPS_SSH_KEY" > "$KEY"
           chmod 600 "$KEY"
-          ssh-keyscan -T 10 -t ed25519 -H "$VPS_HOST" > "$KNOWN" 2>/dev/null
+          set +e
+          ssh-keyscan -T 10 -t ed25519 -H "$VPS_HOST" > "$KNOWN" 2> "$ERR"
+          SCAN_RC=$?
+          set -e
+          export SCAN_RC
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          p=Path(os.environ['OUT'])/'TRANSPORT.json';r=json.loads(p.read_text())
+          rc=int(os.environ['SCAN_RC']);r.update(stage='HOST_KEY_SCAN',host_key_scan_exit_code=rc)
+          if rc:r['failure']='HOST_KEY_SCAN_FAILED_NO_REMOTE_CODE_EXECUTION'
+          p.write_text(json.dumps(r,indent=2))
+          if rc:raise SystemExit(rc)
+          PY
           FP=$(ssh-keygen -lf "$KNOWN" | awk '{print $2}')
-          [ "$FP" = 'SHA256:pI/PzwvzWLNJDkOfG98IrC/3NLzh0dIOEUgyqEWta/U' ] || { echo HOST_KEY_CONTINUITY_REJECTED; exit 1; }
+          if [ "$FP" != 'SHA256:pI/PzwvzWLNJDkOfG98IrC/3NLzh0dIOEUgyqEWta/U' ]; then
+            python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          p=Path(os.environ['OUT'])/'TRANSPORT.json';r=json.loads(p.read_text())
+          r.update(stage='HOST_KEY_CONTINUITY',failure='HOST_KEY_CONTINUITY_REJECTED',remote_script_started=False)
+          p.write_text(json.dumps(r,indent=2))
+          PY
+            exit 1
+          fi
           set +e
           timeout 190 ssh -T -i "$KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 -o ConnectionAttempts=1 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o UserKnownHostsFile="$KNOWN" "$VPS_USER@$VPS_HOST" 'PYTHONDONTWRITEBYTECODE=1 python3 -B -' < "$RUNNER_TEMP/kp-snapshot-remote.py" > "$OUT/REMOTE_SNAPSHOT.json" 2> "$ERR"
           RC=$?
@@ -84,9 +111,11 @@ jobs:
           import gzip,hashlib,json,os
           from pathlib import Path
           out=Path(os.environ['OUT']);rc=int(os.environ['RC'])
-          r={'schema':'kp30.snapshot_transport.v1','ssh_exit_code':rc,'hostkey_continuity_verified':True,'initial_trust_basis':'PR1353_AUTHORIZED_TOFU_NOT_NEW_ATTESTATION','service_changes':0,'market_runs':0}
+          r=json.loads((out/'TRANSPORT.json').read_text())
+          r.update(stage='SSH_METADATA_PROBE',ssh_exit_code=rc,hostkey_continuity_verified=True,initial_trust_basis='PR1353_AUTHORIZED_TOFU_NOT_NEW_ATTESTATION',remote_script_started=None)
           if rc==0:
               raw=(out/'REMOTE_SNAPSHOT.json').read_bytes();data=json.loads(raw)
+              r['remote_script_started']=True
               r['snapshot_payload_sha256']=hashlib.sha256(raw).hexdigest()
               expected=json.loads((out/'source_hashes.json').read_text())
               r['deployed_source_matches_checkout']={k:(v==expected['backend/research/rebuild/'+k]) for k,v in data['live_module_hashes'].items()}
@@ -97,7 +126,8 @@ jobs:
               print(json.dumps(summary['snapshot'],indent=2))
           else:
               (out/'REMOTE_SNAPSHOT.json').unlink(missing_ok=True)
-              r['failure']='SSH_OR_REMOTE_PROBE_FAILURE_NO_CREDENTIAL_OUTPUT'
+              err=(Path(os.environ['RUNNER_TEMP'])/'kp-snapshot-error').read_text(errors='replace').lower()
+              r['failure']=('AUTHENTICATION_REJECTED' if 'permission denied' in err else 'CONNECTION_REFUSED' if 'connection refused' in err else 'TIMEOUT' if rc==124 or 'timed out' in err else 'SSH_OR_REMOTE_PROBE_ERROR')
           (out/'TRANSPORT.json').write_text(json.dumps(r,indent=2))
           print(json.dumps(r,indent=2))
           if rc:raise SystemExit(rc)

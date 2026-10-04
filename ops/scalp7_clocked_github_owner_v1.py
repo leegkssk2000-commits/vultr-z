@@ -6,6 +6,7 @@ new workflow runs and changed contracts. This script has no SSH/order API.
 """
 from __future__ import annotations
 import argparse
+import base64
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -28,6 +29,7 @@ BRANCH = 'codex/scalp7-clocked-lanes-20261004'
 CAMPAIGN = 'research/campaigns/scalp7_20261004/clocked_lanes_v1'
 CLAIM_REF = 'refs/heads/research-execution-claims/scalp7-squeeze-clocked-20261004-v1'
 JOB = 'economic-comparison'
+APPROVAL_REF = 'heads/research-approvals/scalp7-squeeze-clocked-20261004-v1'
 
 
 def github(method, route, value=None):
@@ -67,6 +69,47 @@ def execution_identity(env, api):
     return {'run_id': int(run_id), 'head_sha': head, 'job': JOB, 'attempt': 1}
 
 
+
+def verify_published_approval(parent, contract, activation, api):
+    """Independent maintainer publication, never a caller-supplied approval.
+
+    A fixed approval ref must already point to an immutable approval commit with
+    APPROVED.json. The execution job never creates/updates that approval ref.
+    Ref administration and deliberate workflow edits remain trusted-maintainer
+    powers; this is an execution gate, not an isolation boundary against admins.
+    """
+    ref = api('GET', '/git/ref/' + APPROVAL_REF)
+    require(ref['ref'] == 'refs/' + APPROVAL_REF and ref['object']['type'] == 'commit',
+            'APPROVAL_REF_PROFILE')
+    approval_sha = ref['object']['sha']
+    obj = api('GET', '/git/commits/' + approval_sha)
+    require(len(obj['parents']) == 1 and obj['parents'][0]['sha'] == parent,
+            'APPROVAL_PARENT_LINK_REQUIRED')
+    tree = api('GET', '/git/trees/' + obj['tree']['sha'])
+    entries = tree['tree']
+    require(len(entries) == 1 and entries[0]['path'] == 'APPROVED.json'
+            and entries[0]['type'] == 'blob', 'APPROVAL_TREE_PROFILE')
+    blob = api('GET', '/git/blobs/' + entries[0]['sha'])
+    require(blob['encoding'] == 'base64', 'APPROVAL_BLOB_ENCODING')
+    raw = base64.b64decode(blob['content'], validate=False)
+    git_sha = hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest()
+    require(git_sha == entries[0]['sha'], 'APPROVAL_BLOB_HASH')
+    approval = load(raw)
+    require(approval['batch_id'] == model.BATCH and approval['approved_parent_sha'] == parent,
+            'PARENT_NOT_INDEPENDENTLY_APPROVED')
+    require(approval['contract_sha256'] == activation['contract_sha256']
+            and approval['max_lane_executions'] == 2, 'INDEPENDENT_CONTRACT_APPROVAL_MISMATCH')
+    required = {'ops/scalp7_clocked_github_owner_v1.py', 'ops/scalp7_clocked_execution_v1.py',
+                '.github/workflows/scalp7-clocked-lanes-20261004.yml',
+                CAMPAIGN + '/CONTRACT_GITHUB.json', CAMPAIGN + '/OWNER_TRANSFER.json'}
+    require(required.issubset(approval['source_sha256']), 'APPROVAL_SOURCE_SCOPE')
+    for path, expected in approval['source_sha256'].items():
+        full = (ROOT/path).resolve(strict=True)
+        require(full.is_relative_to(ROOT) and sha(full.read_bytes()) == expected,
+                'INDEPENDENT_APPROVAL_SOURCE_CHANGED:' + path)
+    return approval_sha
+
+
 def claim_batch(contract, activation, output, api=github, env=os.environ):
     require(contract['batch_id'] == model.BATCH == activation['batch_id'], 'BATCH_CHANGED')
     require(contract['claim_ref'] == CLAIM_REF and contract['execution_owner'] == 'GITHUB_ATOMIC_REF_V1',
@@ -76,6 +119,7 @@ def claim_batch(contract, activation, output, api=github, env=os.environ):
     require(len(commit['parents']) == 1, 'ACTIVATION_MUST_BE_SINGLE_PARENT')
     parent = commit['parents'][0]['sha']
     require(parent == activation['reviewed_parent_sha'], 'ACTIVATION_PARENT_CHANGED')
+    approval_sha = verify_published_approval(parent, contract, activation, api)
     comparison = api('GET', '/compare/' + parent + '...' + identity['head_sha'])
     files = comparison.get('files', [])
     require(comparison['total_commits'] == 1 and len(files) == 1
@@ -85,6 +129,7 @@ def claim_batch(contract, activation, output, api=github, env=os.environ):
                'contract_sha256': activation['contract_sha256'],
                'activation_sha256': sha(encoded(activation)),
                'state': 'RESERVED_NONRETRYABLE', 'max_lane_executions': 2,
+               'independent_approval_commit_sha': approval_sha,
                'output': str(output), 'utc': datetime.now(timezone.utc).isoformat()}
     # The object can be orphaned after a lost race; only ref creation owns execution.
     blob = api('POST', '/git/blobs', {'content': encoded(receipt).decode(), 'encoding': 'utf-8'})

@@ -2,6 +2,8 @@
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import json
+import base64
+import hashlib
 import tempfile
 import threading
 import unittest
@@ -18,13 +20,30 @@ A = {'batch_id':m.BATCH,'contract_sha256':'b'*64,'reviewed_parent_sha':'c'*40}
 
 class FakeAPI:
     def __init__(self):
-        self.lock=threading.Lock();self.claim=None;self.calls=[];self.diff_path=g.CAMPAIGN+'/RUN_GITHUB.json'
+        self.lock=threading.Lock();self.claim=None;self.calls=[];self.diff_path=g.CAMPAIGN+'/RUN_GITHUB.json';self.approved_parent='c'*40;self.approved_contract='b'*64
+        self.approval_available=True
     def __call__(self,method,route,value=None):
         with self.lock:
             self.calls.append((method,route,value))
             if route.startswith('/actions/runs/'):
                 return {'head_sha':'a'*40,'head_branch':g.BRANCH,'event':'push','run_attempt':1,
                         'status':'in_progress','path':'.github/workflows/scalp7-clocked-lanes-20261004.yml'}
+            if route=='/git/ref/'+g.APPROVAL_REF:
+                if not self.approval_available:raise RuntimeError('GITHUB_GET_HTTP_404')
+                return {'ref':'refs/'+g.APPROVAL_REF,'object':{'type':'commit','sha':'9'*40}}
+            if route=='/git/commits/'+'9'*40:
+                return {'parents':[{'sha':'c'*40}],'tree':{'sha':'8'*40}}
+            if route=='/git/trees/'+'8'*40:
+                paths=['ops/scalp7_clocked_github_owner_v1.py','ops/scalp7_clocked_execution_v1.py',
+                       '.github/workflows/scalp7-clocked-lanes-20261004.yml',
+                       g.CAMPAIGN+'/CONTRACT_GITHUB.json',g.CAMPAIGN+'/OWNER_TRANSFER.json']
+                raw=g.encoded({'batch_id':m.BATCH,'approved_parent_sha':self.approved_parent,
+                               'contract_sha256':self.approved_contract,'max_lane_executions':2,
+                               'source_sha256':{p:g.sha((g.ROOT/p).read_bytes()) for p in paths}})
+                self.approval_raw=raw;self.approval_blob=hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()
+                return {'tree':[{'path':'APPROVED.json','type':'blob','sha':self.approval_blob}]}
+            if route.startswith('/git/blobs/'):
+                return {'encoding':'base64','content':base64.b64encode(self.approval_raw).decode()}
             if route.startswith('/git/commits/'):
                 return {'parents':[{'sha':'c'*40}]}
             if route.startswith('/compare/'):
@@ -66,7 +85,7 @@ class GitHubOwnerTests(unittest.TestCase):
         self.assertEqual(self.n,1)
     def test_changed_contract_or_output_cannot_replenish(self):
         self.run_it();altered={**A,'contract_sha256':'e'*64}
-        with self.assertRaises(RuntimeError):g.execute({},C,altered,self.root/'other',self.api,ENV,self.fake_run)
+        with self.assertRaises(SnapshotError):g.execute({},C,altered,self.root/'other',self.api,ENV,self.fake_run)
         self.assertEqual(self.n,1)
     def test_retry_attempt_rejected_before_claim(self):
         with self.assertRaisesRegex(SnapshotError,'NO_RETRY'):
@@ -123,6 +142,20 @@ class GitHubOwnerTests(unittest.TestCase):
         with self.assertRaises(KeyboardInterrupt):self.run_it(run=stop)
         self.assertIsNotNone(self.api.claim)
         self.assertEqual(json.loads((self.root/'out/FAILED.json').read_text())['error_type'],'KeyboardInterrupt')
+
+    def test_self_attested_parent_does_not_override_external_approval(self):
+        self.api.approved_parent='f'*40
+        with self.assertRaisesRegex(SnapshotError,'NOT_INDEPENDENTLY_APPROVED'):self.run_it()
+        self.assertIsNone(self.api.claim);self.assertEqual(self.n,0)
+    def test_self_repinned_contract_rejected(self):
+        self.api.approved_contract='f'*64
+        with self.assertRaisesRegex(SnapshotError,'INDEPENDENT_CONTRACT'):self.run_it()
+        self.assertIsNone(self.api.claim)
+    def test_missing_independent_approval_does_not_consume_claim(self):
+        self.api.approval_available=False
+        with self.assertRaises(RuntimeError):self.run_it()
+        self.assertIsNone(self.api.claim)
+
     def test_p1_helper_is_integrated_in_real_model_module(self):
         out=self.root/'existing';out.mkdir()
         with patch.object(m,'acquire_reservation') as reserve:

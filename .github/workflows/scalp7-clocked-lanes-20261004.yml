@@ -51,13 +51,24 @@ jobs:
           (out/'PRICE_INPUT.json.gz').write_bytes(p)
           (out/'PRECHECK.json').write_text(json.dumps({'input_reused':True,'new_collection':0,'strategy_invocations':0,'new_economic_executions':0,'canonical_validation':'PASS'},indent=2))
           PY
-      - name: Generated regressions when implementation is present
+      - name: Generated regressions and pinned dependency export
         shell: bash
         run: |
           set -euo pipefail
           if [ -f ops/scalp7_clocked_execution_v1.py ]; then
             python3 -m pip install --disable-pip-version-check numpy==2.2.6 pandas==2.2.3 requests==2.32.5
             python3 -m unittest discover -s tests -p test_scalp7_clocked_execution_v1.py -v 2>&1 | tee "$RUNNER_TEMP/clocked/tests.log"
+            python3 -m pip download --disable-pip-version-check --no-deps --only-binary=:all: --platform manylinux2014_x86_64 --python-version 3.13 --abi cp313 numpy==2.2.6 --dest "$RUNNER_TEMP/clocked/wheels"
+            python3 - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          out=Path(os.environ['RUNNER_TEMP'])/'clocked'
+          hashes={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in (out/'wheels').glob('*.whl')}
+          (out/'WHEEL_HASHES.json').write_text(json.dumps(hashes,indent=2)+'\n')
+          sources=['ops/scalp7_clocked_execution_v1.py','tests/test_scalp7_clocked_execution_v1.py','research/campaigns/scalp7_20261004/clocked_lanes_v1/CONTRACT.json']
+          pins={p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in sources}
+          (out/'NEW_SOURCE_HASHES.json').write_text(json.dumps(pins,indent=2)+'\n')
+          PY
           fi
       - name: Canonical postcheck
         if: always()

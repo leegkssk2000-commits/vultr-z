@@ -10,6 +10,8 @@ import copy
 from collections import Counter
 from datetime import datetime, timezone
 import math
+import os
+import stat
 from pathlib import Path
 import sys
 import time
@@ -29,6 +31,48 @@ PARENT = 'scalp7_squeeze_panic_cost4_parent_utc30m_v2'
 CHILD = 'scalp7_squeeze_panic_cost4_be1r_utc30m_v2'
 IDENTITIES = (PARENT, CHILD)
 MODE = 'RECORDED_RECEIPT_CLOCK_NEXT_MINUTE_SQUEEZE_RESEARCH_V1'
+BATCH = 'SCALP7_SQUEEZE_CLOCKED_PARENT_BE1R_20261004_V1'
+CLAIM_ROOT = Path('/mnt/data/scalp7_economic_claims')
+
+
+def owner_fingerprint():
+    # An execution-owner binding, not a trading credential; never exported raw.
+    return sha(Path('/proc/sys/kernel/random/boot_id').read_bytes()
+               + b'|' + Path('/etc/hostname').read_bytes())
+
+
+def acquire_reservation(contract, activation, output):
+    """Atomic, persistent, single-owner claim independent of caller output.
+
+    The reviewed batch is executable only on its predeclared host. Different
+    checkouts/outputs on that host share this fixed namespace. Claim is never
+    released on failure or completion. Cross-host continuation is NOT supported.
+    """
+    require(contract['batch_id'] == BATCH and activation['batch_id'] == BATCH,
+            'RESERVATION_BATCH_MISMATCH')
+    require(contract['execution_owner_sha256'] == owner_fingerprint(),
+            'WRONG_EXECUTION_OWNER_NO_CROSS_HOST_REPLAY')
+    CLAIM_ROOT.mkdir(mode=0o700, parents=False, exist_ok=True)
+    fd = os.open(CLAIM_ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        require(info.st_uid == os.geteuid() and stat.S_ISDIR(info.st_mode),
+                'UNOWNED_RESERVATION_DIRECTORY')
+        name = BATCH + '.json'
+        handle = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                         0o600, dir_fd=fd)
+        receipt = {'batch_id': BATCH, 'contract_sha256': activation['contract_sha256'],
+                   'activation_sha256': sha(encoded(activation)), 'output': str(output.resolve()),
+                   'state': 'CLAIMED_NONRETRYABLE', 'max_lane_executions': 2,
+                   'claimed_utc': datetime.now(timezone.utc).isoformat(),
+                   'owner_sha256': contract['execution_owner_sha256']}
+        with os.fdopen(handle, 'wb') as stream:
+            stream.write(encoded(receipt)); stream.flush(); os.fsync(stream.fileno())
+        os.fsync(fd)
+        return receipt
+    finally:
+        os.close(fd)
+
 
 
 def next_minute(stamp: int) -> int:
@@ -119,7 +163,8 @@ def simulate(signal, frame, minute_rows, ready, cost, admission, callback):
              'hold_minutes':(stamp-entered)/MINUTE,'mfe_R':p['mfe_R'],'mae_R':p['mae_R'],
              'regime':signal['meta'].get('regime','UNCLASSIFIED'),'signal':signal,
              'signal_available_ms':available,'execution_profile':MODE,
-             'order_authority':'BLOCKED','fill_is_model_not_exchange':True}
+             'order_authority':'BLOCKED','fill_is_model_not_exchange':True,
+             'mfe_mae_semantics':'RECEIVED_POSTENTRY_PREFIX_AT_LAST_MANAGEMENT_NOT_FULL_PATH'}
         return row,None,witness,None,events
     for mi in range(offset,len(minute_rows)):
         m=minute_rows[mi]; t=m[0]
@@ -227,7 +272,9 @@ def main():
     require(d['configured_sources_verified'] is True and d['price_bodies_verified'] is True,'INPUT_UNVERIFIED')
     require(d['config_source']['sha256']==CONFIG_SHA and d['fields']==INPUT_FIELDS and set(d['minutes'])==set(SYMBOLS),'INPUT_SCHEMA')
     require(d['config_projection']['regime_fit']==contract['frozen_regime_fit'],'FIT_CHANGED')
+    claim=acquire_reservation(contract,activation,a.output)
     a.output.mkdir(parents=True,exist_ok=False)
+    write_once(a.output,'RESERVATION.json',claim)
     write_once(a.output,'STARTED.json',{'contract_sha256':sha(raw_contract),'maximum_lane_executions':2,'utc':datetime.now(timezone.utc).isoformat()})
     start=time.monotonic()
     try:r=run_lanes(d,contract,a.output)

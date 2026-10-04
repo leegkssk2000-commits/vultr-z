@@ -1,6 +1,10 @@
 """Generated inputs only; these tests never replay collected market prices."""
 import copy
 import unittest
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
 from ops import scalp7_clocked_execution_v1 as m
 
@@ -139,5 +143,45 @@ class ClockedTests(unittest.TestCase):
         s,f,rows,r=sample();s['meta']['entry_cost_gate']['atr_price']=.01
         result=m.simulate(s,f,rows,r,14.,native.entry_update,native.exit_update)
         self.assertEqual(result[3],'ENTRY_ATR_COST_GATE')
+
+class ReservationTests(unittest.TestCase):
+    def setup_claim(self, root):
+        return ({'batch_id':m.BATCH,'execution_owner_sha256':'owner'},
+                {'batch_id':m.BATCH,'contract_sha256':'a'*64})
+
+    def test_atomic_concurrent_one_winner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)/'shared'; c,a=self.setup_claim(root)
+            with patch.object(m,'CLAIM_ROOT',root),patch.object(m,'owner_fingerprint',return_value='owner'):
+                def attempt(i):
+                    try:m.acquire_reservation(c,a,Path(tmp)/str(i));return 1
+                    except FileExistsError:return 0
+                with ThreadPoolExecutor(max_workers=8) as pool:
+                    self.assertEqual(sum(pool.map(attempt,range(8))),1)
+            self.assertTrue((root/(m.BATCH+'.json')).exists())
+
+    def test_different_output_after_failure_cannot_repeat(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)/'shared'; c,a=self.setup_claim(root)
+            with patch.object(m,'CLAIM_ROOT',root),patch.object(m,'owner_fingerprint',return_value='owner'):
+                m.acquire_reservation(c,a,Path(tmp)/'failed-output')
+                with self.assertRaises(FileExistsError):
+                    m.acquire_reservation(c,a,Path(tmp)/'retry-other-output')
+
+    def test_wrong_host_before_claim(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)/'shared';c,a=self.setup_claim(root)
+            with patch.object(m,'CLAIM_ROOT',root),patch.object(m,'owner_fingerprint',return_value='other'):
+                with self.assertRaisesRegex(Exception,'WRONG_EXECUTION_OWNER'):
+                    m.acquire_reservation(c,a,Path(tmp)/'output')
+                self.assertFalse(root.exists())
+
+    def test_new_contract_hash_does_not_replenish_same_batch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)/'shared';c,a=self.setup_claim(root)
+            with patch.object(m,'CLAIM_ROOT',root),patch.object(m,'owner_fingerprint',return_value='owner'):
+                m.acquire_reservation(c,a,Path(tmp)/'one')
+                a['contract_sha256']='b'*64
+                with self.assertRaises(FileExistsError):m.acquire_reservation(c,a,Path(tmp)/'two')
 
 if __name__=='__main__':unittest.main()

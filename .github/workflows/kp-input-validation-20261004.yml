@@ -3,16 +3,14 @@ on:
   push:
     branches: [codex/kp-input-validation-20261004]
     paths:
-      - research/campaigns/scalp7_20261004/kp_input_validation_v1/ACQUIRE.json
-      - research/campaigns/scalp7_20261004/kp_input_validation_v1/RUN.json
-      - research/campaigns/scalp7_20261004/kp_input_validation_v1/PREFIX.json
+      - research/campaigns/scalp7_20261004/kp_input_validation_v1/PREEXEC_RESUME.json
   pull_request:
     branches: [master]
     paths:
-      - ops/kp_price_input_export_v1.py
-      - ops/kp_connected_research_validation_v1.py
+      - ops/kp*input*.py
       - ops/kp_configured_prefix_export_v1.py
-      - tests/test_kp_price_input_export_v1.py
+      - ops/kp_connected_research_validation_v1.py
+      - tests/test_kp*input*.py
       - tests/test_kp_connected_research_validation_v1.py
       - .github/workflows/kp-input-validation-20261004.yml
 permissions:
@@ -39,103 +37,22 @@ jobs:
           ls -la frontend/z-os-app-source
           cat frontend/z-os-app-source/package.json
           npm run --prefix frontend/z-os-app-source validate
-      - name: Input and execution regression tests
+      - name: Regression and shell syntax checks
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m pip install --disable-pip-version-check numpy==2.2.6 pandas==2.2.3 requests==2.32.5
+          python3 -m pip install --disable-pip-version-check numpy==2.2.6 pandas==2.2.3 requests==2.32.5 PyYAML==6.0.2
           mkdir -p "$RUNNER_TEMP/kp-input"
           python3 -m unittest discover -s tests -p 'test_kp_price_input_export_v1.py' -v 2>&1 | tee "$RUNNER_TEMP/kp-input/input-tests.log"
-          if [ -f tests/test_kp_connected_research_validation_v1.py ]; then
-            python3 -m unittest discover -s tests -p 'test_kp_connected_research_validation_v1.py' -v 2>&1 | tee "$RUNNER_TEMP/kp-input/execution-tests.log"
-          fi
-      - name: Acquire fixed original price input
-        if: github.event_name == 'push' && github.event.sender.id == 232057951
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_USER: ${{ secrets.VPS_USER }}
-          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
-        run: |
-          set -euo pipefail
-          umask 077
-          OUT="$RUNNER_TEMP/kp-input"
-          SCOPE=research/campaigns/scalp7_20261004/kp_input_validation_v1
-          if [ -f "$SCOPE/RUN.json" ]; then
-            echo 'Economic execution is handled by the separate fixed-run step.'
-            exit 0
-          fi
-          [ "$GITHUB_RUN_ATTEMPT" = 1 ] || { echo 'Explicit input-retry review required'; exit 1; }
-          if [ -f "$SCOPE/PREFIX.json" ]; then
-            ACTIVATION=PREFIX.json;ARTIFACT=11305242034;ZIP_SHA=607f432dc0719bede844147544020a854d561c14332482395157b6125bfdf48a
-          else
-            ACTIVATION=ACQUIRE.json;ARTIFACT=11289494312;ZIP_SHA=00d4bc0387abcf1d98dbde3da0f1799eabe6e32ded05f2958eb95fea171f719c
-          fi
-          export ACTIVATION
-          git diff --name-status HEAD^ HEAD -- "$SCOPE/$ACTIVATION" | grep -q '^A' || { echo 'NO_NEW_INPUT_ACQUISITION_AUTHORIZATION'; exit 1; }
-          curl --fail --silent --show-error --location --proto '=https' -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' https://api.github.com/repos/leegkssk2000-commits/vultr-z/actions/artifacts/$ARTIFACT/zip -o "$RUNNER_TEMP/pr1354.zip"
-          echo "$ZIP_SHA  $RUNNER_TEMP/pr1354.zip" | sha256sum -c -
+          python3 -m unittest discover -s tests -p 'test_kp_connected_research_validation_v1.py' -v 2>&1 | tee "$RUNNER_TEMP/kp-input/execution-tests.log"
           python3 - <<'PY'
-          import ast,base64,gzip,hashlib,json,os,shutil,zipfile
-          from pathlib import Path
-          temp=Path(os.environ['RUNNER_TEMP']);out=temp/'kp-input'
-          prefix=os.environ['ACTIVATION']=='PREFIX.json'
-          with zipfile.ZipFile(temp/'pr1354.zip') as z: packed=z.read('PRICE_INPUT.json.gz' if prefix else 'REMOTE_SNAPSHOT.json.gz')
-          raw=gzip.decompress(packed)
-          expected='9ae88eb5f51fa796c52f61ed51e2aec084691290baf3c5bfc85ef150926b1efb' if prefix else 'f8391ea2ea907d3e52b144688111a733757713b5acd72992992bdc4d99662666'
-          assert hashlib.sha256(raw).hexdigest()==expected
-          names=['scalp7_fresh_source_v2.py','scalp7_fresh_forward_v2.py','scalp7_observed_paper_v3.py','scalp7_positive_lanes_v2.py','scalp7_source_data_v2.py','scalp7_rolling_context_v2.py','scalp7_execution_v2.py','scalp7_metrics_v2.py','economic7_canonical_history_v1.py']
-          paths=['backend/research/rebuild/'+n for n in names]
-          pins={p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in paths}
-          for p in paths+['ops/kp_committed_cursor_snapshot_v1.py','ops/kp_price_input_export_v1.py','tests/test_kp_price_input_export_v1.py']+(['ops/kp_configured_prefix_export_v1.py'] if prefix else []):
-              dest=out/'sources'/p;dest.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(p,dest)
-          (out/'SOURCE_HASHES.json').write_text(json.dumps(pins,indent=2))
-          exporter=Path('ops/kp_price_input_export_v1.py').read_text()
-          if prefix:
-              marker="\nif __name__ == '__main__':"
-              assert exporter.count(marker)==1
-              exporter=exporter.split(marker)[0]+'\n'+Path('ops/kp_configured_prefix_export_v1.py').read_text()
-          code=Path('ops/kp_committed_cursor_snapshot_v1.py').read_text()+'\nKP_INPUT_B64='+repr(base64.b64encode(packed).decode())+'\nKP_EXPECTED_CODE_HASHES='+repr(pins)+'\n'+exporter
-          ast.parse(code);(temp/'kp-body-read.py').write_text(code)
+          import pathlib,subprocess,yaml
+          d=yaml.safe_load(pathlib.Path('.github/workflows/kp-input-validation-20261004.yml').read_text())
+          for step in d['jobs']['verify-input']['steps']:
+              if 'run' in step:subprocess.run(['bash','-n'],input=step['run'],text=True,check=True)
+          print('ALL_WORKFLOW_SHELL_STEPS_PARSE')
           PY
-          KEY="$RUNNER_TEMP/kp-input-key";KNOWN="$RUNNER_TEMP/kp-input-hosts";ERR="$RUNNER_TEMP/kp-input-error"
-          trap 'rm -f "$KEY" "$KNOWN" "$ERR" "$RUNNER_TEMP/kp-body-read.py"' EXIT
-          export OUT
-          python3 - <<'PY'
-          import os,re
-          assert all(os.environ.get(k,'').strip() for k in ('VPS_HOST','VPS_USER','VPS_SSH_KEY'))
-          assert re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.:-]*',os.environ['VPS_HOST'])
-          assert re.fullmatch(r'[A-Za-z_][A-Za-z0-9_-]*',os.environ['VPS_USER'])
-          PY
-          printf '%s\n' "$VPS_SSH_KEY" > "$KEY";chmod 600 "$KEY"
-          ssh-keyscan -T 10 -t ed25519 -H "$VPS_HOST" > "$KNOWN" 2> "$ERR"
-          FP=$(ssh-keygen -lf "$KNOWN" | awk '{print $2}')
-          [ "$FP" = 'SHA256:pI/PzwvzWLNJDkOfG98IrC/3NLzh0dIOEUgyqEWta/U' ] || { echo 'HOST_KEY_CONTINUITY_REJECTED';exit 1; }
-          set +e
-          timeout 300 ssh -T -i "$KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 -o ConnectionAttempts=1 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o UserKnownHostsFile="$KNOWN" "$VPS_USER@$VPS_HOST" 'PYTHONDONTWRITEBYTECODE=1 python3 -B -' < "$RUNNER_TEMP/kp-body-read.py" > "$OUT/PRICE_INPUT.json.gz" 2> "$ERR"
-          RC=$?;set -e;export RC
-          python3 - <<'PY'
-          import gzip,hashlib,json,os
-          from pathlib import Path
-          out=Path(os.environ['OUT']);rc=int(os.environ['RC'])
-          r={'schema':'kp30.price_transport.v1','ssh_exit_code':rc,'host_key_continuity':True,'server_mutations':0,'market_runs':0}
-          if not rc:
-              packed=(out/'PRICE_INPUT.json.gz').read_bytes();raw=gzip.decompress(packed);d=json.loads(raw)
-              r.update(payload_sha256=hashlib.sha256(raw).hexdigest(),gzip_sha256=hashlib.sha256(packed).hexdigest())
-              assert d['price_bodies_verified'] is True
-              summary={k:v for k,v in d.items() if k not in ('minutes','context','contracts')}
-              (out/'INPUT_SUMMARY.json').write_text(json.dumps(summary,indent=2))
-              print(json.dumps({'price_bodies_verified':True,'receipts':d['receipts_verified'],'totals':d['totals'],'elapsed_s':d['elapsed_s'],'market_runs':0},indent=2))
-          else:
-              (out/'PRICE_INPUT.json.gz').unlink(missing_ok=True)
-              err=(Path(os.environ['RUNNER_TEMP'])/'kp-input-error').read_text(errors='replace')
-              r['diagnostic']=[s[:300] for s in err.splitlines() if s.startswith('KP_BODY_EXPORT_REJECTED:')]
-              r['failure']='READ_OR_TRANSPORT_FAILED_NO_ECONOMIC_EXECUTION'
-          (out/'TRANSPORT.json').write_text(json.dumps(r,indent=2));print(json.dumps(r,indent=2))
-          if rc:raise SystemExit(rc)
-          PY
-      - name: One-shot frozen validation on the verified input
+      - name: Resume only the proven unstarted model execution
         if: github.event_name == 'push' && github.event.sender.id == 232057951
         shell: bash
         env:
@@ -143,29 +60,28 @@ jobs:
         run: |
           set -euo pipefail
           SCOPE=research/campaigns/scalp7_20261004/kp_input_validation_v1
-          [ -f "$SCOPE/RUN.json" ] || exit 0
-          [ "$GITHUB_RUN_ATTEMPT" = 1 ] || { echo 'ECONOMIC_RETRY_NOT_AUTHORIZED';exit 1; }
-          git diff --name-status HEAD^ HEAD -- "$SCOPE/RUN.json" | grep -q '^A' || { echo 'RUN_ACTIVATION_ALREADY_EXISTED';exit 1; }
           export SCOPE
-          python3 - <<'PY'
-          import json,os,re
-          from pathlib import Path
-          r=json.loads(Path(os.environ['SCOPE'],'RUN.json').read_text())
-          assert r['max_model_replays']==1 and r['official_fresh_credit'] is False
-          assert type(r['input_artifact_id']) is int
-          assert re.fullmatch('[a-f0-9]{64}',r['input_artifact_sha256'])
-          with open(os.environ['GITHUB_ENV'],'a') as f:
-              f.write('KP_ARTIFACT='+str(r['input_artifact_id'])+'\nKP_ARTIFACT_SHA='+r['input_artifact_sha256']+'\n')
-          PY
-          curl --fail --silent --show-error --location --proto '=https' -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/leegkssk2000-commits/vultr-z/actions/artifacts/$(python3 -c 'import json,os;print(json.load(open(os.environ["SCOPE"]+"/RUN.json"))["input_artifact_id"]))/zip" -o "$RUNNER_TEMP/verified-input.zip"
+          [ "$GITHUB_RUN_ATTEMPT" = 1 ] || { echo 'ECONOMIC_RETRY_NOT_AUTHORIZED';exit 1; }
+          git diff --name-status HEAD^ HEAD -- "$SCOPE/PREEXEC_RESUME.json" | grep -q '^A' || { echo 'RESUME_ALREADY_CONSUMED';exit 1; }
+          curl --fail --silent --show-error --location --proto '=https' -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' https://api.github.com/repos/leegkssk2000-commits/vultr-z/actions/artifacts/11305289063/zip -o "$RUNNER_TEMP/prior-failure.zip"
+          curl --fail --silent --show-error --location --proto '=https' -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' https://api.github.com/repos/leegkssk2000-commits/vultr-z/actions/artifacts/11305382754/zip -o "$RUNNER_TEMP/verified-input.zip"
           python3 - <<'PY'
           import hashlib,json,os,zipfile
           from pathlib import Path
-          r=json.loads(Path(os.environ['SCOPE'],'RUN.json').read_text());p=Path(os.environ['RUNNER_TEMP'])/'verified-input.zip'
-          assert hashlib.sha256(p.read_bytes()).hexdigest()==r['input_artifact_sha256']
+          scope=Path(os.environ['SCOPE']);temp=Path(os.environ['RUNNER_TEMP']);out=temp/'kp-input'
+          a=json.loads((scope/'RUN.json').read_bytes());resume=json.loads((scope/'PREEXEC_RESUME.json').read_bytes())
+          assert a['max_model_replays']==1 and a['official_fresh_credit'] is False
+          assert a['contract_sha256']=='e2e02b9013b91c92411741791535746e671e9b146eca82c8e0ce3a19176e3e1c'
+          assert a['input_artifact_id']==11305382754 and a['input_artifact_sha256']=='a656836ac36ab2dd8b90344513f567b296c6f092213a84e4d195e9b5bbabe299'
+          assert resume['failed_run_id']==37208507591 and resume['economic_starts_before_resume']==0 and resume['remaining_model_replays']==1
+          failed=(temp/'prior-failure.zip').read_bytes();assert hashlib.sha256(failed).hexdigest()=='67d184422fc7996e3dfa37a672a325945f3509f2eb36e2fa7403020af6de10ba'
+          with zipfile.ZipFile(temp/'prior-failure.zip') as z:
+              assert set(z.namelist())=={'input-tests.log','execution-tests.log'}
+          p=temp/'verified-input.zip';assert hashlib.sha256(p.read_bytes()).hexdigest()==a['input_artifact_sha256']
           with zipfile.ZipFile(p) as z:
               info=z.getinfo('PRICE_INPUT.json.gz');assert info.file_size<64*1024*1024
-              Path(os.environ['RUNNER_TEMP'],'frozen-price-input.json.gz').write_bytes(z.read(info))
+              (temp/'frozen-price-input.json.gz').write_bytes(z.read(info))
+          (out/'PREEXEC_FAILURE_PRESERVED.json').write_text(json.dumps(resume,indent=2)+'\n')
           PY
           python3 ops/kp_connected_research_validation_v1.py --input "$RUNNER_TEMP/frozen-price-input.json.gz" --contract "$SCOPE/RUN_CONTRACT.json" --activation "$SCOPE/RUN.json" --output "$RUNNER_TEMP/kp-input/validation"
       - name: Canonical postcheck

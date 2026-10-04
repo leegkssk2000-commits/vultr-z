@@ -118,5 +118,42 @@ class ConnectedTests(unittest.TestCase):
     def test_nonfinite_outputs_rejected(self):
         with self.assertRaises(ValueError):run.encoded({'x':float('nan')})
 
+    def test_seed_round_trip_parser_matches_frozen_runtime(self):
+        import gzip
+        from unittest.mock import patch
+        raw=gzip.compress(b'close,volume\n100.0,0.30661019938070999\n')
+        with patch.object(run.pd, 'read_csv', wraps=pd.read_csv) as read:
+            run.read_seed(raw)
+        self.assertEqual(read.call_args.kwargs['float_precision'], 'round_trip')
+
+    def test_other_symbol_late_clock_prevents_false_eligibility(self):
+        clocks={s:{0:run.TF} for s in run.SYMBOLS}
+        clocks['ETH-USDT'][0]=run.TF+5000
+        w=run.causal_clock_witness(signal(),clocks)
+        self.assertEqual(w['recorded_constituent_available_ms'],run.TF)
+        self.assertEqual(w['recorded_causal_prefix_available_ms'],run.TF+5000)
+        self.assertIs(w['historical_next_open_available_in_realtime'],False)
+
+    def test_earlier_input_lateness_is_not_discarded(self):
+        s=signal();s['signal_open_ts_ms']=run.TF;s['signal_ts_ms']=2*run.TF
+        clocks={x:{0:run.TF,run.TF:2*run.TF} for x in run.SYMBOLS}
+        clocks['ETH-USDT'][0]=3*run.TF
+        w=run.causal_clock_witness(s,clocks)
+        self.assertIs(w['historical_next_open_available_in_realtime'],False)
+        self.assertEqual(w['recorded_causal_prefix_available_ms'],3*run.TF)
+
+    def test_on_time_prices_do_not_certify_missing_seed_clocks(self):
+        clocks={s:{0:run.TF} for s in run.SYMBOLS}
+        w=run.causal_clock_witness(signal(),clocks)
+        self.assertIsNone(w['historical_next_open_available_in_realtime'])
+        self.assertFalse(w['seed_and_config_live_observation_certified'])
+        clocks.pop('ETH-USDT')
+        with self.assertRaisesRegex(Exception,'CLOCK_EXACT_SIX_SYMBOLS'):
+            run.causal_clock_witness(signal(),clocks)
+
+    def test_completed_entrypoint_cannot_replay(self):
+        with self.assertRaisesRegex(SystemExit,'COMPLETED_RUN_ENTRYPOINT_DISABLED'):
+            run.main()
+
 
 if __name__=='__main__':unittest.main()

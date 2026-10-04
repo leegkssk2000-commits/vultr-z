@@ -3,8 +3,10 @@ on:
   push:
     branches: [codex/kp-input-validation-20261004]
     paths:
-      - ops/verify_kp1355_saved_result.py
+      - ops/*kp1355*.py
+      - ops/kp_connected_research_validation_v1.py
       - tests/test_kp1355_saved_result.py
+      - tests/test_kp_connected_research_validation_v1.py
       - research/campaigns/scalp7_20261004/kp_input_validation_v1/**
       - .github/workflows/kp-input-validation-20261004.yml
   pull_request:
@@ -67,8 +69,9 @@ jobs:
           set -euo pipefail
           curl --fail --silent --show-error --location --proto '=https' -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' https://api.github.com/repos/leegkssk2000-commits/vultr-z/actions/artifacts/11305329406/zip -o "$RUNNER_TEMP/kp-input/ORIGINAL_COMPLETED_RUN.zip"
           python3 ops/verify_kp1355_saved_result.py --archive "$RUNNER_TEMP/kp-input/ORIGINAL_COMPLETED_RUN.zip" --output "$RUNNER_TEMP/kp-input/SAVED_RESULT_AUDIT.json"
+          git fetch --no-tags --depth=1 origin 994d6c5aa20fc9aeb6f8f446254483ced26dcd04
           python3 - <<'PY'
-          import hashlib,json,os,shutil
+          import hashlib,json,os,subprocess,zipfile
           from pathlib import Path
           out=Path(os.environ['RUNNER_TEMP'])/'kp-input'
           c=Path('research/campaigns/scalp7_20261004/kp_input_validation_v1')
@@ -77,19 +80,43 @@ jobs:
           assert receipt['remaining_replays_under_this_contract']==0
           assert receipt['completed_result_sha256']==r['result_sha256']
           assert hashlib.sha256((c/'RUN_CONTRACT.json').read_bytes()).hexdigest()=='e2e02b9013b91c92411741791535746e671e9b146eca82c8e0ce3a19176e3e1c'
-          paths=['ops/kp_committed_cursor_snapshot_v1.py','ops/kp_price_input_export_v1.py','ops/kp_configured_prefix_export_v1.py','ops/kp_connected_research_validation_v1.py','ops/verify_kp1355_saved_result.py','tests/test_kp_price_input_export_v1.py','tests/test_kp_connected_research_validation_v1.py','tests/test_kp1355_saved_result.py']
-          paths += [str(p) for p in c.glob('*.json')]+[str(c/'REPORT.md')]
-          contract=json.loads((c/'RUN_CONTRACT.json').read_text())
-          paths+=list(contract['source_code_hashes'])
-          for path,expected in {**contract['source_code_hashes'],**contract['adapter_code_hashes']}.items():
-              assert hashlib.sha256(Path(path).read_bytes()).hexdigest()==expected, path
+          paths=['ops/kp_committed_cursor_snapshot_v1.py','ops/kp_price_input_export_v1.py','ops/kp_configured_prefix_export_v1.py','ops/kp_connected_research_validation_v1.py','ops/verify_kp1355_saved_result.py','ops/kp1355_input_review_v1.py','tests/test_kp_price_input_export_v1.py','tests/test_kp_connected_research_validation_v1.py','tests/test_kp1355_saved_result.py']
+          paths += [str(p) for p in c.glob('*.json')]+[str(c/'REPORT.md'),str(c/'REVIEW_CLOSEOUT.md')]
+          contract=json.loads((c/'RUN_CONTRACT.json').read_text());paths+=list(contract['source_code_hashes'])
+          for path,expected in contract['source_code_hashes'].items():
+              assert hashlib.sha256(Path(path).read_bytes()).hexdigest()==expected,path
+          # Execution provenance is checked at its immutable original commit.
+          # Corrected current wrapper must not rewrite that already consumed contract.
+          for path,expected in contract['adapter_code_hashes'].items():
+              raw=subprocess.check_output(['git','show','994d6c5aa20fc9aeb6f8f446254483ced26dcd04:'+path])
+              assert hashlib.sha256(raw).hexdigest()==expected,path
+              dest=out/'executed_sources'/path;dest.parent.mkdir(parents=True,exist_ok=True);dest.write_bytes(raw)
+          with zipfile.ZipFile(out/'ORIGINAL_COMPLETED_RUN.zip') as z:
+              (out/'ORIGINAL_SIGNALS.json').write_bytes(z.read('validation/SIGNALS.json'))
           hashes={}
           for path in sorted(set(paths)):
-              raw=Path(path).read_bytes(); hashes[path]=hashlib.sha256(raw).hexdigest()
+              raw=Path(path).read_bytes();hashes[path]=hashlib.sha256(raw).hexdigest()
               dest=out/'sources'/path;dest.parent.mkdir(parents=True,exist_ok=True);dest.write_bytes(raw)
           (out/'SOURCE_HASHES.json').write_text(json.dumps(hashes,indent=2)+'\n')
           print('SAVED_ONLY_NEW_ECONOMIC_REPLAYS=0')
           PY
+      - name: Scope parser and full-input clock findings without replay
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location --proto '=https' -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' https://api.github.com/repos/leegkssk2000-commits/vultr-z/actions/artifacts/11305382754/zip -o "$RUNNER_TEMP/original-input.zip"
+          python3 - <<'PY'
+          import hashlib,os,zipfile
+          from pathlib import Path
+          t=Path(os.environ['RUNNER_TEMP']);p=t/'original-input.zip'
+          assert hashlib.sha256(p.read_bytes()).hexdigest()=='a656836ac36ab2dd8b90344513f567b296c6f092213a84e4d195e9b5bbabe299'
+          with zipfile.ZipFile(p) as z:
+              i=z.getinfo('PRICE_INPUT.json.gz');assert i.file_size<64*1024*1024
+              (t/'original-input.json.gz').write_bytes(z.read(i))
+          PY
+          python3 ops/kp1355_input_review_v1.py --input "$RUNNER_TEMP/original-input.json.gz" --original-runner "$RUNNER_TEMP/kp-input/executed_sources/ops/kp_connected_research_validation_v1.py" --original-signals "$RUNNER_TEMP/kp-input/ORIGINAL_SIGNALS.json" --output "$RUNNER_TEMP/kp-input/INPUT_REVIEW.json"
       - name: Canonical postcheck
         if: always()
         run: |

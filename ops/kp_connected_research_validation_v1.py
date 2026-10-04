@@ -96,6 +96,38 @@ def verify_input(raw: bytes, c: dict[str, Any]) -> dict[str, Any]:
     return d
 
 
+def read_seed(raw: bytes) -> pd.DataFrame:
+    """Match the pinned runtime CSV parser; the completed old result is unchanged."""
+    return pd.read_csv(io.BytesIO(bounded_gunzip(raw, 4*1024*1024)), float_precision="round_trip")
+
+
+def causal_clock_witness(signal: dict[str, Any], clocks: dict[str, dict[int, int]]) -> dict[str, Any]:
+    """Conservative six-symbol prefix bound, not proof of complete live availability.
+
+    The seed/config observation clocks are not certified. Even an on-time
+    price prefix therefore cannot produce a True realtime-fill claim.
+    """
+    require(set(clocks) == set(SYMBOLS), 'CLOCK_EXACT_SIX_SYMBOLS')
+    stamp = int(signal['signal_open_ts_ms'])
+    own = clocks[signal['symbol']][stamp]
+    bounds = {}
+    for symbol in SYMBOLS:
+        require(stamp in clocks[symbol], 'CLOCK_MISSING_CURRENT_SYMBOL')
+        prior = [available for opening, available in clocks[symbol].items() if opening <= stamp]
+        require(prior and all(type(t) is int for t in prior), 'CLOCK_PREFIX_INCOMPLETE')
+        bounds[symbol] = max(prior)
+    available = max(bounds.values())
+    close = stamp + TF
+    return {'signal_key': key(signal), 'decision_close_ms': close,
+            'recorded_constituent_available_ms': own,
+            'recorded_causal_prefix_available_ms': available,
+            'prefix_available_by_symbol_ms': bounds,
+            'eligibility_basis': 'CONSERVATIVE_ALL_SIX_SYMBOL_PRICE_PREFIX',
+            'seed_and_config_live_observation_certified': False,
+            'historical_next_open_available_in_realtime': False if available > close else None,
+            'actual_strategy_observation_reconstructed': False}
+
+
 def build_frames(data: dict[str, Any]):
     # Imported only after exact source/adapter hashes and recorded input checks.
     from backend.research.rebuild.scalp7_source_data_v2 import aggregate_minutes
@@ -115,7 +147,7 @@ def build_frames(data: dict[str, Any]):
         seed = data['context'][symbol]
         raw = base64.b64decode(seed['gzip_base64'], validate=True)
         require(sha(raw) == seed['sha256'] == data['config_projection']['historical_context']['30'][symbol]['sha256'], 'SEED_HASH')
-        history = pd.read_csv(io.BytesIO(bounded_gunzip(raw, 4*1024*1024)))
+        history = read_seed(raw)
         require(int(history.close_ts_ms.max()) == SOURCE_START, 'SEED_SEAM')
         frame = combine_context(history, modeled, 30)
         require(frame.segment_id.nunique() == 1 and frame.close_ts_ms.max() <= END, 'COMBINED_GAP_OR_FUTURE')
@@ -167,13 +199,7 @@ def execute(data: dict[str, Any], contract: dict[str, Any], out: Path) -> dict[s
     selected = [s for s in generated if s['signal_open_ts_ms'] >= START and s['signal_ts_ms'] < END]
     write_once(out, 'SIGNALS.json', selected)
     write_once(out, 'FRAME_MANIFEST.json', input_summary)
-    observed_eligibility = []
-    for s in selected:
-        actual = clocks[s['symbol']][int(s['signal_open_ts_ms'])]
-        observed_eligibility.append({'signal_key': key(s), 'decision_close_ms': int(s['signal_open_ts_ms'])+TF,
-                                    'recorded_constituent_available_ms': actual,
-                                    'historical_next_open_available_in_realtime': actual <= int(s['signal_open_ts_ms'])+TF,
-                                    'actual_strategy_observation_reconstructed': False})
+    observed_eligibility = [causal_clock_witness(s, clocks) for s in selected]
     traces = []
     def observer(position, bar, history):
         before = copy.deepcopy(position)
@@ -221,6 +247,12 @@ def execute(data: dict[str, Any], contract: dict[str, Any], out: Path) -> dict[s
 
 
 def main():
+    # This run has been consumed. Keep the callable pieces for generated tests
+    # and review, but require a separately versioned/authorized future runner.
+    raise SystemExit('COMPLETED_RUN_ENTRYPOINT_DISABLED_NO_AUTOMATIC_REPLAY')
+
+
+def _archived_main_not_an_entrypoint():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('input','contract','activation','output'):
         parser.add_argument('--'+name, type=Path, required=True)

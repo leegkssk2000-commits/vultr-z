@@ -2,16 +2,18 @@ name: Issue1358 EMA21 limit bounded development
 on:
   push:
     branches: [codex/issue1358-ema21-limit-v1-20261005]
-    paths: ['.github/workflows/issue1358-ema21-limit-v1.yml', 'ops/issue1358_ema21*.py', 'tests/test_issue1358_ema21*.py', 'research/campaigns/scalp7_20261005/issue1358_ema21_limit_v1/**']
+    paths: ['.github/workflows/issue1358-ema21-limit-v1.yml', 'ops/issue1358_ema21*.py', 'ops/verify_issue1358_ema21*.py', 'tests/test_issue1358_ema21*.py', 'tests/test_issue1358_saved_auditor_v1.py', 'research/campaigns/scalp7_20261005/issue1358_ema21_limit_v1/**']
   pull_request:
     branches: [master]
-    paths: ['.github/workflows/issue1358-ema21-limit-v1.yml', 'ops/issue1358_ema21*.py', 'tests/test_issue1358_ema21*.py', 'research/campaigns/scalp7_20261005/issue1358_ema21_limit_v1/**']
+    paths: ['.github/workflows/issue1358-ema21-limit-v1.yml', 'ops/issue1358_ema21*.py', 'ops/verify_issue1358_ema21*.py', 'tests/test_issue1358_ema21*.py', 'tests/test_issue1358_saved_auditor_v1.py', 'research/campaigns/scalp7_20261005/issue1358_ema21_limit_v1/**']
 permissions:
   contents: read
 jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 8
+    outputs:
+      execute: ${{ steps.activation.outputs.run }}
     env: {PYTHONPATH: '.', PYTHONDONTWRITEBYTECODE: '1'}
     steps:
       - uses: actions/checkout@v4
@@ -29,6 +31,7 @@ jobs:
           set -euo pipefail
           python -m pip install --disable-pip-version-check numpy==2.2.6 pandas==2.2.3 requests==2.32.5 PyYAML==6.0.2
           python -m unittest discover -s tests -p 'test_issue1358_ema21*.py' -v
+          python -m unittest discover -s tests -p 'test_issue1358_saved_auditor_v1.py' -v
           python - <<'PY'
           import hashlib,json,subprocess,yaml
           from pathlib import Path
@@ -41,11 +44,23 @@ jobs:
           assert sha(p/'DESIGN_HYPOTHESIS.json')==c['design_sha256']
           w=yaml.safe_load(Path('.github/workflows/issue1358-ema21-limit-v1.yml').read_text())
           assert w['jobs']['economic-comparison']['concurrency']['group']=='a1-global-heavy-economic-evaluator-v1'
+          assert w['jobs']['economic-comparison']['concurrency']['queue']=='max'
+          assert w['jobs']['economic-comparison']['concurrency']['cancel-in-progress'] is False
           for job in w['jobs'].values():
               for step in job['steps']:
                   if 'run' in step:subprocess.run(['bash','-n'],input=step['run'],text=True,check=True)
           print('NO_MARKET_SIGNAL_GENERATION_IN_VERIFY')
           PY
+      - name: Determine activation before joining shared heavy group
+        id: activation
+        run: |
+          set -euo pipefail
+          p=research/campaigns/scalp7_20261005/issue1358_ema21_limit_v1/RUN_GITHUB.json
+          if test -f "$p" && test "$(git diff --name-status HEAD^ HEAD)" = "$(printf 'A\t%s' "$p")"; then
+            echo 'run=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'run=false' >> "$GITHUB_OUTPUT"
+          fi
       - name: Canonical postcheck
         if: always()
         run: |
@@ -54,13 +69,14 @@ jobs:
   economic-comparison:
     # Only a separately published, approved activation can enter. No dispatch,
     # schedules, master pushes, PR execution or automatic second attempt.
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && needs.verify.outputs.execute == 'true'
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 15
     concurrency:
       group: a1-global-heavy-economic-evaluator-v1
       cancel-in-progress: false
+      queue: max
     permissions:
       contents: write
       actions: read

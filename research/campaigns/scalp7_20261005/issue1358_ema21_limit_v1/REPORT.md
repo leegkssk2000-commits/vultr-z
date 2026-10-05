@@ -1,6 +1,7 @@
 # Issue1358 V3: one frozen EMA21 limit entry hypothesis
 
-Status: DESIGN_HYPOTHESIS_IMPLEMENTED; exact-source CI/review pending.
+Status: DESIGN_HYPOTHESIS_IMPLEMENTED; P1 shared-queue repair1/2;
+final exact-source CI/review pending.
 Economic result: NOT_RUN. No profitability or G-stage claim.
 
 The Work directly recovered artifact11305382754 using the dedicated GitHub
@@ -63,7 +64,19 @@ setup-stream SHA checked inside the candidate execution. A mismatch stops the
 claimed run without silently replaying the parent. No extra period/variant is
 authorized. All other lane owners, failures and budgets are preserved.
 
-Next action: exact-source CI and independent review; resolve findings within
+Independent saved-result audit code is also included. It imports no economic
+model and checks raw-minute first-touch/expiry, occupancy, adverse fill/SL
+accounting, full census, new-trade metrics and paired deltas. Old parent metric
+summaries are reused without repeating its completed9-trade diagnosis.
+
+P1 review4187319851 identified GitHub's default single-pending shared group
+replacing a previous pending evaluation despite cancel-in-progress:false.
+Minimal repair1/2 sets queue:max and excludes nonactivation pushes from joining
+the shared group. Only this campaign workflow changes; other owners/queues and
+the old PR1359 repair2/2 are preserved. No economic run preceded the repair.
+See P1_REPAIR.json for the original setting failure and amended checks.
+
+Next action: final exact-source CI and independent review; resolve findings within
 the implementation repair allowance, then publish separate approval and
 activation only after fresh global owner/job checks. Retrieve results and
 independently audit full census/cost/paired outcomes before retain/reject.

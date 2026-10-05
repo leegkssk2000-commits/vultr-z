@@ -69,7 +69,36 @@ class OrderTests(unittest.TestCase):
 
 class IntegratedTests(unittest.TestCase):
     def run_one(self,rows,frame,ready,s=None,callback=lambda *args:{}):
-        return m.sim…364 tokens truncated…self.run_one(rows,frame,ready)
+        return m.simulate(s or signal(),frame,rows,ready,14,lambda *args:{'stop_price':98},callback)
+
+    def test_pre_receipt_touches_do_not_fill(self):
+        rows,frame,ready=fixture(30)
+        row,position,release,census,_=self.run_one(rows,frame,ready)
+        self.assertIsNone(row); self.assertIsNone(position)
+        self.assertEqual(census['status'],'EXPIRED_UNFILLED')
+        self.assertEqual(release,2*T-1)
+
+    def test_fill_and_same_minute_stop_choose_loss(self):
+        rows,frame,ready=fixture()
+        rows[31]=minute(31*M,low=97,opening=102)
+        row,_,_,census,_=self.run_one(rows,frame,ready)
+        self.assertEqual(row['entry_prices']['BTC-USDT'],100)
+        self.assertEqual(row['exit_prices']['BTC-USDT'],98)
+        self.assertAlmostEqual(row['net_bps'],-214)
+        self.assertEqual(census['status'],'FILLED_COMPLETED')
+
+    def test_gap_below_entry_and_stop_uses_adverse_bound_and_open(self):
+        rows,frame,ready=fixture()
+        rows[31]=minute(31*M,low=95,opening=96,high=97)
+        row,*_=self.run_one(rows,frame,ready)
+        self.assertEqual(row['entry_prices']['BTC-USDT'],100)
+        self.assertEqual(row['exit_prices']['BTC-USDT'],96)
+        self.assertEqual(row['reason'],'ADVERSE_OPEN_GAP_STOP')
+        self.assertTrue(row['entry_model']['gap_open'])
+
+    def test_late_receipt_makes_setup_stale(self):
+        rows,frame,ready=fixture(61); ready[0]=60*M
+        row,position,_,census,_=self.run_one(rows,frame,ready)
         self.assertIsNone(row);self.assertIsNone(position)
         self.assertEqual(census['status'],'REJECTED_STALE')
 

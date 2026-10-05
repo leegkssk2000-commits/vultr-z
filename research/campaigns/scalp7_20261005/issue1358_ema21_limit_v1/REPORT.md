@@ -96,11 +96,29 @@ trusted-maintainer controls; do not dispatch old canceling versions during a
 claimed execution. See CROSS_WORKFLOW_CANCEL_REPAIR.json. No service/collector
 is started and no other lane's economic model is invoked by this repair.
 
-Review4187506290 remains OPEN: other existing default-single queue producers can replace pending owners. SHARED_QUEUE_POLICY_HOLD.json records the exact inventory. The driver now fails before any permanent claim even if approval/activation is supplied while this contract is HOLD. No blanket edit of other lanes or economic replay is authorized by this receipt.
+Review4187506290 is addressed under user amendment6005135850 without editing
+the other52 producers. The same activation may use workflow attempts2 or3 only
+when every earlier economic job is durably recorded completed/cancelled with
+no assigned runner and no steps, the current run/head/job/API attempt matches,
+and an authenticated exact read proves the fixed claim ref absent. Attempt4+,
+started or unknown jobs, permission/transport ambiguity, an existing claim,
+claim-response loss and claim-after-failure all stop before the model. Atomic
+creation of the unchanged fixed ref remains the only economic execution right.
+Synthetic API/race fixtures cover both allowed recoveries and every fail-closed
+case. SHARED_QUEUE_POLICY_HOLD.json retains the52-workflow inventory and the
+remaining trust boundary; this is not a claim that GitHub natively guarantees
+multi-pending FIFO.
 
-Next action: final exact-source CI and independent review; establish a minimal owner-preserving shared queue policy repair without triggering foreign economic jobs; resolve findings within
-the implementation repair allowance, then publish separate approval and
-activation only after fresh global owner/job checks. Retrieve results and
+Running-job cancellation is separate. Liquid6 cancel:false/queue:max must reach
+default master, and current reachable producers must have no cancel:true or
+unknown setting before activation. Historical-ref manual dispatch and admin
+cancellation remain trusted controls. No blanket foreign workflow edit, model
+replay, schedule change, signal/census generation or economic claim occurred.
+
+Next action: exact-source CI and independent review of the V4 admission repair;
+normal merge without chasing unrelated result-JSON churn, default-master source
+parity and Liquid6 verification, then publish separate approval and activation
+only after fresh global owner/job/claim checks. Retrieve results and
 independently audit full census/cost/paired outcomes before retain/reject.
 No economic execution is represented as a preparation check.
 

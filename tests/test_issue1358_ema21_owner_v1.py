@@ -15,13 +15,14 @@ from ops.kp_committed_cursor_snapshot_v1 import SnapshotError
 ENV = {'GITHUB_ACTIONS':'true','GITHUB_REPOSITORY':g.REPO,'GITHUB_EVENT_NAME':'push',
        'GITHUB_REF':'refs/heads/'+g.BRANCH,'GITHUB_RUN_ATTEMPT':'1','GITHUB_JOB':g.JOB,
        'GITHUB_RUN_ID':'123','GITHUB_SHA':'a'*40}
-C = {'shared_producer_policy':'READY_REVIEWED_ALL_PRODUCERS_PRESERVE_QUEUE','batch_id':m.BATCH,'claim_ref':g.CLAIM_REF,'execution_owner':'GITHUB_ATOMIC_REF_V1'}
+C = {'shared_producer_policy':'READY_V4_PRECLAIM_RECOVERY_ATOMIC_CLAIM','batch_id':m.BATCH,'claim_ref':g.CLAIM_REF,'execution_owner':'GITHUB_ATOMIC_REF_V1'}
 A = {'batch_id':m.BATCH,'contract_sha256':'b'*64,'reviewed_parent_sha':'c'*40}
 
 class FakeAPI:
     def __init__(self):
         self.lock=threading.Lock();self.claim=None;self.calls=[];self.diff_path=g.CAMPAIGN+'/RUN_GITHUB.json';self.approved_parent='c'*40;self.approved_contract='b'*64
         self.approval_available=True;self.other_active=[];self.ordinary_ci=[]
+        self.run_attempt=1;self.prior_jobs={};self.claim_get_error='GITHUB_GET_HTTP_404';self.lose_claim_response=False
     def __call__(self,method,route,value=None):
         with self.lock:
             self.calls.append((method,route,value))
@@ -30,9 +31,15 @@ class FakeAPI:
                 return {'group_name':g.HEAVY_GROUP,'total_count':len(members),'group_members':members}
             if route=='/actions/runs/123/jobs?per_page=100':
                 return {'total_count':1,'jobs':[{'id':789,'name':g.JOB,'status':'in_progress'}]}
+            if route.startswith('/actions/runs/123/attempts/'):
+                attempt=int(route.split('/')[5]);jobs=self.prior_jobs.get(attempt,[])
+                return {'total_count':len(jobs),'jobs':jobs}
             if route.startswith('/actions/runs/'):
-                return {'head_sha':'a'*40,'head_branch':g.BRANCH,'event':'push','run_attempt':1,
+                return {'head_sha':'a'*40,'head_branch':g.BRANCH,'event':'push','run_attempt':self.run_attempt,
                         'status':'in_progress','path':'.github/workflows/issue1358-ema21-limit-v1.yml'}
+            if route=='/git/ref/'+g.CLAIM_REF.removeprefix('refs/'):
+                if self.claim is None:raise RuntimeError(self.claim_get_error)
+                return {'ref':g.CLAIM_REF,'object':{'type':'commit','sha':self.claim['sha']}}
             if route=='/git/ref/'+g.APPROVAL_REF:
                 if not self.approval_available:raise RuntimeError('GITHUB_GET_HTTP_404')
                 return {'ref':'refs/'+g.APPROVAL_REF,'object':{'type':'commit','sha':'9'*40}}
@@ -57,7 +64,9 @@ class FakeAPI:
                 return {'sha':'d'*40}
             if route=='/git/refs':
                 if self.claim is not None:raise RuntimeError('GITHUB_POST_HTTP_422')
-                self.claim=value.copy();return {'ref':value['ref'],'object':{'sha':value['sha']}}
+                self.claim=value.copy()
+                if self.lose_claim_response:raise RuntimeError('GITHUB_POST_RESPONSE_LOST')
+                return {'ref':value['ref'],'object':{'sha':value['sha']}}
             raise AssertionError((method,route))
 
 class GitHubOwnerTests(unittest.TestCase):
@@ -69,6 +78,9 @@ class GitHubOwnerTests(unittest.TestCase):
         result={'synthetic':True};g.write_once(out,'SUMMARY.json',result);return result
     def run_it(self,name='out',**kwargs):
         return g.execute({},C,A,self.root/name,api=self.api,env=ENV,run=kwargs.get('run',self.fake_run))
+    def cancelled_pending(self,job_id):
+        return {'id':job_id,'name':g.JOB,'status':'completed','conclusion':'cancelled',
+                'runner_id':0,'runner_name':'','started_at':'2026-10-05T00:00:00Z','steps':[]}
     def test_other_active_run_blocks_without_budget_consumption(self):
         self.api.other_active=[{'run_id':456,'status':'in_progress'}]
         with self.assertRaisesRegex(SnapshotError,'HEAVY_GROUP_NOT_OWN'):self.run_it()
@@ -127,10 +139,63 @@ class GitHubOwnerTests(unittest.TestCase):
         self.run_it();altered={**A,'contract_sha256':'e'*64}
         with self.assertRaises(SnapshotError):g.execute({},C,altered,self.root/'other',self.api,ENV,self.fake_run)
         self.assertEqual(self.n,1)
-    def test_retry_attempt_rejected_before_claim(self):
-        with self.assertRaisesRegex(SnapshotError,'NO_RETRY'):
+    def test_same_run_pending_cancel_attempt_two_is_recoverable(self):
+        self.api.run_attempt=2;self.api.prior_jobs={1:[self.cancelled_pending(701)]}
+        g.execute({},C,A,self.root/'out',self.api,{**ENV,'GITHUB_RUN_ATTEMPT':'2'},self.fake_run)
+        receipt=json.loads((self.root/'out/RESERVATION.json').read_text())
+        self.assertEqual(receipt['attempt'],2);self.assertEqual(receipt['preclaim_recovery']['recoveries_used'],1)
+        self.assertEqual(self.n,1)
+    def test_same_run_pending_cancel_attempt_three_is_last_recovery(self):
+        self.api.run_attempt=3;self.api.prior_jobs={1:[self.cancelled_pending(701)],2:[self.cancelled_pending(702)]}
+        g.execute({},C,A,self.root/'out',self.api,{**ENV,'GITHUB_RUN_ATTEMPT':'3'},self.fake_run)
+        self.assertEqual(self.n,1)
+    def test_attempt_four_exceeds_lifetime_recovery_limit(self):
+        self.api.run_attempt=4
+        with self.assertRaisesRegex(SnapshotError,'RECOVERY_LIMIT'):
+            g.execute({},C,A,self.root/'out',self.api,{**ENV,'GITHUB_RUN_ATTEMPT':'4'},self.fake_run)
+        self.assertIsNone(self.api.claim);self.assertEqual(self.n,0)
+    def test_attempt_env_api_mismatch_rejected(self):
+        self.api.run_attempt=1
+        with self.assertRaisesRegex(SnapshotError,'API_RUN_IDENTITY'):
             g.execute({},C,A,self.root/'out',self.api,{**ENV,'GITHUB_RUN_ATTEMPT':'2'},self.fake_run)
         self.assertIsNone(self.api.claim)
+    def test_started_cancelled_job_is_not_recoverable(self):
+        self.api.run_attempt=2;job=self.cancelled_pending(701);job.update(runner_id=8,runner_name='hosted',started_at='2026-10-05T00:00:00Z')
+        self.api.prior_jobs={1:[job]}
+        with self.assertRaisesRegex(SnapshotError,'STARTED_NO_REPLAY'):
+            g.execute({},C,A,self.root/'out',self.api,{**ENV,'GITHUB_RUN_ATTEMPT':'2'},self.fake_run)
+        self.assertIsNone(self.api.claim);self.assertEqual(self.n,0)
+    def test_prior_claim_step_or_tampered_job_blocks_recovery(self):
+        self.api.run_attempt=2;job=self.cancelled_pending(701);job['steps']=[{'name':g.CLAIM_STEP,'status':'completed'}]
+        self.api.prior_jobs={1:[job]}
+        with self.assertRaisesRegex(SnapshotError,'STEP_STATE_UNSAFE'):
+            g.execute({},C,A,self.root/'out',self.api,{**ENV,'GITHUB_RUN_ATTEMPT':'2'},self.fake_run)
+        self.api.prior_jobs={1:[{**self.cancelled_pending(701),'name':'other-job'}]}
+        with self.assertRaisesRegex(SnapshotError,'JOB_IDENTITY'):
+            g.execute({},C,A,self.root/'other',self.api,{**ENV,'GITHUB_RUN_ATTEMPT':'2'},self.fake_run)
+        self.assertIsNone(self.api.claim);self.assertEqual(self.n,0)
+    def test_existing_claim_blocks_recovery_before_model(self):
+        self.api.run_attempt=2;self.api.prior_jobs={1:[self.cancelled_pending(701)]};self.api.claim={'ref':g.CLAIM_REF,'sha':'d'*40}
+        with self.assertRaisesRegex(SnapshotError,'EXISTING_CLAIM'):
+            g.execute({},C,A,self.root/'out',self.api,{**ENV,'GITHUB_RUN_ATTEMPT':'2'},self.fake_run)
+        self.assertEqual(self.n,0)
+    def test_claim_absence_permission_error_is_not_zero(self):
+        self.api.run_attempt=2;self.api.prior_jobs={1:[self.cancelled_pending(701)]};self.api.claim_get_error='GITHUB_GET_HTTP_403'
+        with self.assertRaisesRegex(SnapshotError,'ABSENCE_UNVERIFIED'):
+            g.execute({},C,A,self.root/'out',self.api,{**ENV,'GITHUB_RUN_ATTEMPT':'2'},self.fake_run)
+        self.assertIsNone(self.api.claim);self.assertEqual(self.n,0)
+    def test_lost_claim_response_never_runs_and_cannot_recover(self):
+        self.api.lose_claim_response=True
+        with self.assertRaisesRegex(RuntimeError,'RESPONSE_LOST'):self.run_it()
+        self.assertIsNotNone(self.api.claim);self.assertEqual(self.n,0)
+        self.api.lose_claim_response=False;self.api.run_attempt=2;self.api.prior_jobs={1:[self.cancelled_pending(701)]}
+        with self.assertRaisesRegex(SnapshotError,'EXISTING_CLAIM'):
+            g.execute({},C,A,self.root/'other',self.api,{**ENV,'GITHUB_RUN_ATTEMPT':'2'},self.fake_run)
+        self.assertEqual(self.n,0)
+    def test_race_loser_never_runs_model(self):
+        self.api.claim={'ref':g.CLAIM_REF,'sha':'e'*40}
+        with self.assertRaisesRegex(RuntimeError,'HTTP_422'):self.run_it()
+        self.assertEqual(self.n,0)
     def test_pr_job_cannot_execute(self):
         with self.assertRaisesRegex(SnapshotError,'BRANCH_PUSH'):
             g.execute({},C,A,self.root/'out',self.api,{**ENV,'GITHUB_EVENT_NAME':'pull_request'},self.fake_run)

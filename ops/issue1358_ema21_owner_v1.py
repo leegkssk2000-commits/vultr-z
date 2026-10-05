@@ -31,6 +31,8 @@ CLAIM_REF = 'refs/heads/research-execution-claims/issue1358-ema21-limit-20261005
 JOB = 'economic-comparison'
 APPROVAL_REF = 'heads/research-approvals/issue1358-ema21-limit-20261005-v1'
 HEAVY_GROUP = 'a1-global-heavy-economic-evaluator-v1'
+MAX_PRECLAIM_RECOVERIES = 2
+CLAIM_STEP = 'Independent approval then permanent one-shot claim before signals'
 
 
 def github(method, route, value=None):
@@ -52,23 +54,88 @@ def github(method, route, value=None):
         raise RuntimeError('GITHUB_' + method + '_HTTP_' + str(exc.code)) from None
 
 
+def _claim_ref_absent(api):
+    """Prove absence on the exact fixed ref after another authenticated read.
+
+    execution_identity has already authenticated and read this repository's run.
+    Only the exact missing-ref response is absence; permission, transport and
+    malformed-response failures remain unknown and fail closed.
+    """
+    route = '/git/ref/' + CLAIM_REF.removeprefix('refs/')
+    try:
+        api('GET', route)
+    except RuntimeError as exc:
+        require(str(exc) == 'GITHUB_GET_HTTP_404', 'CLAIM_ABSENCE_UNVERIFIED')
+        return route
+    require(False, 'EXISTING_CLAIM_NO_REPLAY')
+
+
+def _preclaim_recovery_evidence(api, run_id, attempt):
+    """Verify every earlier economic attempt was cancelled before a runner.
+
+    This deliberately implements only the narrow pending-queue replacement
+    case. A started/cancelled job is not recoverable here even if a later ref
+    read is absent: operator/admin cancellation after runner assignment is a
+    separate trust boundary and must not become an economic retry credit.
+    """
+    require(2 <= attempt <= 1 + MAX_PRECLAIM_RECOVERIES,
+            'PRECLAIM_RECOVERY_LIMIT')
+    evidence = []
+    for prior in range(1, attempt):
+        jobs = api('GET', '/actions/runs/' + str(run_id) + '/attempts/'
+                   + str(prior) + '/jobs?per_page=100')
+        require(jobs['total_count'] == len(jobs['jobs']),
+                'PRIOR_ATTEMPT_JOBS_TRUNCATED')
+        matches = [j for j in jobs['jobs'] if j.get('name') == JOB]
+        require(len(matches) == 1, 'PRIOR_ECONOMIC_JOB_IDENTITY')
+        job = matches[0]
+        require(job.get('status') == 'completed'
+                and job.get('conclusion') == 'cancelled',
+                'PRIOR_ATTEMPT_NOT_CANCELLED')
+        # GitHub records a timestamp and runner_id=0 for a queued job that was
+        # cancelled before assignment. Real repository examples also have an
+        # empty runner name and no steps. A positive runner id or any step is
+        # therefore started/unknown and not eligible for this narrow recovery.
+        require(job.get('runner_id') in (None, 0) and not job.get('runner_name'),
+                'PRIOR_ATTEMPT_STARTED_NO_REPLAY')
+        steps = job.get('steps') or []
+        require(not steps and not any(s.get('name') == CLAIM_STEP for s in steps),
+                'PRIOR_ATTEMPT_STEP_STATE_UNSAFE')
+        evidence.append({'attempt': prior, 'job_id': job['id'],
+                         'status': 'completed', 'conclusion': 'cancelled',
+                         'runner_started': False, 'claim_step_seen': False})
+    missing_route = _claim_ref_absent(api)
+    return {'kind': 'SAME_RUN_PRECLAIM_QUEUE_CANCELLATION',
+            'recoveries_used': attempt - 1,
+            'max_recoveries': MAX_PRECLAIM_RECOVERIES,
+            'claim_absence_route': missing_route,
+            'prior_attempts': evidence}
+
+
 def execution_identity(env, api):
     require(env.get('GITHUB_ACTIONS') == 'true' and env.get('GITHUB_REPOSITORY') == REPO,
             'GITHUB_OWNER_REQUIRED')
     require(env.get('GITHUB_EVENT_NAME') == 'push' and env.get('GITHUB_REF') == 'refs/heads/' + BRANCH,
             'EXPLICIT_BRANCH_PUSH_ONLY')
-    require(env.get('GITHUB_RUN_ATTEMPT') == '1' and env.get('GITHUB_JOB') == JOB,
-            'NO_RETRY_OR_ALTERNATE_JOB')
+    attempt_raw = env.get('GITHUB_RUN_ATTEMPT', '')
+    require(attempt_raw.isdigit() and str(int(attempt_raw)) == attempt_raw
+            and env.get('GITHUB_JOB') == JOB, 'RUN_ATTEMPT_OR_JOB_IDENTITY')
+    attempt = int(attempt_raw)
+    require(1 <= attempt <= 1 + MAX_PRECLAIM_RECOVERIES,
+            'PRECLAIM_RECOVERY_LIMIT')
     run_id = env.get('GITHUB_RUN_ID', '')
     head = env.get('GITHUB_SHA', '')
     require(run_id.isdigit() and bool(re.fullmatch('[0-9a-f]{40}', head)), 'GITHUB_RUN_IDENTITY')
     run = api('GET', '/actions/runs/' + run_id)
     require(run['head_sha'] == head and run['head_branch'] == BRANCH
-            and run['event'] == 'push' and run['run_attempt'] == 1
+            and run['event'] == 'push' and run['run_attempt'] == attempt
             and run['status'] == 'in_progress'
             and run['path'] == '.github/workflows/issue1358-ema21-limit-v1.yml',
             'API_RUN_IDENTITY_MISMATCH')
-    return {'run_id': int(run_id), 'head_sha': head, 'job': JOB, 'attempt': 1}
+    recovery = None if attempt == 1 else _preclaim_recovery_evidence(
+        api, int(run_id), attempt)
+    return {'run_id': int(run_id), 'head_sha': head, 'job': JOB,
+            'attempt': attempt, 'preclaim_recovery': recovery}
 
 
 
@@ -113,7 +180,7 @@ def verify_published_approval(parent, contract, activation, api):
 
 
 def claim_batch(contract, activation, output, api=github, env=os.environ):
-    require(contract.get('shared_producer_policy') == 'READY_REVIEWED_ALL_PRODUCERS_PRESERVE_QUEUE',
+    require(contract.get('shared_producer_policy') == 'READY_V4_PRECLAIM_RECOVERY_ATOMIC_CLAIM',
             'SHARED_PRODUCER_POLICY_HOLD_BEFORE_CLAIM')
     require(contract['batch_id'] == model.BATCH == activation['batch_id'], 'BATCH_CHANGED')
     require(contract['claim_ref'] == CLAIM_REF and contract['execution_owner'] == 'GITHUB_ATOMIC_REF_V1',

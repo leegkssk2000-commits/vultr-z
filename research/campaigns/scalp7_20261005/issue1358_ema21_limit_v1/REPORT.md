@@ -76,6 +76,14 @@ independently reconstructed native momentum, complete management census,
 published summary candidate/signal/trade/unresolved counts and statuses, new-trade metrics and paired deltas. Old parent metric
 summaries are reused without repeating its completed9-trade diagnosis.
 
+Review4189754464 identified that three published paired-breakdown components
+were not independently bound. The stdlib auditor now reconstructs every common
+row and its identity/exit/net/delta fields, parent-loss and parent-winner change
+sums, and exact field sets in both RESULT and SUMMARY. Separate corruption
+controls cover each aggregate and the row collection. This is a new paired
+economic-breakdown cause repair1/2; it does not reset or repeat the completed
+saved-position or summary-census repair ledgers.
+
 P1 review4187319851 identified GitHub's default single-pending shared group
 replacing a previous pending evaluation despite cancel-in-progress:false.
 Minimal repair1/2 sets queue:max and excludes nonactivation pushes from joining

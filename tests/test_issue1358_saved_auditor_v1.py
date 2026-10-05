@@ -39,7 +39,8 @@ class AuditTests(unittest.TestCase):
             self.summary['baseline_reference'+label]=self.parent['reference'+label]
             pair=dict(common_T=0,child_only_T=1,parent_only_T=0,harmed_T=0,improved_T=0,
                       parent_winners_harmed_T=0,common_delta_bps=0,new_opportunities_net_bps=metrics['Net_bps'],
-                      missing_opportunities_contribution_bps=0,total_net_delta_bps=metrics['Net_bps'])
+                      missing_opportunities_contribution_bps=0,total_net_delta_bps=metrics['Net_bps'],
+                      parent_loss_change_bps=0,parent_winner_change_bps=0,rows=[])
             self.result['paired'][label]=pair;self.summary['paired'][label]=pair
         self.contract={'reference_costs_bps':{'BTC-USDT':14}}
         self.summary.update(signal_count=len(self.result['signals']),
@@ -87,7 +88,8 @@ class AuditTests(unittest.TestCase):
             self.result['reference'+label]=m;self.summary['reference'+label]=m
             pair=dict(common_T=0,child_only_T=len(self.result['trades']),parent_only_T=0,harmed_T=0,improved_T=0,
                     parent_winners_harmed_T=0,common_delta_bps=0,new_opportunities_net_bps=m['Net_bps'],
-                    missing_opportunities_contribution_bps=0,total_net_delta_bps=m['Net_bps'])
+                    missing_opportunities_contribution_bps=0,total_net_delta_bps=m['Net_bps'],
+                    parent_loss_change_bps=0,parent_winner_change_bps=0,rows=[])
             self.result['paired'][label]=pair;self.summary['paired'][label]=pair
 
     def forge_price(self):
@@ -148,6 +150,17 @@ class AuditTests(unittest.TestCase):
             with self.assertRaises(AssertionError):self.run_audit()
         self.rebuild(40);self.summary['status_counts']={}
         with self.assertRaises(AssertionError):self.run_audit()
+
+    def test_complete_paired_breakdown_is_bound(self):
+        for attr in ('result','summary'):
+            for label in ('1x','2x'):
+                for field in ('parent_loss_change_bps','parent_winner_change_bps'):
+                    self.rebuild(40);target=getattr(self,attr)
+                    target['paired'][label][field]+=1
+                    with self.assertRaises(AssertionError):self.run_audit()
+                self.rebuild(40);target=getattr(self,attr)
+                target['paired'][label]['rows']=[{'forged':True}]
+                with self.assertRaises(AssertionError):self.run_audit()
 
     def test_stdlib_momentum_matches_native_on_synthetic_bars(self):
         import pandas as pd

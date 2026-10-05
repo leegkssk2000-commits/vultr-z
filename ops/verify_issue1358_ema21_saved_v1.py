@@ -288,7 +288,10 @@ def audit(result,summary,data,parent,contract):
         assert summary['baseline_reference'+label]==old
         net=lambda r:r['gross_bps']-mult*r['cost_bps']
         common=sorted(p.keys()&c.keys())
-        differences=[net(c[k])-net(p[k]) for k in common]
+        paired_rows=[{'key':list(k),'parent_net_bps':net(p[k]),'child_net_bps':net(c[k]),
+                      'delta_bps':net(c[k])-net(p[k]),'parent_exit':p[k]['reason'],
+                      'child_exit':c[k]['reason']} for k in common]
+        differences=[r['delta_bps'] for r in paired_rows]
         added=math.fsum(net(c[k]) for k in c.keys()-p.keys())
         missed=-math.fsum(net(p[k]) for k in p.keys()-c.keys())
         delta=new['Net_bps']-old['Net_bps']
@@ -296,12 +299,23 @@ def audit(result,summary,data,parent,contract):
         check=dict(common_T=len(common),child_only_T=len(c.keys()-p.keys()),parent_only_T=len(p.keys()-c.keys()),
                    harmed_T=sum(d<-EPS for d in differences),improved_T=sum(d>EPS for d in differences),
                    parent_winners_harmed_T=sum(net(p[k])>0 and net(c[k])-net(p[k])<-EPS for k in common),
+                   parent_loss_change_bps=math.fsum(r['delta_bps'] for r in paired_rows
+                                                   if r['parent_net_bps']<0),
+                   parent_winner_change_bps=math.fsum(r['delta_bps'] for r in paired_rows
+                                                     if r['parent_net_bps']>0),
                    common_delta_bps=math.fsum(differences),new_opportunities_net_bps=added,
                    missing_opportunities_contribution_bps=missed,total_net_delta_bps=delta)
-        for name,value in check.items():
-            close(value,result['paired'][label][name]);close(value,summary['paired'][label][name])
+        for published in (result['paired'][label],summary['paired'][label]):
+            assert set(published)==set(check)|{'rows'},'PAIRED_FIELD_SET'
+            for name,value in check.items():close(value,published[name])
+            assert len(published['rows'])==len(paired_rows),'PAIRED_ROWS_LENGTH'
+            for got,want in zip(published['rows'],paired_rows):
+                assert set(got)==set(want),'PAIRED_ROW_FIELD_SET'
+                assert (got['key'],got['parent_exit'],got['child_exit'])==(want['key'],want['parent_exit'],want['child_exit']),'PAIRED_ROW_IDENTITY'
+                for name in ('parent_net_bps','child_net_bps','delta_bps'):
+                    close(got[name],want[name])
         report['metrics'][label]=new
-        report['paired'][label]=check
+        report['paired'][label]={**check,'rows':paired_rows}
     outstanding=bool(unresolved) or any(x['status']=='PENDING_END' for x in census.values())
     profitable=all(report['metrics'][l]['T']>0 and report['metrics'][l]['Net_bps']>0
                    and (report['metrics'][l]['PF'] or 0)>1 for l in ('1x','2x'))

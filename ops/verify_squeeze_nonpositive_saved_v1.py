@@ -40,6 +40,57 @@ def metrics(rows,mult):
             'Net_bps':math.fsum(nets),'NetExp_bps_T':math.fsum(nets)/len(nets) if nets else None,
             'PF':gains/loss if loss else None,'DD_bps':dd,'MaxLossStreak':longest}
 
+def exit_evidence(parent,child):
+    """Cross-index saved callbacks and exact fills; equal PnL is not parity."""
+    parent_rows={key(r):r for r in parent['trades']}
+    child_rows={key(r):r for r in child['trades']}
+    assert len(parent_rows)==len(parent['trades']) and len(child_rows)==len(child['trades'])
+    signals={f"{CHILD}|{s['symbol']}|{s['signal_ts_ms']}":key(s) for s in child['signals']}
+    assert len(signals)==len(child['signals'])
+    linked=defaultdict(list)
+    failure_reason='SQUEEZE_OBSERVED_NONPOSITIVE_MOMENTUM_NEXT_OPEN'
+    for event in child['events']:
+        assert event['signal_key'] in signals,'UNKNOWN_EVENT_SIGNAL'
+        if event['update'].get('reason')!=failure_reason:continue
+        k=signals[event['signal_key']]
+        assert k in child_rows,'FAILURE_EVENT_WITHOUT_COMPLETED_TRADE'
+        trade=child_rows[k]
+        assert trade['reason']==failure_reason,'FAILURE_EVENT_TRADE_REASON'
+        assert event['update'].get('exit_next_open') is True,'FAILURE_EVENT_NOT_EXIT'
+        assert event['order_effective_ms']==trade['exit_ts_ms'],'FAILURE_EVENT_EXIT_TIME'
+        assert trade['entry_ts_ms']<=event['bar_open_ms']<event['input_ready_ms']<event['order_effective_ms'],'FAILURE_EVENT_CHRONOLOGY'
+        momentum=event['update']['observed_momentum']
+        assert math.isfinite(momentum) and momentum<=0,'FAILURE_EVENT_MOMENTUM'
+        linked[k].append(event)
+    links=[]
+    for k,trade in child_rows.items():
+        if trade['reason']==failure_reason:
+            assert len(linked[k])==1,'FAILURE_TRADE_REQUIRES_ONE_EVENT'
+            event=linked[k][0]
+            links.append({'key':list(k),'event_signal_key':event['signal_key'],
+                          'input_ready_ms':event['input_ready_ms'],
+                          'order_effective_ms':event['order_effective_ms'],
+                          'trade_exit_ts_ms':trade['exit_ts_ms'],'trade_exit_prices':trade['exit_prices'],
+                          'reason':trade['reason'],'observed_momentum':event['update']['observed_momentum']})
+        else:assert not linked[k],'FAILURE_EVENT_LINKED_TO_OTHER_EXIT'
+    fields=('side','entry_ts_ms','exit_ts_ms','outcome_available_ts_ms','entry_prices','exit_prices',
+            'reason','gross_bps','cost_bps','net_bps','signal_available_ms')
+    compared=[]
+    for k in sorted(parent_rows.keys()&child_rows.keys()):
+        p,c=parent_rows[k],child_rows[k]
+        different=[name for name in fields if p[name]!=c[name]]
+        compared.append({'key':list(k),'identical_trade_evidence':not different,
+                         'different_fields':different,
+                         'equal_net_different_evidence':abs(p['net_bps']-c['net_bps'])<=EPS and bool(different),
+                         'parent_exit_ts_ms':p['exit_ts_ms'],'child_exit_ts_ms':c['exit_ts_ms'],
+                         'parent_exit_prices':p['exit_prices'],'child_exit_prices':c['exit_prices'],
+                         'parent_reason':p['reason'],'child_reason':c['reason']})
+    return {'compared_fields':list(fields),'common_T':len(compared),
+            'identical_trade_evidence_T':sum(r['identical_trade_evidence'] for r in compared),
+            'changed_trade_evidence_T':sum(not r['identical_trade_evidence'] for r in compared),
+            'equal_net_different_evidence_T':sum(r['equal_net_different_evidence'] for r in compared),
+            'failure_trade_event_links':links,'rows':compared}
+
 def audit(files,parent_files):
     original=parent_files[PARENT+'/RESULT.json'].encode();assert sha(original)==PARENT_SHA
     p=json.loads(original);raw=files[CHILD+'/RESULT.json'].encode();c=json.loads(raw)
@@ -77,7 +128,8 @@ def audit(files,parent_files):
     output={'status':'PASS_SAVED_ACCOUNTING','new_economic_calls':0,'parent_result_sha256':PARENT_SHA,
             'child_result_sha256':sha(raw),'summary_sha256':sha(files['SUMMARY.json'].encode()),
             'signals':len(c['signals']),'completed':len(c['trades']),'unresolved':len(c['unresolved']),
-            'rejections':c['rejections'],'failure_exit_events':len(failure_events),'metrics':{},'paired':{}}
+            'rejections':c['rejections'],'failure_exit_events':len(failure_events),'metrics':{},'paired':{},
+            'exit_evidence':exit_evidence(p,c)}
     pr={key(r):r for r in scored(p['trades'])};cr={key(r):r for r in scored(c['trades'])};common=sorted(pr.keys()&cr.keys())
     for mult in (1,2):
         label=str(mult)+'x';pm=metrics(p['trades'],mult);cm=metrics(c['trades'],mult)

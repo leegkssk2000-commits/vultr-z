@@ -30,4 +30,43 @@ class SavedArithmeticTests(unittest.TestCase):
             p=Path(tmp)/'bad.xz';p.write_bytes(b'bad')
             with self.assertRaisesRegex(AssertionError,'BUNDLE_HASH'):a.unpack(p,'0'*64)
 
+
+class ExitEvidenceTests(unittest.TestCase):
+    def fixture(self):
+        def row(symbol,signal,reason):
+            return {'symbol':symbol,'side':1,'signal_ts_ms':signal,'entry_ts_ms':100,
+                    'exit_ts_ms':300,'outcome_available_ts_ms':310,'entry_prices':{symbol:100.},
+                    'exit_prices':{symbol:99.},'reason':reason,'gross_bps':-100.,'cost_bps':14.,
+                    'net_bps':-114.,'signal_available_ms':90}
+        r=row('DOGE-USDT',50,'SQUEEZE_OBSERVED_NONPOSITIVE_MOMENTUM_NEXT_OPEN')
+        parent={'trades':[{**r,'reason':'MAX_HOLD_CLOCKED_OPEN','exit_ts_ms':900}]}
+        event={'signal_key':f"{a.CHILD}|DOGE-USDT|50",'bar_open_ms':120,'input_ready_ms':290,
+               'order_effective_ms':300,'update':{'reason':r['reason'],'exit_next_open':True,'observed_momentum':-.01}}
+        child={'signals':[r.copy()],'trades':[r.copy()],'events':[event]}
+        return parent,child
+    def test_one_failure_event_links_exact_trade_exit(self):
+        p,c=self.fixture();r=a.exit_evidence(p,c)
+        self.assertEqual(len(r['failure_trade_event_links']),1)
+        self.assertEqual(r['changed_trade_evidence_T'],1)
+    def test_same_net_different_exit_is_not_unchanged(self):
+        p,c=self.fixture();r=a.exit_evidence(p,c)
+        self.assertEqual(r['equal_net_different_evidence_T'],1)
+        self.assertEqual(r['identical_trade_evidence_T'],0)
+    def test_event_exit_time_mismatch_rejected(self):
+        p,c=self.fixture();c['events'][0]['order_effective_ms']=301
+        with self.assertRaisesRegex(AssertionError,'EXIT_TIME'):a.exit_evidence(p,c)
+    def test_event_reason_mismatch_rejected(self):
+        p,c=self.fixture();c['trades'][0]['reason']='OTHER'
+        with self.assertRaisesRegex(AssertionError,'TRADE_REASON'):a.exit_evidence(p,c)
+    def test_unknown_event_signal_rejected(self):
+        p,c=self.fixture();c['events'][0]['signal_key']='wrong'
+        with self.assertRaisesRegex(AssertionError,'UNKNOWN_EVENT'):a.exit_evidence(p,c)
+    def test_missing_or_duplicate_failure_event_rejected(self):
+        for count in (0,2):
+            p,c=self.fixture();c['events']=c['events']*count
+            with self.subTest(count=count),self.assertRaisesRegex(AssertionError,'ONE_EVENT'):a.exit_evidence(p,c)
+    def test_failure_event_requires_actual_completed_trade(self):
+        p,c=self.fixture();c['trades']=[]
+        with self.assertRaisesRegex(AssertionError,'WITHOUT_COMPLETED'):a.exit_evidence(p,c)
+
 if __name__=='__main__':unittest.main()

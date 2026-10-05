@@ -5,6 +5,9 @@ adverse touch/gap accounting, and independently recomputes new-trade metrics.
 It never generates setups, replays a strategy or re-evaluates the old parent.
 """
 import argparse
+import base64
+import csv
+import io
 from collections import Counter, defaultdict
 import gzip
 import hashlib
@@ -83,6 +86,85 @@ def receipt_clock(data):
     return out
 
 
+def raw_bars(data,symbol):
+    """Only saved position management is audited; no setup stream generated."""
+    bars=[]
+    if symbol in data.get('context',{}):
+        seed=data['context'][symbol]
+        raw=base64.b64decode(seed['gzip_base64'],validate=True)
+        assert sha(raw)==seed['sha256'],'SEED_HASH'
+        with gzip.GzipFile(fileobj=io.BytesIO(raw)) as gz:
+            body=gz.read(4*1024*1024+1)
+        assert len(body)<=4*1024*1024
+        for r in csv.DictReader(io.StringIO(body.decode())):
+            bars.append(dict(open_ts_ms=int(r['open_ts_ms']),high=float(r['high']),low=float(r['low']),close=float(r['close'])))
+    groups=defaultdict(list)
+    for r in data['minutes'][symbol]:groups[r[0]//TF*TF].append(r)
+    for t,rs in sorted(groups.items()):
+        if len(rs)==30 and rs[0][0]==t and rs[-1][0]+M==t+TF:
+            bars.append(dict(open_ts_ms=t,high=max(float(r[2]) for r in rs),
+                             low=min(float(r[3]) for r in rs),close=float(rs[-1][4])))
+    assert all(bars[i]['open_ts_ms']+TF==bars[i+1]['open_ts_ms'] for i in range(len(bars)-1)),'BAR_GAP'
+    return bars
+
+
+def expected_update(history,entered):
+    update=dict(exit_next_open=False,reason='POSITIVE_LIFECYCLE_HOLD')
+    if len(history)<41 or history[-2]['open_ts_ms']<entered:return update
+    x=history[-41:];delta=[]
+    for i in range(19,41):
+        part=x[i-19:i+1]
+        mean=math.fsum(r['close'] for r in part)/20
+        middle=(max(r['high'] for r in part)+min(r['low'] for r in part))/2
+        delta.append(x[i]['close']-(middle+mean)/2)
+    momenta=[]
+    centered=[i-9.5 for i in range(20)];den=math.fsum(c*c for c in centered)
+    for i in range(3):
+        y=delta[i:i+20]
+        momenta.append(math.fsum(y)/20+math.fsum(a*b for a,b in zip(y,centered))/den*9.5)
+    if momenta[2]>0 and momenta[1]>0 and momenta[2]<momenta[1]<momenta[0]:
+        update.update(exit_next_open=True,reason='SQUEEZE_TWO_WEAK_MOMENTUM_NEXT_OPEN')
+    return update
+
+
+def terminal_path(s,fill,data,ready,trace):
+    """Independent raw-path oracle for every exit or unresolved position."""
+    assert s['identity']==PARENT and s['side']==1 and s['max_hold_bars']==11
+    assert s['meta']['be_arm_r'] is None,'STATIC_NATIVE_STOP_PROFILE'
+    symbol=s['symbol'];entered=fill['minute_open_ms'];stop=float(s['stop_price'])
+    bars=raw_bars(data,symbol)
+    decisions=[((ready[b['open_ts_ms']]//M+1)*M,i) for i,b in enumerate(bars)
+               if b['open_ts_ms']>=entered+M and b['open_ts_ms'] in ready]
+    actual=[e for e in trace if e['kind']=='MANAGEMENT'];exits=[e for e in trace if e['kind']=='EXIT']
+    di=hold=0
+    for r in data['minutes'][symbol]:
+        t=r[0]
+        if t<entered:continue
+        while di<len(decisions) and decisions[di][0]<=t:
+            activation,i=decisions[di];b=bars[i]
+            assert di<len(actual),'MISSING_MANAGEMENT_DECISION'
+            e=actual[di];update=expected_update(bars[:i+1],entered)
+            assert e['bar_open_ms']==b['open_ts_ms'] and e['input_ready_ms']==ready[b['open_ts_ms']]
+            assert e['order_effective_ms']==activation and e['update']==update,'MANAGEMENT_RULE'
+            hold+=1;di+=1
+            if update['exit_next_open'] or hold>=11:
+                reason=update['reason'] if update['exit_next_open'] else 'MAX_HOLD_CLOCKED_OPEN'
+                terminal=(float(r[1]),t,max(t,fill['witness_ms']),reason,hold)
+                assert di==len(actual),'POST_EXIT_MANAGEMENT'
+                assert len(exits)==1,'EXIT_EVENT_COUNT'
+                return terminal,exits[0]
+        if float(r[3])<=stop:
+            gap=float(r[1])<stop
+            terminal=(float(r[1]) if gap else stop,t if gap else t+M,
+                      max(t+M,r[6],fill['witness_ms']),
+                      'ADVERSE_OPEN_GAP_STOP' if gap else 'MINUTE_ENTRY_STOP_FIRST',hold)
+            assert di==len(actual),'POST_EXIT_MANAGEMENT'
+            assert len(exits)==1,'EXIT_EVENT_COUNT'
+            return terminal,exits[0]
+    assert di==len(actual) and not exits,'FABRICATED_TERMINAL_EVENT'
+    return None,None
+
+
 def audit(result,summary,data,parent,contract):
     assert result['identity']==CHILD and summary['identity']==CHILD
     assert summary['economic_lane_executions']==1 and summary['parent_replays']==0
@@ -137,12 +219,19 @@ def audit(result,summary,data,parent,contract):
         assert fill['price_semantics']=='ADVERSE_LIMIT_BOUND_NOT_OBSERVED_TRANSACTION'
         assert fill['intraminute_time_unknown'] is True
         k=key(s)
+        terminal,exit_event=terminal_path(s,fill,data,ready,[e for e in result['events'] if e['key']==c['key']])
         if c['status']=='FILLED_UNRESOLVED':
+            assert terminal is None,'HIDDEN_TERMINAL_EVENT'
             assert k in unresolved
             owned[symbol]=2**63-1
             continue
         assert c['status']=='FILLED_COMPLETED' and k in rows
+        assert terminal is not None,'FABRICATED_COMPLETED_POSITION'
         r=rows[k]
+        px,stamp,witness,reason,hold=terminal
+        close(r['exit_prices'][symbol],px)
+        assert (r['exit_ts_ms'],r['outcome_available_ts_ms'],r['reason'],r['hold_bars'])==(stamp,witness,reason,hold),'TERMINAL_EVENT'
+        assert (exit_event['at_ms'],exit_event['witness_ms'],exit_event['reason'])==(stamp,witness,reason),'EXIT_TRACE'
         assert r['identity']==CHILD and r['entry_ts_ms']==first[0]
         assert available<r['entry_ts_ms']<=r['exit_ts_ms']<=r['outcome_available_ts_ms']
         assert r['entry_model']==fill and r['order_authority']=='BLOCKED' and r['fill_is_model_not_exchange']
@@ -150,12 +239,6 @@ def audit(result,summary,data,parent,contract):
         close(r['cost_bps'],cost)
         close((r['exit_prices'][symbol]/anchor-1)*10000,r['gross_bps'])
         close(r['gross_bps']-cost,r['net_bps'])
-        # When both entry and protective stop occur in the entry minute, an
-        # favorable intrabar ordering is never substituted for the adverse path.
-        if float(first[3])<=float(s['stop_price']):
-            expected=float(first[1]) if float(first[1])<float(s['stop_price']) else float(s['stop_price'])
-            close(r['exit_prices'][symbol],expected)
-            assert r['reason'] in ('ADVERSE_OPEN_GAP_STOP','MINUTE_ENTRY_STOP_FIRST')
         owned[symbol]=r['outcome_available_ts_ms']
     assert fills==len(rows)+len(unresolved),'FILL_CENSUS'
     event_ids=set()

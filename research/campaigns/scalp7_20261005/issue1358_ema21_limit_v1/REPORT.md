@@ -1,7 +1,7 @@
 # Issue1358 V3: one frozen EMA21 limit entry hypothesis
 
 Status: DESIGN_HYPOTHESIS_IMPLEMENTED; P1 shared-queue repair1/2;
-final exact-source CI/review pending.
+final exact-source CI/review pending; shared producer queue policy OPEN.
 Economic result: NOT_RUN. No profitability or G-stage claim.
 
 The Work directly recovered artifact11305382754 using the dedicated GitHub
@@ -57,7 +57,7 @@ global-heavy concurrency. The official shared-group endpoint must prove this
 exact economic job is its sole active lease, matched to the actual job API.
 Other active heavy owners or endpoint/permission/identity uncertainty cause a
 preclaim HOLD without consuming the batch. Unrelated ordinary CI is outside
-this shared group; pending heavy owners keep their queue positions.
+this shared group; this job preserves pending owners with queue:max. The remaining default-single producers still prevent a repository-wide guarantee; activation is held by an explicit preclaim guard.
 Atomic permanent ref creation precedes all real-price feature generation,
 including the opportunity ledger. Failed or
 interrupted claimed executions preserve the claim and original exception.
@@ -70,17 +70,32 @@ authorized. All other lane owners, failures and budgets are preserved.
 
 Independent saved-result audit code is also included. It imports no economic
 model and checks raw-minute first-touch/expiry, occupancy, adverse fill/SL
-accounting, full census, new-trade metrics and paired deltas. Old parent metric
+accounting, every later stop/gap/management terminal price/reason/clock, independently reconstructed native momentum, complete management census, new-trade metrics and paired deltas. Old parent metric
 summaries are reused without repeating its completed9-trade diagnosis.
 
 P1 review4187319851 identified GitHub's default single-pending shared group
 replacing a previous pending evaluation despite cancel-in-progress:false.
 Minimal repair1/2 sets queue:max and excludes nonactivation pushes from joining
-the shared group. Only this campaign workflow changes; other owners/queues and
+the shared group. This campaign workflow received the initial fix; the later minimal Liquid6 cancel repair is disclosed below. Other owners/budgets and
 the old PR1359 repair2/2 are preserved. No economic run preceded the repair.
 See P1_REPAIR.json for the original setting failure and amended checks.
 
-Next action: final exact-source CI and independent review; resolve findings within
+Review4187453910 found one of54 current shared-group producers (Liquid6 rescue)
+used cancel-in-progress:true and could kill a permanently claimed execution.
+Its minimal shared-lock repair moves the same group onto the unchanged economic
+job, sets cancellation:false/queue:max, and separates source-only PR compilation
+from the existing economic job. PRs never replay that other lane; its strategy,
+inputs, budgets and existing branch/dispatch triggers remain unchanged.
+No other producer is modified. This source policy repair must be merged into
+default master before #1358 activation; no incoming producer may cancel the
+claimed job. Historical-ref dispatch and deliberate manual cancellation remain
+trusted-maintainer controls; do not dispatch old canceling versions during a
+claimed execution. See CROSS_WORKFLOW_CANCEL_REPAIR.json. No service/collector
+is started and no other lane's economic model is invoked by this repair.
+
+Review4187506290 remains OPEN: other existing default-single queue producers can replace pending owners. SHARED_QUEUE_POLICY_HOLD.json records the exact inventory. The driver now fails before any permanent claim even if approval/activation is supplied while this contract is HOLD. No blanket edit of other lanes or economic replay is authorized by this receipt.
+
+Next action: final exact-source CI and independent review; establish a minimal owner-preserving shared queue policy repair without triggering foreign economic jobs; resolve findings within
 the implementation repair allowance, then publish separate approval and
 activation only after fresh global owner/job checks. Retrieve results and
 independently audit full census/cost/paired outcomes before retain/reject.

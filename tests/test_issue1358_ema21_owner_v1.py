@@ -15,7 +15,7 @@ from ops.kp_committed_cursor_snapshot_v1 import SnapshotError
 ENV = {'GITHUB_ACTIONS':'true','GITHUB_REPOSITORY':g.REPO,'GITHUB_EVENT_NAME':'push',
        'GITHUB_REF':'refs/heads/'+g.BRANCH,'GITHUB_RUN_ATTEMPT':'1','GITHUB_JOB':g.JOB,
        'GITHUB_RUN_ID':'123','GITHUB_SHA':'a'*40}
-C = {'batch_id':m.BATCH,'claim_ref':g.CLAIM_REF,'execution_owner':'GITHUB_ATOMIC_REF_V1'}
+C = {'shared_producer_policy':'READY_REVIEWED_ALL_PRODUCERS_PRESERVE_QUEUE','batch_id':m.BATCH,'claim_ref':g.CLAIM_REF,'execution_owner':'GITHUB_ATOMIC_REF_V1'}
 A = {'batch_id':m.BATCH,'contract_sha256':'b'*64,'reviewed_parent_sha':'c'*40}
 
 class FakeAPI:
@@ -98,6 +98,12 @@ class GitHubOwnerTests(unittest.TestCase):
         self.api=wrong
         with self.assertRaisesRegex(SnapshotError,'HEAVY_JOB_API_MISMATCH'):self.run_it()
         self.assertIsNone(old.claim);self.assertEqual(self.n,0)
+    def test_unresolved_shared_producer_policy_cannot_consume_claim(self):
+        held={**C,'shared_producer_policy':'HOLD_EXISTING_PRODUCER_SINGLE_PENDING_POLICY'}
+        with self.assertRaisesRegex(SnapshotError,'SHARED_PRODUCER_POLICY_HOLD'):
+            g.execute({},held,A,Path(self.tmp.name)/'policy-hold',self.api,ENV,run=self.fake_run)
+        self.assertIsNone(self.api.claim)
+
     def test_normal_one_execution(self):
         self.run_it();self.assertEqual(self.n,1);self.assertTrue(self.api.claim)
         self.assertTrue((self.root/'out/COMPLETED.json').exists())

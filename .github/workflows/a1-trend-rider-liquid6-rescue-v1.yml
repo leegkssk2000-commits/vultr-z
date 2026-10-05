@@ -15,12 +15,23 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: a1-global-heavy-economic-evaluator-v1
-  cancel-in-progress: true
-
 jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Source compilation only; no market-data evaluation
+        run: |
+          python3 -m py_compile backend/research/rebuild/a1_exact25_generic_evaluator_v2.py backend/research/rebuild/a1_trend_rider_h4_h5_hardening_v1.py
   liquid6-rescue:
+    if: github.event_name != 'pull_request'
+    needs: contract
+    concurrency:
+      group: a1-global-heavy-economic-evaluator-v1
+      cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

@@ -113,6 +113,8 @@ def verify_published_approval(parent, contract, activation, api):
 
 
 def claim_batch(contract, activation, output, api=github, env=os.environ):
+    require(contract.get('shared_producer_policy') == 'READY_REVIEWED_ALL_PRODUCERS_PRESERVE_QUEUE',
+            'SHARED_PRODUCER_POLICY_HOLD_BEFORE_CLAIM')
     require(contract['batch_id'] == model.BATCH == activation['batch_id'], 'BATCH_CHANGED')
     require(contract['claim_ref'] == CLAIM_REF and contract['execution_owner'] == 'GITHUB_ATOMIC_REF_V1',
             'OWNER_CHANGED')

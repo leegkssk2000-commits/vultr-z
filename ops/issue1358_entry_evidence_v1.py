@@ -115,12 +115,18 @@ def reconstruct(price_path, parent_path, source_contract):
         require(observed and max(observed) == stamp, 'LATEST_RECEIVED_DECISION_BAR')
         index = (entry - minute_rows[0][0]) // MINUTE
         require(0 <= index < len(minute_rows) and minute_rows[index][0] == entry, 'FILL_INDEX')
-        later_fill = float(minute_rows[index][1])
+        next_minute_open = float(minute_rows[index][1])
         trade = trades.get((symbol, signal['signal_ts_ms']))
+        later_fill = None
+        fill_evidence = {'known_close_below_signal_low': float(known[4]) < float(current.low),
+                         'later_fill_below_signal_low': None,
+                         'later_fill_is_decision_feature': False}
         if trade:
             require(trade['entry_ts_ms'] == entry and trade['signal_available_ms'] == decision,
                     'SAVED_ENTRY_CLOCK')
-            require(trade['entry_prices'][symbol] == later_fill, 'SAVED_ENTRY_PRICE')
+            require(trade['entry_prices'][symbol] == next_minute_open, 'SAVED_ENTRY_PRICE')
+            later_fill = next_minute_open
+            fill_evidence = split_evidence(current.low, known[4], later_fill)
         rows.append({
             'symbol': symbol, 'signal_open_ms': stamp, 'signal_close_ms': stamp + TF,
             'signal_key': f"{PARENT}|{symbol}|{signal['signal_ts_ms']}",
@@ -139,8 +145,8 @@ def reconstruct(price_path, parent_path, source_contract):
                 'completed_parent_trade': trade is not None,
                 'saved_net_bps': None if trade is None else trade['net_bps'],
                 'modeled_entry_price_not_decision_quote': later_fill,
-                'fill_move_from_signal_close_bps': (later_fill / float(current.close) - 1) * 10000,
-                **split_evidence(current.low, known[4], later_fill),
+                'fill_move_from_signal_close_bps': None if later_fill is None else (later_fill / float(current.close) - 1) * 10000,
+                **fill_evidence,
             },
         })
     completed = [r for r in rows if r['outcome_diagnostics']['completed_parent_trade']]
@@ -186,7 +192,8 @@ def compact_projection(d):
                      f['known_minute_received_ms'], f['known_minute_close'],
                      o['modeled_entry_price_not_decision_quote'], o['saved_net_bps']])
     return {'schema': 'zel.issue1358.entry_evidence.compact.v1',
-            'full_diagnostic_sha256': digest(encoded(d)),
+            'full_diagnostic_sha256': None,
+            'full_diagnostic_not_persisted_after_review_fix': True,
             'source_input_sha256': d['source_input_sha256'],
             'parent_result_sha256': d['parent_result_sha256'],
             'summary': d['summary'], 'columns': columns, 'rows': rows,

@@ -132,12 +132,16 @@ def terminal_path(s,fill,data,ready,trace):
     assert s['identity']==PARENT and s['side']==1 and s['max_hold_bars']==11
     assert s['meta']['be_arm_r'] is None,'STATIC_NATIVE_STOP_PROFILE'
     symbol=s['symbol'];entered=fill['minute_open_ms'];stop=float(s['stop_price'])
+    anchor=float(fill['price']);risk=anchor-stop
+    assert risk>0,'AUDIT_RISK'
     bars=raw_bars(data,symbol)
     decisions=[((ready[b['open_ts_ms']]//M+1)*M,i) for i,b in enumerate(bars)
                if b['open_ts_ms']>=entered+M and b['open_ts_ms'] in ready]
     actual=[e for e in trace if e['kind']=='MANAGEMENT'];exits=[e for e in trace if e['kind']=='EXIT']
-    di=hold=0
-    for r in data['minutes'][symbol]:
+    raw=data['minutes'][symbol]
+    offset=next(i for i,r in enumerate(raw) if r[0]==entered)
+    di=hold=0;mfe=mae=0.0
+    for mi,r in enumerate(raw):
         t=r[0]
         if t<entered:continue
         while di<len(decisions) and decisions[di][0]<=t:
@@ -146,10 +150,14 @@ def terminal_path(s,fill,data,ready,trace):
             e=actual[di];update=expected_update(bars[:i+1],entered)
             assert e['bar_open_ms']==b['open_ts_ms'] and e['input_ready_ms']==ready[b['open_ts_ms']]
             assert e['order_effective_ms']==activation and e['update']==update,'MANAGEMENT_RULE'
+            known=[x for x in raw[offset+1:mi] if x[6]<activation]
+            assert known,'NO_POST_FILL_RECEIVED_PREFIX'
+            mfe=max(0.0,(max(float(x[2]) for x in known)-anchor)/risk)
+            mae=max(0.0,(anchor-min(float(x[3]) for x in known))/risk)
             hold+=1;di+=1
             if update['exit_next_open'] or hold>=11:
                 reason=update['reason'] if update['exit_next_open'] else 'MAX_HOLD_CLOCKED_OPEN'
-                terminal=(float(r[1]),t,max(t,fill['witness_ms']),reason,hold)
+                terminal=(float(r[1]),t,max(t,fill['witness_ms']),reason,hold,mfe,mae)
                 assert di==len(actual),'POST_EXIT_MANAGEMENT'
                 assert len(exits)==1,'EXIT_EVENT_COUNT'
                 return terminal,exits[0]
@@ -157,12 +165,12 @@ def terminal_path(s,fill,data,ready,trace):
             gap=float(r[1])<stop
             terminal=(float(r[1]) if gap else stop,t if gap else t+M,
                       max(t+M,r[6],fill['witness_ms']),
-                      'ADVERSE_OPEN_GAP_STOP' if gap else 'MINUTE_ENTRY_STOP_FIRST',hold)
+                      'ADVERSE_OPEN_GAP_STOP' if gap else 'MINUTE_ENTRY_STOP_FIRST',hold,mfe,mae)
             assert di==len(actual),'POST_EXIT_MANAGEMENT'
             assert len(exits)==1,'EXIT_EVENT_COUNT'
             return terminal,exits[0]
     assert di==len(actual) and not exits,'FABRICATED_TERMINAL_EVENT'
-    return None,None
+    return None,None,(hold,mfe,mae)
 
 
 def audit(result,summary,data,parent,contract):
@@ -181,6 +189,10 @@ def audit(result,summary,data,parent,contract):
     unresolved={key(r['signal']):r for r in result['unresolved']}
     assert len(rows)==len(result['trades']) and len(unresolved)==len(result['unresolved'])
     assert not rows.keys()&unresolved.keys()
+    assert summary['signal_count']==len(signals),'SUMMARY_SIGNAL_COUNT'
+    assert summary['trade_count']==len(rows),'SUMMARY_TRADE_COUNT'
+    assert summary['unresolved_count']==len(unresolved),'SUMMARY_UNRESOLVED_COUNT'
+    assert summary['status_counts']==result['status_counts'],'SUMMARY_STATUS_COUNTS'
     ready=receipt_clock(data)
     owned={};fills=0;nonfills=0
     ordered=sorted(census.values(),key=lambda c:(c['available_ms'],c['symbol']))
@@ -219,18 +231,24 @@ def audit(result,summary,data,parent,contract):
         assert fill['price_semantics']=='ADVERSE_LIMIT_BOUND_NOT_OBSERVED_TRANSACTION'
         assert fill['intraminute_time_unknown'] is True
         k=key(s)
-        terminal,exit_event=terminal_path(s,fill,data,ready,[e for e in result['events'] if e['key']==c['key']])
+        path=terminal_path(s,fill,data,ready,[e for e in result['events'] if e['key']==c['key']])
+        terminal,exit_event=path[:2]
         if c['status']=='FILLED_UNRESOLVED':
             assert terminal is None,'HIDDEN_TERMINAL_EVENT'
             assert k in unresolved
+            hold,mfe,mae=path[2]
+            position=unresolved[k]['position']
+            assert position['hold_bars']==hold,'UNRESOLVED_HOLD_BARS'
+            close(position['mfe_R'],mfe);close(position['mae_R'],mae)
             owned[symbol]=2**63-1
             continue
         assert c['status']=='FILLED_COMPLETED' and k in rows
         assert terminal is not None,'FABRICATED_COMPLETED_POSITION'
         r=rows[k]
-        px,stamp,witness,reason,hold=terminal
+        px,stamp,witness,reason,hold,mfe,mae=terminal
         close(r['exit_prices'][symbol],px)
         assert (r['exit_ts_ms'],r['outcome_available_ts_ms'],r['reason'],r['hold_bars'])==(stamp,witness,reason,hold),'TERMINAL_EVENT'
+        close(r['mfe_R'],mfe);close(r['mae_R'],mae)
         assert (exit_event['at_ms'],exit_event['witness_ms'],exit_event['reason'])==(stamp,witness,reason),'EXIT_TRACE'
         assert r['identity']==CHILD and r['entry_ts_ms']==first[0]
         assert available<r['entry_ts_ms']<=r['exit_ts_ms']<=r['outcome_available_ts_ms']

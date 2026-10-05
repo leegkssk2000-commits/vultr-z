@@ -70,7 +70,10 @@ authorized. All other lane owners, failures and budgets are preserved.
 
 Independent saved-result audit code is also included. It imports no economic
 model and checks raw-minute first-touch/expiry, occupancy, adverse fill/SL
-accounting, every later stop/gap/management terminal price/reason/clock, independently reconstructed native momentum, complete management census, new-trade metrics and paired deltas. Old parent metric
+accounting, every later stop/gap/management terminal price/reason/clock,
+completed and unresolved MFE/MAE from received raw-minute prefixes,
+independently reconstructed native momentum, complete management census,
+published summary counts/statuses, new-trade metrics and paired deltas. Old parent metric
 summaries are reused without repeating its completed9-trade diagnosis.
 
 P1 review4187319851 identified GitHub's default single-pending shared group

@@ -41,6 +41,10 @@ class AuditTests(unittest.TestCase):
                       missing_opportunities_contribution_bps=0,total_net_delta_bps=metrics['Net_bps'])
             self.result['paired'][label]=pair;self.summary['paired'][label]=pair
         self.contract={'reference_costs_bps':{'BTC-USDT':14}}
+        self.summary.update(signal_count=len(self.result['signals']),
+                trade_count=len(self.result['trades']),
+                unresolved_count=len(self.result['unresolved']),
+                status_counts=self.result['status_counts'])
 
     def run_audit(self):
         return audit.audit(self.result,self.summary,self.data,self.parent,self.contract)
@@ -72,6 +76,10 @@ class AuditTests(unittest.TestCase):
         self.refresh_accounting()
 
     def refresh_accounting(self):
+        self.summary.update(signal_count=len(self.result['signals']),
+                trade_count=len(self.result['trades']),
+                unresolved_count=len(self.result['unresolved']),
+                status_counts=self.result['status_counts'])
         self.result['paired']={}
         for mult in (1,2):
             label=str(mult)+'x';m=audit.metrics(self.result['trades'],mult)
@@ -115,6 +123,29 @@ class AuditTests(unittest.TestCase):
         self.rebuild(long=True)
         e=next(e for e in self.result['events'] if e['kind']=='MANAGEMENT')
         e['update']=dict(exit_next_open=True,reason='SQUEEZE_TWO_WEAK_MOMENTUM_NEXT_OPEN')
+        with self.assertRaises(AssertionError):self.run_audit()
+
+    def test_completed_excursions_are_recomputed(self):
+        self.rebuild(40)
+        self.result['trades'][0]['mfe_R']+=1
+        with self.assertRaises(AssertionError):self.run_audit()
+        self.rebuild(40)
+        self.result['trades'][0]['mae_R']+=1
+        with self.assertRaises(AssertionError):self.run_audit()
+
+    def test_unresolved_excursions_are_recomputed(self):
+        self.rebuild()
+        self.result['unresolved'][0]['position']['mfe_R']+=1
+        with self.assertRaises(AssertionError):self.run_audit()
+        self.rebuild()
+        self.result['unresolved'][0]['position']['mae_R']+=1
+        with self.assertRaises(AssertionError):self.run_audit()
+
+    def test_summary_census_fields_are_bound(self):
+        for field in ('signal_count','trade_count','unresolved_count'):
+            self.rebuild(40);self.summary[field]+=1
+            with self.assertRaises(AssertionError):self.run_audit()
+        self.rebuild(40);self.summary['status_counts']={}
         with self.assertRaises(AssertionError):self.run_audit()
 
     def test_stdlib_momentum_matches_native_on_synthetic_bars(self):

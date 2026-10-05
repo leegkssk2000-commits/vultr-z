@@ -1,0 +1,33 @@
+# Issue1358 cloud Work handoff and substantive continuation
+
+Owner: CLOUD_WORK_COORDINATOR_ISSUE1358_V1, permanent ref refs/heads/research-coordinator-claims/issue1358-cloud-work-v1. Coordination owner only; economic batches require their separate immutable reviewed approval and permanent claim. Previous manual claim was released, old Chat task was observed disabled, and the atomic create-ref plus OWNER/CHECKPOINT readback succeeded at commit38b3d4d774d0b3a429c82e931ff5afc54c443a45. Other owners1347/1348 and existing heavy run are preserved.
+
+## Actual result and continuation
+
+PR1359 saved consumers still exposed fictional fills for all six rejected/occupied opportunities despite a prior unused correction receipt. Repair2/2 applies the hash-bound supersession in the actual consumer, preserving the immutable raw/correction bytes, all15 decision-time observations, and all9 completed trades. Reproduction, minimal fix and independent invariance/tamper review are saved in entry_edge_pilot_v1/review_closeout. The completed15-signal diagnosis and old FULLs were not replayed.
+
+Exact public head336a5e164e63defbb44e47ffa6f9cd8cdffe48ce passed29 checks with1 conditional skip and no failed/pending checks. Dedicated saved-evidence run37345760265/job111883800259 passed. Automated review completed for that head with no new findings; original P2 thread resolved. PR1359 normally merged to f2c30586c3552d9e4fa32e253af365fc3a6d112e; backend blobs and immutable-history guards preserved. See PR1359_FINAL_HEAD_CI_REVIEW.json.
+
+Actual next steps completed in this Work: targeted FREEZE_ONE source/attempt screen, original v7 commit/PR/report lineage recovery, then the two already cited free primary-source pages and static current entry-clock profile. See FREEZE_ONE_SELECTION.json, SUCCESSOR_SOURCE_PROVENANCE.json, SOURCE_RULE_AVAILABILITY.json and EVIDENCE_INDEX.json. These are source decisions, not hypothetical PnL or proof all Squeeze alpha is impossible. Already attempted short symmetry, pullback/reclaim families and internal1.4ATR chase veto cannot be renamed as a fresh source mechanism.
+
+## Remaining gates
+
+| Category | Actual finding | Exact resumption condition |
+| --- | --- | --- |
+| Connection | GitHub reads/writes/readback and actual Actions CI succeeded. Existing Vultr device is Offline, last seen90h; literal /home/z/z/runtime/benchmark_web_squeeze_v7.json was not recovered. | Normal existing device access safely restored by its authorized owner, or source-bound existing archive supplied. No bootstrap or restriction bypass. Do not repeat the unchanged failed route. |
+| Data | Original v7 serializes filled trades only. Complete opportunity, occupancy, rejection and nonfill lineage was never serialized by that writer. Raw archive availability would add filled paths only. | Existing contemporaneous candidate-local opportunity/order witnesses. Do not fill unknowns as none/unused or regenerate old economics. |
+| Source | Current creator plan mentions EMA21 location with squeezes qualitatively; inspected sources do not specify exact comparator, anchor update, expiry/order/fill. Existing numeric chase limit is an internal prior translation. | Exact additional primary entry-order locator that establishes a distinct rule. Do not fit thresholds to9 saved trades. |
+| Implementation | Prepared runner is post-receipt next-minute-open, with no source-equivalent conditional entry-order queue/fill witness. | Freeze a justified exact rule first; then causal order creation/cancel/occupancy and conservative fill/cost semantics, fixtures and review. No retroactive intrabar fills. |
+| Approval/execution | Pilot allocation remains candidate0/1 and FULL0/2, unused. No candidate contract or economic batch is activated. Other lanes have no transferable allocation established by this inventory. Current heavy run37341282828/job111872913687 belongs to another owner. | Frozen source/input/rule/window/cost/control/negativecontrol/counterexample, exact-source CI/review, separate immutable approval and atomic batchclaim, global-heavy free. No new allowance per hour or handoff. |
+
+QUEUE_SNAPSHOT.json reconciles7 cached lanes,20 materials and8 independent jobs. September19 cache grades are preserved as historical, not current profit/permission. No current transferable ready economic job was established. Preserve PR1355 consumed1/rem0, PR1356 consumed2/rem0 and PR1357 consumed1/rem0, both permanent execution claimrefs, parents, PR1350 admission, failures and Issue566 G4→G14 roadmap. No new SSOT grade or G promotion.
+
+## Work and scheduler proof
+
+WORK_CAPABILITY_CHECK.json records actual repository read, non-economic checkpoint write/readback and source-bound successful CI. This checkpoint save must itself be read back before declaring the manual Work handoff and changing the old Chat scheduler. CHECKPOINT.json is the small resumption SSOT and currently marks that final verification pending.
+
+Work task6ac3d6a63e208191b30429021c18da16 is bound to conversation6ac1350c-1518-83eb-8340-2f2a08bf5516, enabled and hourly from2026-10-05 19:56:05 Europe/Berlin. API next_run_time is null; no execution time is invented beyond the stored schedule. A scheduled call must acquire the same owner checkpoint by expected-parent force=false before writes and must not duplicate an ACTIVE invocation. AUTONOMOUS_CYCLE_VERIFIED remains false until an actual scheduled call saves a substantive result and advances its authorized successor. Configuration/manual progress alone is insufficient.
+
+The old Chat task6ac3a5ccef288191a55fb769ed6329b1 becomes read-only after the verified manual handoff; preserve its observed disabled state and do not infer or bypass an unexposed platform pause. Coordinator remains enabled through this source gate. No-op calls read small checkpoint/new-approval deltas quietly; no repeated broad source read or automatic shutdown at a blocked subtask.
+
+New candidates0, new FULL0, new market collection0, paid calls0, orders0, service/collector changes0, deployment0. Live/Paper/G5B/G6 activation, credentials/access changes, new paid API spend, evidence deletion, weakened gates and OOS reuse remain forbidden. Deployment DO_NOT_RUN.

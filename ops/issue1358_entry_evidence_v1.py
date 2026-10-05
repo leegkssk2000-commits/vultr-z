@@ -21,6 +21,9 @@ PRICE_SHA = '3da2f940e532be2c04ea25386782ef5732b12eb99d6f8203473ee3d57433d0b3'
 BUNDLE_SHA = 'd8e64b248d25a66ccdd44e403da82284ec7f5f49fcf9ebd5be68e9876c1d6ed1'
 RESULT_SHA = 'a390f985245f32d52681fea688617d01fb6eb597b1269f10a62466075a9edbc9'
 CONTRACT_SHA = '0717e695a33abed5ec3c362bc4e266b3ff9475766e8eab3186a30544ed61e088'
+COMPACT_SHA = '35cda9bb09813a791846f1d3c5bcacc063d4b3005dda4137dadcc2b98650dc0d'
+CORRECTION_SHA = '2c35e3af1b6b8a6967ee57cf17411579b41e1baf9e341c0a3178b98966ccf5db'
+EVIDENCE_DIR = ROOT / 'research/campaigns/scalp7_20261005/entry_edge_pilot_v1'
 TF = 1_800_000
 MINUTE = 60_000
 
@@ -36,6 +39,54 @@ def digest(raw):
 
 def encoded(value):
     return (json.dumps(value, sort_keys=True, indent=2, allow_nan=False) + '\n').encode()
+
+
+def load_effective_packet(compact_path=None, correction_path=None):
+    """Read the saved packet with its pinned review correction; never replay.
+
+    The raw packet stays immutable historical evidence. Its six nontrade fill
+    labels are superseded by the existing correction, not counterfactual fills.
+    """
+    raw = Path(compact_path or EVIDENCE_DIR / 'ENTRY_EVIDENCE_COMPACT.json').read_bytes()
+    correction_raw = Path(correction_path or EVIDENCE_DIR / 'ENTRY_EVIDENCE_REVIEW_CORRECTION_V1.json').read_bytes()
+    require(digest(raw) == COMPACT_SHA, 'SAVED_COMPACT_PIN')
+    require(digest(correction_raw) == CORRECTION_SHA, 'SAVED_CORRECTION_PIN')
+    packet, correction = json.loads(raw), json.loads(correction_raw)
+    require(packet['schema'] == 'zel.issue1358.entry_evidence.compact.v1', 'SAVED_COMPACT_SCHEMA')
+    require(packet['source_input_sha256'] == PRICE_SHA and packet['parent_result_sha256'] == RESULT_SHA,
+            'SAVED_PACKET_SOURCE_PINS')
+    require(correction['schema'] == 'zel.issue1358.entry_evidence.review_correction.v1'
+            and correction['state'] == 'AUTHORITATIVE_SUPERSESSION_FOR_NONTRADE_FILL_LABELS'
+            and correction['supersedes_fill_fields_in'] == 'ENTRY_EVIDENCE_COMPACT.json',
+            'SAVED_CORRECTION_SCHEMA')
+    require(correction['authoritative_semantics'] == {
+        'decision_time_known_close': 'retained', 'modeled_entry_price': None,
+        'fill_move_from_signal_close_bps': None, 'later_fill_below_signal_low': None,
+        'saved_parent_net_bps': None,
+    }, 'SAVED_CORRECTION_SEMANTICS')
+    columns = packet['columns']
+    require(len(columns) == len(set(columns))
+            and all(len(row) == len(columns) for row in packet['rows']), 'SAVED_COMPACT_COLUMNS')
+    symbol, stamp = columns.index('symbol'), columns.index('signal_open_ms')
+    fill, net = columns.index('later_modeled_fill'), columns.index('saved_parent_net_bps')
+    keys = [(row[symbol], row[stamp]) for row in packet['rows']]
+    correction_keys = [tuple(key) for key in correction['nontrade_signal_keys']]
+    require(len(keys) == len(set(keys)) and len(correction_keys) == len(set(correction_keys)),
+            'SAVED_PACKET_DUPLICATE_KEY')
+    nontrade_keys = {key for key, row in zip(keys, packet['rows']) if row[net] is None}
+    require(len(correction_keys) == 6 and nontrade_keys == set(correction_keys),
+            'SAVED_CORRECTION_NONTRADE_KEYS')
+    for key, row in zip(keys, packet['rows']):
+        if key in nontrade_keys:
+            row[fill] = None
+    packet['schema'] = 'zel.issue1358.entry_evidence.effective.v1'
+    packet['raw_compact_sha256'] = COMPACT_SHA
+    packet['review_correction_sha256'] = CORRECTION_SHA
+    packet['applied_nontrade_signal_keys'] = correction['nontrade_signal_keys']
+    packet['superseded_pre_review_full_diagnostic_sha256'] = packet['full_diagnostic_sha256']
+    packet['full_diagnostic_sha256'] = None
+    packet['full_diagnostic_not_persisted_after_review_fix'] = True
+    return packet
 
 
 def latest_known_minute(rows, as_of):

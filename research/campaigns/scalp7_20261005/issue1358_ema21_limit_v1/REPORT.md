@@ -117,6 +117,12 @@ case. SHARED_QUEUE_POLICY_HOLD.json retains the52-workflow inventory and the
 remaining trust boundary; this is not a claim that GitHub natively guarantees
 multi-pending FIFO.
 
+Exact review4189972609 found that omitted runner/step keys could be mistaken
+for empty evidence. V4 repair2/2 now requires all evidence keys to exist with
+exact types: integer job id, runner id exactly0 or null, runner name exactly the
+empty string, and steps exactly an empty list. Missing keys, wrong types and
+steps:null fail before claim/model. The lifetime V4 repair cap is now consumed.
+
 Running-job cancellation is separate. Liquid6 cancel:false/queue:max must reach
 default master, and current reachable producers must have no cancel:true or
 unknown setting before activation. Historical-ref manual dispatch and admin

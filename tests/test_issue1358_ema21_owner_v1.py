@@ -165,10 +165,20 @@ class GitHubOwnerTests(unittest.TestCase):
         with self.assertRaisesRegex(SnapshotError,'STARTED_NO_REPLAY'):
             g.execute({},C,A,self.root/'out',self.api,{**ENV,'GITHUB_RUN_ATTEMPT':'2'},self.fake_run)
         self.assertIsNone(self.api.claim);self.assertEqual(self.n,0)
+    def test_missing_or_null_runner_evidence_is_not_recoverable(self):
+        for field in ('runner_id','runner_name','steps'):
+            self.api.run_attempt=2;job=self.cancelled_pending(701);job.pop(field)
+            self.api.prior_jobs={1:[job]}
+            with self.assertRaisesRegex(SnapshotError,'STARTED_NO_REPLAY'):
+                g.execute({},C,A,self.root/('missing-'+field),self.api,{**ENV,'GITHUB_RUN_ATTEMPT':'2'},self.fake_run)
+        self.api.prior_jobs={1:[{**self.cancelled_pending(702),'steps':None}]}
+        with self.assertRaisesRegex(SnapshotError,'STARTED_NO_REPLAY'):
+            g.execute({},C,A,self.root/'null-steps',self.api,{**ENV,'GITHUB_RUN_ATTEMPT':'2'},self.fake_run)
+        self.assertIsNone(self.api.claim);self.assertEqual(self.n,0)
     def test_prior_claim_step_or_tampered_job_blocks_recovery(self):
         self.api.run_attempt=2;job=self.cancelled_pending(701);job['steps']=[{'name':g.CLAIM_STEP,'status':'completed'}]
         self.api.prior_jobs={1:[job]}
-        with self.assertRaisesRegex(SnapshotError,'STEP_STATE_UNSAFE'):
+        with self.assertRaisesRegex(SnapshotError,'STARTED_NO_REPLAY'):
             g.execute({},C,A,self.root/'out',self.api,{**ENV,'GITHUB_RUN_ATTEMPT':'2'},self.fake_run)
         self.api.prior_jobs={1:[{**self.cancelled_pending(701),'name':'other-job'}]}
         with self.assertRaisesRegex(SnapshotError,'JOB_IDENTITY'):

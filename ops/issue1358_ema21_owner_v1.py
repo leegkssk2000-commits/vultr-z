@@ -96,11 +96,13 @@ def _preclaim_recovery_evidence(api, run_id, attempt):
         # cancelled before assignment. Real repository examples also have an
         # empty runner name and no steps. A positive runner id or any step is
         # therefore started/unknown and not eligible for this narrow recovery.
-        require(job.get('runner_id') in (None, 0) and not job.get('runner_name'),
+        require({'id','runner_id','runner_name','steps'}.issubset(job)
+                and type(job['id']) is int
+                and (job['runner_id'] is None
+                     or (type(job['runner_id']) is int and job['runner_id'] == 0))
+                and type(job['runner_name']) is str and job['runner_name'] == ''
+                and type(job['steps']) is list and len(job['steps']) == 0,
                 'PRIOR_ATTEMPT_STARTED_NO_REPLAY')
-        steps = job.get('steps') or []
-        require(not steps and not any(s.get('name') == CLAIM_STEP for s in steps),
-                'PRIOR_ATTEMPT_STEP_STATE_UNSAFE')
         evidence.append({'attempt': prior, 'job_id': job['id'],
                          'status': 'completed', 'conclusion': 'cancelled',
                          'runner_started': False, 'claim_step_seen': False})

@@ -25,7 +25,8 @@ class AuditTests(unittest.TestCase):
         self.parent={'signals':self.result['signals'],'trades':[]}
         self.summary={'identity':model.CHILD,'economic_lane_executions':1,'parent_replays':0,
                       'order_authority':'BLOCKED','live_orders':0,'unused_oos_certified':False,
-                      'g5_promotion':False,'realtime_fill_certified':False,'account_nav':None,'paired':{}}
+                      'g5_promotion':False,'realtime_fill_certified':False,'account_nav':None,
+                      'candidate_count':1,'paired':{}}
         self.result['paired']={}
         for mult in (1,2):
             label=str(mult)+'x'
@@ -142,7 +143,7 @@ class AuditTests(unittest.TestCase):
         with self.assertRaises(AssertionError):self.run_audit()
 
     def test_summary_census_fields_are_bound(self):
-        for field in ('signal_count','trade_count','unresolved_count'):
+        for field in ('candidate_count','signal_count','trade_count','unresolved_count'):
             self.rebuild(40);self.summary[field]+=1
             with self.assertRaises(AssertionError):self.run_audit()
         self.rebuild(40);self.summary['status_counts']={}

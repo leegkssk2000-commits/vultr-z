@@ -189,6 +189,9 @@ def audit(result,summary,data,parent,contract):
     unresolved={key(r['signal']):r for r in result['unresolved']}
     assert len(rows)==len(result['trades']) and len(unresolved)==len(result['unresolved'])
     assert not rows.keys()&unresolved.keys()
+    candidates={result['identity']}
+    assert candidates=={CHILD},'AUDITED_CANDIDATE_SET'
+    assert summary['candidate_count']==len(candidates),'SUMMARY_CANDIDATE_COUNT'
     assert summary['signal_count']==len(signals),'SUMMARY_SIGNAL_COUNT'
     assert summary['trade_count']==len(rows),'SUMMARY_TRADE_COUNT'
     assert summary['unresolved_count']==len(unresolved),'SUMMARY_UNRESOLVED_COUNT'

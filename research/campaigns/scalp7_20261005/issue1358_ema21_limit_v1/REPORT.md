@@ -54,8 +54,12 @@ The source verification job uses synthetic data only. The economic job requires
 an exact one-file activation child of the reviewed parent, a separately
 published immutable approval ref, all source/input/window/fit/cost pins, and
 global-heavy concurrency. Other active runs cause a preclaim HOLD; no batch
-is consumed in that condition. Atomic permanent ref creation precedes all
-real-price feature generation, including the opportunity ledger. Failed or
+is consumed in that condition.
+The same strict other-active-run condition may wait at most240s for the
+activation's saved-only CI to finish; timeout still holds before claim. This
+wait does not exempt any active economic job or authorize a retry.
+Atomic permanent ref creation precedes all real-price feature generation,
+including the opportunity ledger. Failed or
 interrupted claimed executions preserve the claim and original exception.
 
 Allocation: #1358 one candidate, total FULL<=2; candidate once. Saved exact

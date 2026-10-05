@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import time
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 
@@ -125,10 +126,19 @@ def claim_batch(contract, activation, output, api=github, env=os.environ):
     require(comparison['total_commits'] == 1 and len(files) == 1
             and files[0]['filename'] == CAMPAIGN + '/RUN_GITHUB.json'
             and files[0]['status'] == 'added', 'ACTIVATION_ONLY_ONE_NEW_FILE')
-    other = api('GET', '/actions/runs?status=in_progress&per_page=100')
-    require(other['total_count'] == len(other['workflow_runs']), 'ACTIVE_RUN_PAGINATION_UNKNOWN')
-    require(all(str(r['id']) == str(identity['run_id']) for r in other['workflow_runs']),
-            'OTHER_ACTIVE_RUN_HOLD_BEFORE_CLAIM')
+    # A source activation itself starts saved-only CI. Await its completion,
+    # without weakening the all-other-runs gate or consuming the batch. A busy
+    # evaluator still prevents the economic job entering the shared group.
+    wait_seconds = contract.get('preclaim_clearance_wait_seconds', 0)
+    require(type(wait_seconds) is int and 0 <= wait_seconds <= 240, 'BOUNDED_CLEARANCE_WAIT')
+    deadline = time.monotonic()+wait_seconds
+    while True:
+        other = api('GET', '/actions/runs?status=in_progress&per_page=100')
+        require(other['total_count'] == len(other['workflow_runs']), 'ACTIVE_RUN_PAGINATION_UNKNOWN')
+        if all(str(r['id']) == str(identity['run_id']) for r in other['workflow_runs']):
+            break
+        require(time.monotonic() < deadline, 'OTHER_ACTIVE_RUN_HOLD_BEFORE_CLAIM')
+        time.sleep(min(5,max(0,deadline-time.monotonic())))
     receipt = {**identity, 'batch_id': model.BATCH, 'claim_ref': CLAIM_REF,
                'contract_sha256': activation['contract_sha256'],
                'activation_sha256': sha(encoded(activation)),

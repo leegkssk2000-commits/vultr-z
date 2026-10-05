@@ -70,6 +70,14 @@ class GitHubOwnerTests(unittest.TestCase):
         self.api.other_active=[{'id':456}]
         with self.assertRaisesRegex(SnapshotError,'OTHER_ACTIVE_RUN_HOLD'):self.run_it()
         self.assertIsNone(self.api.claim);self.assertEqual(self.n,0)
+    def test_clearance_wait_does_not_claim_until_other_ci_completes(self):
+        self.api.other_active=[{'id':456}]
+        def finish_saved_ci(delay):
+            self.assertIsNone(self.api.claim);self.assertEqual(self.n,0)
+            self.api.other_active=[]
+        with patch.object(g.time,'sleep',side_effect=finish_saved_ci):
+            g.execute({}, {**C,'preclaim_clearance_wait_seconds':1}, A,self.root/'out',self.api,ENV,self.fake_run)
+        self.assertEqual(self.n,1);self.assertIsNotNone(self.api.claim)
     def test_normal_one_execution(self):
         self.run_it();self.assertEqual(self.n,1);self.assertTrue(self.api.claim)
         self.assertTrue((self.root/'out/COMPLETED.json').exists())

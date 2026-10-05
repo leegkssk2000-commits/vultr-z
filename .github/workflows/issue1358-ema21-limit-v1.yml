@@ -1,0 +1,119 @@
+name: Issue1358 EMA21 limit bounded development
+on:
+  push:
+    branches: [codex/issue1358-ema21-limit-v1-20261005]
+    paths: ['.github/workflows/issue1358-ema21-limit-v1.yml', 'ops/issue1358_ema21*.py', 'tests/test_issue1358_ema21*.py', 'research/campaigns/scalp7_20261005/issue1358_ema21_limit_v1/**']
+  pull_request:
+    branches: [master]
+    paths: ['.github/workflows/issue1358-ema21-limit-v1.yml', 'ops/issue1358_ema21*.py', 'tests/test_issue1358_ema21*.py', 'research/campaigns/scalp7_20261005/issue1358_ema21_limit_v1/**']
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env: {PYTHONPATH: '.', PYTHONDONTWRITEBYTECODE: '1'}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false, fetch-depth: 2}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13.5'}
+      - name: Canonical precheck
+        run: |
+          pwd
+          ls -la frontend/z-os-app-source
+          cat frontend/z-os-app-source/package.json
+          npm run --prefix frontend/z-os-app-source validate
+      - name: Synthetic integration and exact frozen source only
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check numpy==2.2.6 pandas==2.2.3 requests==2.32.5 PyYAML==6.0.2
+          python -m unittest discover -s tests -p 'test_issue1358_ema21*.py' -v
+          python - <<'PY'
+          import hashlib,json,subprocess,yaml
+          from pathlib import Path
+          p=Path('research/campaigns/scalp7_20261005/issue1358_ema21_limit_v1')
+          c=json.loads((p/'CONTRACT_GITHUB.json').read_text())
+          sha=lambda p:hashlib.sha256(Path(p).read_bytes()).hexdigest()
+          for path,h in c['source_pins'].items():assert sha(path)==h,path
+          assert sha('ops/issue1358_ema21_owner_v1.py')==c['driver_sha256']
+          assert sha('ops/issue1358_ema21_limit_v1.py')==c['script_sha256']
+          assert sha(p/'DESIGN_HYPOTHESIS.json')==c['design_sha256']
+          w=yaml.safe_load(Path('.github/workflows/issue1358-ema21-limit-v1.yml').read_text())
+          assert w['jobs']['economic-comparison']['concurrency']['group']=='a1-global-heavy-economic-evaluator-v1'
+          for job in w['jobs'].values():
+              for step in job['steps']:
+                  if 'run' in step:subprocess.run(['bash','-n'],input=step['run'],text=True,check=True)
+          print('NO_MARKET_SIGNAL_GENERATION_IN_VERIFY')
+          PY
+      - name: Canonical postcheck
+        if: always()
+        run: |
+          npm run --prefix frontend/z-os-app-source validate
+          git diff --exit-code
+  economic-comparison:
+    # Only a separately published, approved activation can enter. No dispatch,
+    # schedules, master pushes, PR execution or automatic second attempt.
+    if: github.event_name == 'push'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: a1-global-heavy-economic-evaluator-v1
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      actions: read
+    env:
+      PYTHONPATH: .
+      PYTHONDONTWRITEBYTECODE: '1'
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false, fetch-depth: 2}
+      - name: Detect sole new activation file
+        id: activation
+        run: |
+          set -euo pipefail
+          p=research/campaigns/scalp7_20261005/issue1358_ema21_limit_v1/RUN_GITHUB.json
+          if test -f "$p" && test "$(git diff --name-status HEAD^ HEAD)" = "$(printf 'A\t%s' "$p")"; then
+            echo 'run=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'run=false' >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-python@v5
+        if: steps.activation.outputs.run == 'true'
+        with: {python-version: '3.13.5'}
+      - name: Obtain the existing pinned input; no collector
+        if: steps.activation.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check numpy==2.2.6 pandas==2.2.3 requests==2.32.5
+          gh api repos/leegkssk2000-commits/vultr-z/actions/artifacts/11305382754/zip > "$RUNNER_TEMP/input.zip"
+          python - <<'PY'
+          import os,zipfile,hashlib,gzip
+          from pathlib import Path
+          root=Path(os.environ['RUNNER_TEMP'])
+          with zipfile.ZipFile(root/'input.zip') as z:
+              assert z.namelist().count('PRICE_INPUT.json.gz')==1
+              info=z.getinfo('PRICE_INPUT.json.gz')
+              assert info.file_size <= 32*1024*1024
+              raw=z.read(info)
+          body=gzip.decompress(raw)
+          assert len(body) <= 64*1024*1024
+          assert hashlib.sha256(body).hexdigest()=='3da2f940e532be2c04ea25386782ef5732b12eb99d6f8203473ee3d57433d0b3'
+          (root/'PRICE_INPUT.json.gz').write_bytes(raw)
+          PY
+      - name: Independent approval then permanent one-shot claim before signals
+        if: steps.activation.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          p=research/campaigns/scalp7_20261005/issue1358_ema21_limit_v1
+          python ops/issue1358_ema21_owner_v1.py --input "$RUNNER_TEMP/PRICE_INPUT.json.gz" --contract "$p/CONTRACT_GITHUB.json" --activation "$p/RUN_GITHUB.json" --output "$RUNNER_TEMP/issue1358-result"
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.activation.outputs.run == 'true'
+        with:
+          name: issue1358-ema21-limit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/issue1358-result/
+          retention-days: 90
+          if-no-files-found: warn

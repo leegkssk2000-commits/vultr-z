@@ -34,14 +34,14 @@ class SavedArithmeticTests(unittest.TestCase):
 class ExitEvidenceTests(unittest.TestCase):
     def fixture(self):
         def row(symbol,signal,reason):
-            return {'symbol':symbol,'side':1,'signal_ts_ms':signal,'entry_ts_ms':100,
-                    'exit_ts_ms':300,'outcome_available_ts_ms':310,'entry_prices':{symbol:100.},
+            return {'symbol':symbol,'side':1,'signal_ts_ms':signal,'entry_ts_ms':60000,
+                    'exit_ts_ms':3660000,'outcome_available_ts_ms':3660010,'entry_prices':{symbol:100.},
                     'exit_prices':{symbol:99.},'reason':reason,'gross_bps':-100.,'cost_bps':14.,
                     'net_bps':-114.,'signal_available_ms':90}
         r=row('DOGE-USDT',50,'SQUEEZE_OBSERVED_NONPOSITIVE_MOMENTUM_NEXT_OPEN')
-        parent={'trades':[{**r,'reason':'MAX_HOLD_CLOCKED_OPEN','exit_ts_ms':900}]}
-        event={'signal_key':f"{a.CHILD}|DOGE-USDT|50",'bar_open_ms':120,'input_ready_ms':290,
-               'order_effective_ms':300,'update':{'reason':r['reason'],'exit_next_open':True,'observed_momentum':-.01}}
+        parent={'trades':[{**r,'reason':'MAX_HOLD_CLOCKED_OPEN','exit_ts_ms':7200000}]}
+        event={'signal_key':f"{a.CHILD}|DOGE-USDT|50",'bar_open_ms':1800000,'input_ready_ms':3600010,
+               'order_effective_ms':3660000,'update':{'reason':r['reason'],'exit_next_open':True,'observed_momentum':-.01}}
         child={'signals':[r.copy()],'trades':[r.copy()],'events':[event]}
         return parent,child
     def test_one_failure_event_links_exact_trade_exit(self):
@@ -68,5 +68,31 @@ class ExitEvidenceTests(unittest.TestCase):
     def test_failure_event_requires_actual_completed_trade(self):
         p,c=self.fixture();c['trades']=[]
         with self.assertRaisesRegex(AssertionError,'WITHOUT_COMPLETED'):a.exit_evidence(p,c)
+
+
+    def test_receipt_before_full_bar_close_is_rejected(self):
+        p,c=self.fixture();c['events'][0]['input_ready_ms']=3599999
+        with self.assertRaisesRegex(AssertionError,'INCOMPLETE_30M_BAR'):a.exit_evidence(p,c)
+    def test_later_minute_even_when_trade_matches_is_rejected(self):
+        p,c=self.fixture();c['events'][0]['order_effective_ms']=3720000
+        c['trades'][0].update(exit_ts_ms=3720000,outcome_available_ts_ms=3720010)
+        with self.assertRaisesRegex(AssertionError,'NOT_FIRST_POST_RECEIPT_MINUTE'):a.exit_evidence(p,c)
+    def test_receipt_at_exact_minute_requires_strictly_later_open(self):
+        p,c=self.fixture();c['events'][0]['input_ready_ms']=3600000
+        self.assertEqual(len(a.exit_evidence(p,c)['failure_trade_event_links']),1)
+        c['events'][0]['order_effective_ms']=3600000;c['trades'][0]['exit_ts_ms']=3600000
+        with self.assertRaisesRegex(AssertionError,'CHRONOLOGY'):a.exit_evidence(p,c)
+    def test_noninteger_clock_is_rejected(self):
+        for name in ('bar_open_ms','input_ready_ms','order_effective_ms'):
+            p,c=self.fixture();e=c['events'][0];e[name]=float(e[name])
+            with self.subTest(name=name),self.assertRaisesRegex(AssertionError,'INTEGER_CLOCK'):a.exit_evidence(p,c)
+    def test_nonutc_bar_open_is_rejected(self):
+        p,c=self.fixture();c['events'][0]['bar_open_ms']+=1
+        with self.assertRaisesRegex(AssertionError,'UTC_30M_BAR'):a.exit_evidence(p,c)
+    def test_nonfailure_event_uses_the_same_clock_contract(self):
+        # Shared helper is used for every event in audit, not just the child exit.
+        _,c=self.fixture();e=c['events'][0];e['update']={'reason':'HOLD'}
+        a.verify_event_clock(e);e['order_effective_ms']+=60000
+        with self.assertRaisesRegex(AssertionError,'NOT_FIRST_POST_RECEIPT_MINUTE'):a.verify_event_clock(e)
 
 if __name__=='__main__':unittest.main()

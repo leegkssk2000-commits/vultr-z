@@ -40,6 +40,14 @@ def metrics(rows,mult):
             'Net_bps':math.fsum(nets),'NetExp_bps_T':math.fsum(nets)/len(nets) if nets else None,
             'PF':gains/loss if loss else None,'DD_bps':dd,'MaxLossStreak':longest}
 
+def verify_event_clock(event):
+    """Closed UTC 30m input; order at the FIRST minute strictly after receipt."""
+    bar,ready,effective=(event[k] for k in ('bar_open_ms','input_ready_ms','order_effective_ms'))
+    assert all(type(t) is int and t>=0 for t in (bar,ready,effective)), 'EVENT_INTEGER_CLOCK'
+    assert bar%(30*60000)==0, 'EVENT_UTC_30M_BAR'
+    assert ready>=bar+30*60000, 'EVENT_INCOMPLETE_30M_BAR'
+    assert effective==(ready//60000+1)*60000, 'EVENT_NOT_FIRST_POST_RECEIPT_MINUTE'
+
 def exit_evidence(parent,child):
     """Cross-index saved callbacks and exact fills; equal PnL is not parity."""
     parent_rows={key(r):r for r in parent['trades']}
@@ -59,6 +67,7 @@ def exit_evidence(parent,child):
         assert event['update'].get('exit_next_open') is True,'FAILURE_EVENT_NOT_EXIT'
         assert event['order_effective_ms']==trade['exit_ts_ms'],'FAILURE_EVENT_EXIT_TIME'
         assert trade['entry_ts_ms']<=event['bar_open_ms']<event['input_ready_ms']<event['order_effective_ms'],'FAILURE_EVENT_CHRONOLOGY'
+        verify_event_clock(event)
         momentum=event['update']['observed_momentum']
         assert math.isfinite(momentum) and momentum<=0,'FAILURE_EVENT_MOMENTUM'
         linked[k].append(event)
@@ -121,7 +130,7 @@ def audit(files,parent_files):
         assert all(a['outcome_available_ts_ms']<b['entry_ts_ms'] for a,b in zip(rs,rs[1:])), 'OVERLAP'
     failure_events=[]
     for e in c['events']:
-        assert e['input_ready_ms']<e['order_effective_ms'] and e['order_effective_ms']%60000==0
+        verify_event_clock(e)
         if e['update'].get('reason')=='SQUEEZE_OBSERVED_NONPOSITIVE_MOMENTUM_NEXT_OPEN':
             assert math.isfinite(e['update']['observed_momentum']) and e['update']['observed_momentum']<=0
             assert e['update']['exit_next_open'];failure_events.append(e)

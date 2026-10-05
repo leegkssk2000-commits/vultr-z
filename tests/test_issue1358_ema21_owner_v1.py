@@ -21,12 +21,15 @@ A = {'batch_id':m.BATCH,'contract_sha256':'b'*64,'reviewed_parent_sha':'c'*40}
 class FakeAPI:
     def __init__(self):
         self.lock=threading.Lock();self.claim=None;self.calls=[];self.diff_path=g.CAMPAIGN+'/RUN_GITHUB.json';self.approved_parent='c'*40;self.approved_contract='b'*64
-        self.approval_available=True;self.other_active=[]
+        self.approval_available=True;self.other_active=[];self.ordinary_ci=[]
     def __call__(self,method,route,value=None):
         with self.lock:
             self.calls.append((method,route,value))
-            if route.startswith('/actions/runs?'):
-                return {'total_count':len(self.other_active),'workflow_runs':self.other_active}
+            if route=='/actions/concurrency_groups/'+g.HEAVY_GROUP:
+                members=[{'run_id':123,'job_id':789,'job_name':g.JOB,'status':'in_progress'}]+self.other_active
+                return {'group_name':g.HEAVY_GROUP,'total_count':len(members),'group_members':members}
+            if route=='/actions/runs/123/jobs?per_page=100':
+                return {'total_count':1,'jobs':[{'id':789,'name':g.JOB,'status':'in_progress'}]}
             if route.startswith('/actions/runs/'):
                 return {'head_sha':'a'*40,'head_branch':g.BRANCH,'event':'push','run_attempt':1,
                         'status':'in_progress','path':'.github/workflows/issue1358-ema21-limit-v1.yml'}
@@ -67,17 +70,34 @@ class GitHubOwnerTests(unittest.TestCase):
     def run_it(self,name='out',**kwargs):
         return g.execute({},C,A,self.root/name,api=self.api,env=ENV,run=kwargs.get('run',self.fake_run))
     def test_other_active_run_blocks_without_budget_consumption(self):
-        self.api.other_active=[{'id':456}]
-        with self.assertRaisesRegex(SnapshotError,'OTHER_ACTIVE_RUN_HOLD'):self.run_it()
+        self.api.other_active=[{'run_id':456,'status':'in_progress'}]
+        with self.assertRaisesRegex(SnapshotError,'HEAVY_GROUP_NOT_OWN'):self.run_it()
         self.assertIsNone(self.api.claim);self.assertEqual(self.n,0)
-    def test_clearance_wait_does_not_claim_until_other_ci_completes(self):
-        self.api.other_active=[{'id':456}]
-        def finish_saved_ci(delay):
-            self.assertIsNone(self.api.claim);self.assertEqual(self.n,0)
-            self.api.other_active=[]
-        with patch.object(g.time,'sleep',side_effect=finish_saved_ci):
-            g.execute({}, {**C,'preclaim_clearance_wait_seconds':1}, A,self.root/'out',self.api,ENV,self.fake_run)
-        self.assertEqual(self.n,1);self.assertIsNotNone(self.api.claim)
+    def test_unrelated_ordinary_ci_is_not_a_heavy_owner(self):
+        self.api.ordinary_ci=[{'id':456,'status':'in_progress'}]
+        self.run_it();self.assertEqual(self.n,1)
+        self.assertFalse(any('/actions/runs?' in route for _,route,_ in self.api.calls))
+    def test_other_pending_heavy_owner_is_preserved(self):
+        pending={'run_id':456,'status':'pending'};self.api.other_active=[pending.copy()]
+        self.run_it();self.assertEqual(self.n,1)
+        self.assertEqual(self.api.other_active,[pending])
+    def test_missing_shared_group_permission_holds_before_claim(self):
+        old=self.api
+        def missing(method,route,value=None):
+            if '/concurrency_groups/' in route:raise RuntimeError('GITHUB_GET_HTTP_403')
+            return old(method,route,value)
+        self.api=missing
+        with self.assertRaisesRegex(RuntimeError,'HTTP_403'):self.run_it()
+        self.assertIsNone(old.claim);self.assertEqual(self.n,0)
+    def test_wrong_actual_job_identity_cannot_claim(self):
+        old=self.api
+        def wrong(method,route,value=None):
+            value=old(method,route,value)
+            if '/jobs?' in route:value['jobs'][0]['name']='other-job'
+            return value
+        self.api=wrong
+        with self.assertRaisesRegex(SnapshotError,'HEAVY_JOB_API_MISMATCH'):self.run_it()
+        self.assertIsNone(old.claim);self.assertEqual(self.n,0)
     def test_normal_one_execution(self):
         self.run_it();self.assertEqual(self.n,1);self.assertTrue(self.api.claim)
         self.assertTrue((self.root/'out/COMPLETED.json').exists())

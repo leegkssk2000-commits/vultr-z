@@ -14,7 +14,6 @@ import os
 from pathlib import Path
 import re
 import sys
-import time
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 
@@ -31,6 +30,7 @@ CAMPAIGN = 'research/campaigns/scalp7_20261005/issue1358_ema21_limit_v1'
 CLAIM_REF = 'refs/heads/research-execution-claims/issue1358-ema21-limit-20261005-v1'
 JOB = 'economic-comparison'
 APPROVAL_REF = 'heads/research-approvals/issue1358-ema21-limit-20261005-v1'
+HEAVY_GROUP = 'a1-global-heavy-economic-evaluator-v1'
 
 
 def github(method, route, value=None):
@@ -41,6 +41,7 @@ def github(method, route, value=None):
                   data=encoded(value) if value is not None else None, method=method,
                   headers={'Authorization': 'Bearer ' + token,
                            'Accept': 'application/vnd.github+json',
+                           'X-GitHub-Api-Version': '2026-03-10',
                            'Content-Type': 'application/json'})
     try:
         with urlopen(req, timeout=30) as response:
@@ -126,24 +127,28 @@ def claim_batch(contract, activation, output, api=github, env=os.environ):
     require(comparison['total_commits'] == 1 and len(files) == 1
             and files[0]['filename'] == CAMPAIGN + '/RUN_GITHUB.json'
             and files[0]['status'] == 'added', 'ACTIVATION_ONLY_ONE_NEW_FILE')
-    # A source activation itself starts saved-only CI. Await its completion,
-    # without weakening the all-other-runs gate or consuming the batch. A busy
-    # evaluator still prevents the economic job entering the shared group.
-    wait_seconds = contract.get('preclaim_clearance_wait_seconds', 0)
-    require(type(wait_seconds) is int and 0 <= wait_seconds <= 240, 'BOUNDED_CLEARANCE_WAIT')
-    deadline = time.monotonic()+wait_seconds
-    while True:
-        other = api('GET', '/actions/runs?status=in_progress&per_page=100')
-        require(other['total_count'] == len(other['workflow_runs']), 'ACTIVE_RUN_PAGINATION_UNKNOWN')
-        if all(str(r['id']) == str(identity['run_id']) for r in other['workflow_runs']):
-            break
-        require(time.monotonic() < deadline, 'OTHER_ACTIVE_RUN_HOLD_BEFORE_CLAIM')
-        time.sleep(min(5,max(0,deadline-time.monotonic())))
+    # Query the actual shared group, not unrelated repository CI. The reviewed
+    # job's platform lease must be its sole ACTIVE member; other pending owners
+    # retain their places under queue:max. Endpoint/access errors fail closed.
+    group = api('GET', '/actions/concurrency_groups/' + HEAVY_GROUP)
+    require(group['group_name'] == HEAVY_GROUP
+            and group['total_count'] == len(group['group_members']), 'HEAVY_GROUP_PROFILE')
+    require(all(r['status'] in ('in_progress','pending') for r in group['group_members']),
+            'HEAVY_GROUP_UNKNOWN_STATE')
+    active = [r for r in group['group_members'] if r['status'] == 'in_progress']
+    require(len(active) == 1 and active[0]['run_id'] == identity['run_id']
+            and active[0].get('job_name') == JOB and type(active[0].get('job_id')) is int,
+            'HEAVY_GROUP_NOT_OWN_EXCLUSIVE_JOB')
+    jobs = api('GET', '/actions/runs/' + str(identity['run_id']) + '/jobs?per_page=100')
+    require(jobs['total_count'] == len(jobs['jobs']) and any(
+        j['id'] == active[0]['job_id'] and j['name'] == JOB and j['status'] == 'in_progress'
+        for j in jobs['jobs']), 'HEAVY_JOB_API_MISMATCH')
     receipt = {**identity, 'batch_id': model.BATCH, 'claim_ref': CLAIM_REF,
                'contract_sha256': activation['contract_sha256'],
                'activation_sha256': sha(encoded(activation)),
                'state': 'RESERVED_NONRETRYABLE', 'max_lane_executions': 1,
                'independent_approval_commit_sha': approval_sha,
+               'shared_heavy_clearance': group,
                'output': str(output), 'utc': datetime.now(timezone.utc).isoformat()}
     # The object can be orphaned after a lost race; only ref creation owns execution.
     blob = api('POST', '/git/blobs', {'content': encoded(receipt).decode(), 'encoding': 'utf-8'})

@@ -53,11 +53,11 @@ are not certified. Reference trade-bps sums are not account returns.
 The source verification job uses synthetic data only. The economic job requires
 an exact one-file activation child of the reviewed parent, a separately
 published immutable approval ref, all source/input/window/fit/cost pins, and
-global-heavy concurrency. Other active runs cause a preclaim HOLD; no batch
-is consumed in that condition.
-The same strict other-active-run condition may wait at most240s for the
-activation's saved-only CI to finish; timeout still holds before claim. This
-wait does not exempt any active economic job or authorize a retry.
+global-heavy concurrency. The official shared-group endpoint must prove this
+exact economic job is its sole active lease, matched to the actual job API.
+Other active heavy owners or endpoint/permission/identity uncertainty cause a
+preclaim HOLD without consuming the batch. Unrelated ordinary CI is outside
+this shared group; pending heavy owners keep their queue positions.
 Atomic permanent ref creation precedes all real-price feature generation,
 including the opportunity ledger. Failed or
 interrupted claimed executions preserve the claim and original exception.

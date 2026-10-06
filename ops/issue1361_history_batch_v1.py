@@ -107,7 +107,13 @@ def verified_claim(api: Callable[[str, str], Mapping[str, Any]] = github) -> dic
         raise HistoryBatchError("CLAIM_REF_PROFILE")
     commit = api("GET", "/git/commits/" + commit_sha)
     tree_sha = commit.get("tree", {}).get("sha")
-    if not isinstance(tree_sha, str) or commit.get("parents"):
+    parents = commit.get("parents")
+    if (
+        not isinstance(tree_sha, str)
+        or not isinstance(parents, list)
+        or len(parents) != 1
+        or not _commit(parents[0].get("sha"))
+    ):
         raise HistoryBatchError("CLAIM_COMMIT_PROFILE")
     tree = api("GET", "/git/trees/" + tree_sha)
     entries = tree.get("tree", [])
@@ -122,6 +128,8 @@ def verified_claim(api: Callable[[str, str], Mapping[str, Any]] = github) -> dic
     value = json.loads(raw)
     if not isinstance(value, dict) or "claim_commit_sha" in value:
         raise HistoryBatchError("CLAIM_CONTENT_PROFILE")
+    if parents[0]["sha"] != value.get("independent_approval_commit_sha"):
+        raise HistoryBatchError("CLAIM_PARENT_IDENTITY")
     return {**value, "claim_commit_sha": commit_sha}
 
 
@@ -129,14 +137,20 @@ def _verified_single_file_ref(
     ref_name: str,
     filename: str,
     api: Callable[[str, str], Mapping[str, Any]],
-) -> tuple[dict[str, Any], str]:
+) -> tuple[dict[str, Any], str, str]:
     ref = api("GET", "/git/ref/" + ref_name.removeprefix("refs/"))
     commit_sha = ref.get("object", {}).get("sha")
     if ref.get("ref") != ref_name or ref.get("object", {}).get("type") != "commit" or not _commit(commit_sha):
         raise HistoryBatchError("APPROVAL_REF_PROFILE")
     commit = api("GET", "/git/commits/" + commit_sha)
     tree_sha = commit.get("tree", {}).get("sha")
-    if not isinstance(tree_sha, str) or commit.get("parents"):
+    parents = commit.get("parents")
+    if (
+        not isinstance(tree_sha, str)
+        or not isinstance(parents, list)
+        or len(parents) != 1
+        or not _commit(parents[0].get("sha"))
+    ):
         raise HistoryBatchError("APPROVAL_COMMIT_PROFILE")
     tree = api("GET", "/git/trees/" + tree_sha)
     entries = tree.get("tree", [])
@@ -151,11 +165,13 @@ def _verified_single_file_ref(
     value = json.loads(raw)
     if not isinstance(value, dict):
         raise HistoryBatchError("APPROVAL_CONTENT_PROFILE")
-    return value, commit_sha
+    return value, commit_sha, parents[0]["sha"]
 
 
 def verified_approval(api: Callable[[str, str], Mapping[str, Any]] = github) -> dict[str, Any]:
-    value, commit_sha = _verified_single_file_ref(APPROVAL_REF, "APPROVED.json", api)
+    value, commit_sha, parent_sha = _verified_single_file_ref(APPROVAL_REF, "APPROVED.json", api)
+    if parent_sha != value.get("reviewed_source_sha"):
+        raise HistoryBatchError("APPROVAL_PARENT_IDENTITY")
     return {**value, "approval_commit_sha": commit_sha}
 
 

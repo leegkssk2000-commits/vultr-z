@@ -131,3 +131,194 @@ jobs:
           name: issue1361-canonical-source-inventory
           path: ${{ runner.temp }}/issue1361-source-inventory.json
           if-no-files-found: error
+
+  source-fit-artifact:
+    # A reviewed, single-use source-only activation.  The activation commit
+    # must add exactly one receipt file on top of the reviewed source commit.
+    # This job fits the three past-only contexts but forms no test signal,
+    # creates no economic claim, and runs neither execution engine.
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/master' &&
+      contains(
+        github.event.head_commit.message,
+        '[issue1361-fit-artifact-once-20261006T1230Z-3f2d71a]'
+      )
+    needs: contract-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify source-only activation descendant
+        id: activation
+        run: |
+          python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+
+          activation_path = Path(
+              'research/campaigns/scalp7_20261006/'
+              'issue1361_repeatability_v1/FIT_ARTIFACT_ACTIVATION.json'
+          )
+          activation = json.loads(activation_path.read_bytes())
+          head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          parent = subprocess.check_output(['git', 'rev-parse', 'HEAD^'], text=True).strip()
+          changed = subprocess.check_output(
+              ['git', 'diff', '--name-status', '--no-renames', parent, head],
+              text=True,
+          ).splitlines()
+          prior = subprocess.check_output(
+              ['git', 'rev-list', parent, '--', str(activation_path)],
+              text=True,
+          ).splitlines()
+          required = {
+              'schema': 'zel.issue1361.fit_artifact_activation.v1',
+              'issue': 1361,
+              'source_head': parent,
+              'mode': 'FIT_ONLY_NO_TEST_SIGNALS_NO_ECONOMIC_CLAIM',
+              'token': '[issue1361-fit-artifact-once-20261006T1230Z-3f2d71a]',
+          }
+          if any(activation.get(k) != v for k, v in required.items()):
+              raise SystemExit('FIT_ACTIVATION_PROFILE_MISMATCH')
+          if activation.get('activation_head') not in (None, head):
+              raise SystemExit('FIT_ACTIVATION_HEAD_MISMATCH')
+          if changed != ['A\t' + str(activation_path)]:
+              raise SystemExit('FIT_ACTIVATION_NOT_NEW_SINGLE_FILE')
+          if prior:
+              raise SystemExit('FIT_ACTIVATION_PATH_ALREADY_IN_HISTORY')
+          if activation.get('H_claimed') != 0 or activation.get('economic_runs') != 0:
+              raise SystemExit('FIT_ACTIVATION_ECONOMIC_STATE')
+          out = Path(os.environ['RUNNER_TEMP']) / 'FIT_ARTIFACT_ACTIVATION.json'
+          out.write_bytes(activation_path.read_bytes())
+          with Path(os.environ['GITHUB_OUTPUT']).open('a') as handle:
+              handle.write(f'source_head={parent}\n')
+              handle.write(f'activation_head={head}\n')
+          PY
+      - name: Checkout reviewed source parent
+        run: git checkout --detach '${{ steps.activation.outputs.source_head }}'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.14'
+      - name: Install frozen fit runtime
+        run: python -m pip install --disable-pip-version-check numpy==2.4.3 pandas==3.0.1
+      - name: Require configured existing read-only connection
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          test -n "$VPS_HOST" && test -n "$VPS_USER" && test -n "$VPS_SSH_KEY"
+      - name: Configure existing SSH credential
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Read canonical archive without remote mutation
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
+            tar -C /home/z/z/runtime/economic7_campaign_20260915 -czf - \
+              canonical_12m canonical_gapday_prefix canonical_postgap_20260213 \
+            > "$RUNNER_TEMP/issue1361-source.tar.gz"
+          test -s "$RUNNER_TEMP/issue1361-source.tar.gz"
+      - name: Reject unsafe archive members and extract
+        run: |
+          python - <<'PY'
+          import os, tarfile
+          from pathlib import Path, PurePosixPath
+
+          archive = Path(os.environ['RUNNER_TEMP']) / 'issue1361-source.tar.gz'
+          destination = Path(os.environ['RUNNER_TEMP']) / 'issue1361-source'
+          destination.mkdir()
+          with tarfile.open(archive, 'r:gz') as handle:
+              members = handle.getmembers()
+              if len(members) > 100_000 or sum(item.size for item in members) > 12 * 1024**3:
+                  raise SystemExit('SOURCE_ARCHIVE_BOUND_EXCEEDED')
+              for member in members:
+                  path = PurePosixPath(member.name)
+                  if (
+                      path.is_absolute()
+                      or '..' in path.parts
+                      or not (member.isdir() or member.isfile())
+                      or not path.parts
+                      or path.parts[0] not in {
+                          'canonical_12m',
+                          'canonical_gapday_prefix',
+                          'canonical_postgap_20260213',
+                      }
+                  ):
+                      raise SystemExit('UNSAFE_SOURCE_ARCHIVE_MEMBER:' + member.name)
+              handle.extractall(destination, filter='data')
+          PY
+      - name: Create fit-only manifest under frozen runtime
+        run: |
+          python ops/issue1361_history_v1.py prepare \
+            --source-root "$RUNNER_TEMP/issue1361-source" \
+            --cache-dir "$RUNNER_TEMP/unused-cache" \
+            --output "$RUNNER_TEMP/FIT_MANIFEST.json"
+      - name: Persist source and fit receipt
+        env:
+          SOURCE_HEAD: ${{ steps.activation.outputs.source_head }}
+          ACTIVATION_HEAD: ${{ steps.activation.outputs.activation_head }}
+        run: |
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+
+          root = Path(os.environ['RUNNER_TEMP'])
+          manifest = json.loads((root / 'FIT_MANIFEST.json').read_bytes())
+          archive = root / 'issue1361-source.tar.gz'
+          archive_digest = hashlib.sha256()
+          with archive.open('rb') as handle:
+              for block in iter(lambda: handle.read(1024 * 1024), b''):
+                  archive_digest.update(block)
+          receipt = {
+              'schema': 'zel.issue1361.fit_artifact_receipt.v1',
+              'issue': 1361,
+              'source_head': os.environ['SOURCE_HEAD'],
+              'activation_head': os.environ['ACTIVATION_HEAD'],
+              'source_inventory_sha256': manifest['source']['full_inventory_sha256'],
+              'source_inventory_files': manifest['source']['full_inventory_files'],
+              'transfer_archive_sha256': archive_digest.hexdigest(),
+              'transfer_archive_bytes': archive.stat().st_size,
+              'manifest_sha256': manifest['manifest_sha256'],
+              'coverage_sha256': manifest['coverage_sha256'],
+              'fit_sha256': {row['id']: row['fit']['sha256'] for row in manifest['fits']},
+              'runtime': manifest['runtime'],
+              'classification': manifest['classification'],
+              'test_period_signal_generation': 0,
+              'test_period_model_replays': 0,
+              'H_claimed': 0,
+              'economic_runs': 0,
+              'source_transport': 'EXISTING_SSH_READ_ONLY',
+              'market_data_requests': 0,
+              'service_actions': 0,
+              'order_authority': 'BLOCKED',
+          }
+          raw = (json.dumps(receipt, sort_keys=True, separators=(',', ':')) + '\n').encode()
+          receipt['receipt_sha256'] = hashlib.sha256(raw).hexdigest()
+          (root / 'SOURCE_FIT_RECEIPT.json').write_text(
+              json.dumps(receipt, indent=2, sort_keys=True) + '\n'
+          )
+          PY
+      - name: Remove transferred source and credential
+        if: always()
+        run: |
+          rm -f ~/.ssh/vps_key "$RUNNER_TEMP/issue1361-source.tar.gz"
+          rm -rf "$RUNNER_TEMP/issue1361-source"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: issue1361-source-fit-manifest
+          path: |
+            ${{ runner.temp }}/FIT_MANIFEST.json
+            ${{ runner.temp }}/SOURCE_FIT_RECEIPT.json
+            ${{ runner.temp }}/FIT_ARTIFACT_ACTIVATION.json
+          if-no-files-found: error

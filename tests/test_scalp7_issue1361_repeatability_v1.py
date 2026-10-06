@@ -40,6 +40,48 @@ def test_source_inventory_one_shot_recovery_is_master_bound_and_non_economic() -
     assert receipt["schedules_changed"] == 0
 
 
+def test_fit_artifact_job_is_single_file_descendant_and_non_economic() -> None:
+    workflow = Path(".github/workflows/issue1361-repeatability-v1.yml").read_text()
+    token = "[issue1361-fit-artifact-once-20261006T1230Z-3f2d71a]"
+    assert token in workflow
+    block = workflow.split("  source-fit-artifact:", 1)[1]
+    assert "['git', 'diff', '--name-status', '--no-renames', parent, head]" in block
+    assert "['git', 'rev-list', parent, '--', str(activation_path)]" in block
+    assert "['git', 'diff-tree'" not in block
+    assert "changed != ['A\\t' + str(activation_path)]" in block
+    assert "FIT_ACTIVATION_NOT_NEW_SINGLE_FILE" in block
+    assert "FIT_ACTIVATION_PATH_ALREADY_IN_HISTORY" in block
+    assert "fetch-depth: 0" in block
+    assert "git checkout --detach '${{ steps.activation.outputs.source_head }}'" in block
+    assert "persist-credentials: false" in block
+    assert "issue1361_history_v1.py prepare" in block
+    assert "test_period_signal_generation': 0" in block
+    assert "test_period_model_replays': 0" in block
+    assert "'H_claimed': 0" in block
+    assert "'economic_runs': 0" in block
+    assert "scalp7_positive_lanes_v2" not in block
+    assert "issue1361_history_batch_v1.py" not in block
+    assert "workflow_dispatch" not in block.split("jobs:", 1)[0]
+
+
+def test_fit_artifact_transfer_is_read_only_and_not_published() -> None:
+    workflow = Path(".github/workflows/issue1361-repeatability-v1.yml").read_text()
+    block = workflow.split("  source-fit-artifact:", 1)[1]
+    assert "tar -C /home/z/z/runtime/economic7_campaign_20260915 -czf -" in block
+    assert "UNSAFE_SOURCE_ARCHIVE_MEMBER" in block
+    assert "SOURCE_ARCHIVE_BOUND_EXCEEDED" in block
+    assert "rm -f ~/.ssh/vps_key \"$RUNNER_TEMP/issue1361-source.tar.gz\"" in block
+    upload = block.split("- uses: actions/upload-artifact@v4", 1)[1]
+    assert "FIT_MANIFEST.json" in upload
+    assert "SOURCE_FIT_RECEIPT.json" in upload
+    assert "issue1361-source.tar.gz" not in upload
+    assert "issue1361-source/" not in upload
+    assert "'source_transport': 'EXISTING_SSH_READ_ONLY'" in block
+    assert "'market_data_requests': 0" in block
+    assert "archive.read_bytes()" not in block
+    assert "handle.read(1024 * 1024)" in block
+
+
 def test_history_is_exact_three_past_only_90d_fit_30d_test() -> None:
     rows = repeat.planned_history()
     repeat.check_history(rows)

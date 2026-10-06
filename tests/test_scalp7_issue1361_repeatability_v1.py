@@ -112,6 +112,7 @@ def test_history_batch_is_one_shot_claimed_and_global_heavy() -> None:
     workflow = Path(".github/workflows/issue1361-repeatability-v1.yml").read_text()
     block = workflow.split("  history-economic-batch:", 1)[1]
     assert "[issue1361-history-batch-once-20261006T1420Z-f18d2c7]" in block
+    assert "github.run_attempt == 1" in block.split("needs: contract-tests", 1)[0]
     assert "changed != ['A\\t' + str(path)]" in block
     assert "HISTORY_ACTIVATION_NOT_NEW_SINGLE_FILE" in block
     assert "git checkout --detach '${{ steps.activation.outputs.reviewed_source_sha }}'" in block
@@ -125,6 +126,9 @@ def test_history_batch_is_one_shot_claimed_and_global_heavy() -> None:
     assert "a39e65afc4c7557a4864a4a0192b6278cdba51a051969b684f20c97da4f73d1f" in block
     assert "research-approvals/issue1361-history-20261006-v1" in block
     assert "research-execution-claims/issue1361-history-20261006-v1" in block
+    upload = block.rsplit("- uses: actions/upload-artifact@v4", 1)[1]
+    assert "if: always()" in upload.split("with:", 1)[0]
+    assert "${{ runner.temp }}/H_RESULTS" in upload
     assert "systemctl" not in block
 
 

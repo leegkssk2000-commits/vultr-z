@@ -1,6 +1,9 @@
 import ast
 import copy
+import hashlib
+import json
 
+import pandas as pd
 import pytest
 
 from ops import issue1361_history_v1 as h
@@ -10,20 +13,21 @@ from ops import issue1361_repeatability_v1 as scope
 def fits():
     output = []
     for row in scope.planned_history():
-        output.append(
-            {
-                "training_feature_sha256": "a" * 64,
-                "disp_q67": 0.1,
-                "meanabs_q85": 0.2,
-                "vol_q25": 0.3,
-                "vol_q67": 0.4,
-                "train_start_ms": row["fit_start_ms"],
-                "train_end_ms": row["fit_end_ms"],
-                "last_fit_observation_ms": row["fit_end_ms"] - 3_600_000,
-                "train_rows": 100,
-                "sha256": (str(len(output) + 1) * 64),
-            }
-        )
+        fit = {
+            "training_feature_sha256": "a" * 64,
+            "disp_q67": 0.1,
+            "meanabs_q85": 0.2,
+            "vol_q25": 0.3,
+            "vol_q67": 0.4,
+            "train_start_ms": row["fit_start_ms"],
+            "train_end_ms": row["fit_end_ms"],
+            "last_fit_observation_ms": row["fit_end_ms"] - 3_600_000,
+            "train_rows": 100,
+        }
+        fit["sha256"] = hashlib.sha256(
+            json.dumps(fit, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        output.append(fit)
     return output
 
 
@@ -90,7 +94,10 @@ def test_each_instance_state_hash_rejects_mutation(key):
     value["instances"][0][key] = "changed"
     with pytest.raises(
         h.HistoryPreparationError,
-        match="INSTANCE_STATE_HASH|FOLD_MODEL_INSTANCE_MATRIX|INSTANCE_FOLD_BINDING",
+        match=(
+            "INSTANCE_STATE_HASH|FOLD_MODEL_INSTANCE_MATRIX|"
+            "INSTANCE_FOLD_BINDING|INSTANCE_COST_BINDING"
+        ),
     ):
         h.validate_manifest(value)
 
@@ -180,6 +187,79 @@ def test_cost_values_are_exact_not_merely_positive():
     changed["XRP-USDT"] = 14.0
     with pytest.raises(h.HistoryPreparationError, match="FROZEN_COSTS_CHANGED"):
         h.validate_costs(changed)
+
+
+def test_fit_digest_is_recomputed_after_outer_manifest_rehash():
+    value = manifest()
+    value["fits"][0]["fit"]["disp_q67"] += 0.001
+    _rehash_manifest(value)
+    with pytest.raises(h.HistoryPreparationError, match="FIT_CHRONOLOGY_OR_HASH"):
+        h.validate_manifest(value)
+
+
+@pytest.mark.parametrize("mutation", ["changed_table", "missing_table", "changed_hash"])
+def test_frozen_costs_are_revalidated_after_outer_manifest_rehash(mutation):
+    value = manifest()
+    if mutation == "changed_table":
+        value["costs_bps"]["BTC-USDT"] = 0.0
+    elif mutation == "missing_table":
+        del value["costs_bps"]
+    else:
+        value["cost_sha256"] = "0" * 64
+    _rehash_manifest(value)
+    with pytest.raises(h.HistoryPreparationError, match="FROZEN_COST"):
+        h.validate_manifest(value)
+
+
+@pytest.mark.parametrize(
+    "key,value", [("cost_sha256", "0" * 64), ("cost_profiles", ["1x"])]
+)
+def test_instance_cost_binding_rejects_forged_rehash(key, value):
+    item = manifest()
+    item["instances"][0][key] = value
+    _rehash_manifest(item)
+    with pytest.raises(h.HistoryPreparationError, match="INSTANCE_COST_BINDING"):
+        h.validate_manifest(item)
+
+
+def test_actual_fit_context_payload_serialization_matches_manifest_validator():
+    from backend.research.rebuild import scalp7_rolling_context_v2 as context
+
+    planned = scope.planned_history()[0]
+    opened = pd.Series(
+        range(
+            planned["fit_start_ms"],
+            planned["fit_start_ms"] + 100 * context.HOUR,
+            context.HOUR,
+        )
+    )
+    features = pd.DataFrame(
+        {
+            "context_open_ts_ms": opened,
+            "regime_available_ts_ms": opened + context.HOUR,
+            "dispersion24": [0.001 + i / 1_000_000 for i in range(100)],
+            "mean_abs24": [0.002 + i / 1_000_000 for i in range(100)],
+            "breadth": [float((i % 7) - 3) for i in range(100)],
+            "vol_ratio": [0.8 + i / 10_000 for i in range(100)],
+        }
+    )
+    fit = context.fit_context(features, h.fit_window(planned))
+    assert h.fit_payload_sha256(fit) == fit["sha256"]
+    assert h.validate_fit(fit, planned) == fit
+    assert (
+        h.canonical_sha256({k: v for k, v in fit.items() if k != "sha256"})
+        != fit["sha256"]
+    )
+
+
+def test_nonfinite_or_malformed_fit_payload_is_rejected():
+    bad = fits()[0]
+    bad["vol_q67"] = float("nan")
+    with pytest.raises(h.HistoryPreparationError, match="FIT_FINITE"):
+        h.fit_payload_sha256(bad)
+    del bad["train_rows"]
+    with pytest.raises(h.HistoryPreparationError, match="FIT_PAYLOAD_PROFILE"):
+        h.fit_payload_sha256(bad)
 
 
 def test_module_does_not_import_signal_or_execution_engines():

@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -35,6 +36,17 @@ ENTRY_PROFILES = {
     CANDIDATE: "MODELED_MINUTE_TOUCH_ADVERSE_LIMIT_BOUND",
     PARENT: "UTC_NEXT_30M_OPEN_MARKET_MODEL",
 }
+FIT_PAYLOAD_KEYS = {
+    "training_feature_sha256",
+    "disp_q67",
+    "meanabs_q85",
+    "vol_q25",
+    "vol_q67",
+    "train_start_ms",
+    "train_end_ms",
+    "last_fit_observation_ms",
+    "train_rows",
+}
 
 
 class HistoryPreparationError(RuntimeError):
@@ -47,6 +59,54 @@ def canonical_bytes(value: Any) -> bytes:
 
 def canonical_sha256(value: Any) -> str:
     return hashlib.sha256(canonical_bytes(value)).hexdigest()
+
+
+def fit_payload_sha256(value: Mapping[str, Any]) -> str:
+    """Hash exactly the payload serialized by rolling_context.fit_context."""
+    if not isinstance(value, Mapping) or set(value) != FIT_PAYLOAD_KEYS | {"sha256"}:
+        raise HistoryPreparationError("FIT_PAYLOAD_PROFILE")
+    payload = {key: value[key] for key in FIT_PAYLOAD_KEYS}
+    if not (
+        isinstance(payload["training_feature_sha256"], str)
+        and len(payload["training_feature_sha256"]) == 64
+        and all(c in "0123456789abcdef" for c in payload["training_feature_sha256"])
+    ):
+        raise HistoryPreparationError("FIT_TRAINING_FEATURE_HASH")
+    for key in (
+        "train_start_ms",
+        "train_end_ms",
+        "last_fit_observation_ms",
+        "train_rows",
+    ):
+        if isinstance(payload[key], bool) or not isinstance(payload[key], int):
+            raise HistoryPreparationError("FIT_INTEGER_PROFILE:" + key)
+    if payload["train_rows"] <= 0:
+        raise HistoryPreparationError("FIT_TRAIN_ROWS")
+    for key in ("disp_q67", "meanabs_q85", "vol_q25", "vol_q67"):
+        number = payload[key]
+        if (
+            isinstance(number, bool)
+            or not isinstance(number, (int, float))
+            or not math.isfinite(number)
+        ):
+            raise HistoryPreparationError("FIT_FINITE_NUMERIC_PROFILE:" + key)
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def validate_fit(value: Mapping[str, Any], planned: Mapping[str, Any]) -> dict[str, Any]:
+    fit = dict(value)
+    expected_sha256 = fit_payload_sha256(fit)
+    supplied_sha256 = fit.get("sha256")
+    if (
+        not isinstance(supplied_sha256, str)
+        or supplied_sha256 != expected_sha256
+        or fit["train_start_ms"] != planned["fit_start_ms"]
+        or fit["train_end_ms"] != planned["fit_end_ms"]
+        or fit["last_fit_observation_ms"] >= planned["test_start_ms"]
+    ):
+        raise HistoryPreparationError("FIT_CHRONOLOGY_OR_HASH:" + planned["id"])
+    return fit
 
 
 def sha_file(path: Path) -> str:
@@ -160,15 +220,7 @@ def build_manifest(
     instances = []
     code_bundle_sha256 = canonical_sha256(dict(sorted(hashes.items())))
     for row, supplied in zip(rows, fits, strict=True):
-        fit = dict(supplied)
-        if (
-            fit.get("train_start_ms") != row["fit_start_ms"]
-            or fit.get("train_end_ms") != row["fit_end_ms"]
-            or int(fit.get("last_fit_observation_ms", 2**63 - 1)) >= row["test_start_ms"]
-            or not isinstance(fit.get("sha256"), str)
-            or len(fit["sha256"]) != 64
-        ):
-            raise HistoryPreparationError("FIT_CHRONOLOGY_OR_HASH:" + row["id"])
+        fit = validate_fit(supplied, row)
         fit_rows.append({"id": row["id"], "fit": fit})
         for identity, model in (
             (CANDIDATE, "EMA21_BUY_LIMIT"),
@@ -236,6 +288,13 @@ def validate_manifest(value: Mapping[str, Any]) -> None:
         raise HistoryPreparationError("FIT_MANIFEST_PROFILE")
     if value.get("test_period_signal_generation") != 0 or value.get("test_period_model_replays") != 0:
         raise HistoryPreparationError("UNCLAIMED_TEST_EXECUTION")
+    validate_costs(value.get("costs_bps"))
+    if value.get("cost_sha256") != scope.COST_SHA256:
+        raise HistoryPreparationError("FROZEN_COST_HASH_MISMATCH")
+    if value.get("rule_sha256") != scope.RULE_SHA256:
+        raise HistoryPreparationError("FROZEN_RULE_HASH_MISMATCH")
+    if value.get("protocol_sha256") != scope.PROTOCOL_SHA256:
+        raise HistoryPreparationError("FROZEN_PROTOCOL_HASH_MISMATCH")
     code_map = value.get("code_sha256")
     if (
         not isinstance(code_map, Mapping)
@@ -261,17 +320,9 @@ def validate_manifest(value: Mapping[str, Any]) -> None:
     fit_by_id: dict[str, Mapping[str, Any]] = {}
     for planned_row, fit_row in zip(planned, fit_rows, strict=True):
         fit = fit_row.get("fit")
-        if (
-            not isinstance(fit, Mapping)
-            or fit.get("train_start_ms") != planned_row["fit_start_ms"]
-            or fit.get("train_end_ms") != planned_row["fit_end_ms"]
-            or int(fit.get("last_fit_observation_ms", 2**63 - 1))
-            >= planned_row["test_start_ms"]
-            or not isinstance(fit.get("sha256"), str)
-            or len(fit["sha256"]) != 64
-        ):
-            raise HistoryPreparationError("FIT_CHRONOLOGY_OR_HASH:" + planned_row["id"])
-        fit_by_id[planned_row["id"]] = fit
+        if not isinstance(fit, Mapping):
+            raise HistoryPreparationError("FIT_PAYLOAD_PROFILE")
+        fit_by_id[planned_row["id"]] = validate_fit(fit, planned_row)
 
     instances = value.get("instances", [])
     if len(instances) != 6 or len({x.get("instance_id") for x in instances}) != 6:
@@ -302,6 +353,11 @@ def validate_manifest(value: Mapping[str, Any]) -> None:
             or instance.get("clock_profile") != row["clock_profile"]
         ):
             raise HistoryPreparationError("INSTANCE_FOLD_BINDING_MISMATCH")
+        if (
+            instance.get("cost_sha256") != scope.COST_SHA256
+            or instance.get("cost_profiles") != ["1x", "2x"]
+        ):
+            raise HistoryPreparationError("INSTANCE_COST_BINDING_MISMATCH")
         if instance.get("entry_profile") != ENTRY_PROFILES.get(instance.get("identity")):
             raise HistoryPreparationError("IDENTITY_ENTRY_PROFILE_MISMATCH")
         if instance.get("code_bundle_sha256") != code_bundle_sha256:

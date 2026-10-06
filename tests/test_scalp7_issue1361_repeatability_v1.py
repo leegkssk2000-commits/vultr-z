@@ -43,7 +43,9 @@ def test_source_inventory_one_shot_recovery_is_master_bound_and_non_economic() -
 def test_fit_artifact_job_is_single_file_descendant_and_non_economic() -> None:
     workflow = Path(".github/workflows/issue1361-repeatability-v1.yml").read_text()
     token = "[issue1361-fit-artifact-once-20261006T1230Z-3f2d71a]"
+    repair_token = "[issue1361-fit-artifact-repair1-once-20261006T1310Z-6d9a1c4]"
     assert token in workflow
+    assert repair_token in workflow
     block = workflow.split("  source-fit-artifact:", 1)[1]
     assert "['git', 'diff', '--name-status', '--no-renames', parent, head]" in block
     assert "['git', 'rev-list', parent, '--', str(activation_path)]" in block
@@ -54,7 +56,10 @@ def test_fit_artifact_job_is_single_file_descendant_and_non_economic() -> None:
     assert "fetch-depth: 0" in block
     assert "git checkout --detach '${{ steps.activation.outputs.source_head }}'" in block
     assert "persist-credentials: false" in block
-    assert "issue1361_history_v1.py prepare" in block
+    assert "python -m ops.issue1361_history_v1 prepare" in block
+    assert "python ops/issue1361_history_v1.py prepare" not in block
+    assert "FIT_ARTIFACT_ACTIVATION_REPAIR1.json" in block
+    assert "FIT_ACTIVATION_TOKEN_AMBIGUOUS_OR_MISSING" in block
     assert "test_period_signal_generation': 0" in block
     assert "test_period_model_replays': 0" in block
     assert "'H_claimed': 0" in block

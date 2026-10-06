@@ -120,6 +120,10 @@ def test_history_batch_is_one_shot_claimed_and_global_heavy() -> None:
     assert "cancel-in-progress: false" in block
     assert "actions: read" in workflow
     assert "source != approval.get('reviewed_source_sha')" in block
+    assert "value.get('approval_commit_sha') != approval.get('approval_commit_sha')" in block
+    assert "HISTORY_APPROVAL_COMMIT_NOT_PINNED" in block
+    assert "value.get('claim_commit_sha') != claim.get('claim_commit_sha')" in block
+    assert "HISTORY_CLAIM_COMMIT_NOT_PINNED" in block
     assert "HISTORY_ARTIFACT_NOT_APPROVED" in block
     assert "issue1361_history_batch_v1" in block
     assert "fit_artifact_id': 11419311671" in block

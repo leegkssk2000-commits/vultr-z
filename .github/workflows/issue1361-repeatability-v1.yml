@@ -148,6 +148,10 @@ jobs:
       contains(
         github.event.head_commit.message,
         '[issue1361-fit-artifact-repair1-once-20261006T1310Z-6d9a1c4]'
+      ) ||
+      contains(
+        github.event.head_commit.message,
+        '[issue1361-fit-artifact-repair2-once-20261006T1330Z-c82ef51]'
       )
       )
     needs: contract-tests
@@ -172,6 +176,8 @@ jobs:
                   '[issue1361-fit-artifact-once-20261006T1230Z-3f2d71a]',
               activation_dir / 'FIT_ARTIFACT_ACTIVATION_REPAIR1.json':
                   '[issue1361-fit-artifact-repair1-once-20261006T1310Z-6d9a1c4]',
+              activation_dir / 'FIT_ARTIFACT_ACTIVATION_REPAIR2.json':
+                  '[issue1361-fit-artifact-repair2-once-20261006T1330Z-c82ef51]',
           }
           message = subprocess.check_output(
               ['git', 'log', '-1', '--pretty=%B', 'HEAD'], text=True
@@ -249,13 +255,16 @@ jobs:
           test -s "$RUNNER_TEMP/issue1361-source.tar.gz"
       - name: Reject unsafe archive members and extract
         run: |
+          stage=/home/z/z/runtime/economic7_campaign_20260915
+          test ! -e "$stage"
+          sudo install -d -o "$(id -u)" -g "$(id -g)" "$stage"
+          printf '%s\n' issue1361-ephemeral-source-stage > "$stage/.issue1361-runner-stage"
           python - <<'PY'
           import os, tarfile
           from pathlib import Path, PurePosixPath
 
           archive = Path(os.environ['RUNNER_TEMP']) / 'issue1361-source.tar.gz'
-          destination = Path(os.environ['RUNNER_TEMP']) / 'issue1361-source'
-          destination.mkdir()
+          destination = Path('/home/z/z/runtime/economic7_campaign_20260915')
           with tarfile.open(archive, 'r:gz') as handle:
               members = handle.getmembers()
               if len(members) > 100_000 or sum(item.size for item in members) > 12 * 1024**3:
@@ -279,7 +288,7 @@ jobs:
       - name: Create fit-only manifest under frozen runtime
         run: |
           python -m ops.issue1361_history_v1 prepare \
-            --source-root "$RUNNER_TEMP/issue1361-source" \
+            --source-root /home/z/z/runtime/economic7_campaign_20260915 \
             --cache-dir "$RUNNER_TEMP/unused-cache" \
             --output "$RUNNER_TEMP/FIT_MANIFEST.json"
       - name: Persist source and fit receipt
@@ -331,7 +340,11 @@ jobs:
         if: always()
         run: |
           rm -f ~/.ssh/vps_key "$RUNNER_TEMP/issue1361-source.tar.gz"
-          rm -rf "$RUNNER_TEMP/issue1361-source"
+          stage=/home/z/z/runtime/economic7_campaign_20260915
+          if [ -f "$stage/.issue1361-runner-stage" ]; then
+            sudo rm -rf -- "$stage"
+          fi
+          sudo rmdir --ignore-fail-on-non-empty /home/z/z/runtime /home/z/z /home/z 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         with:
           name: issue1361-source-fit-manifest

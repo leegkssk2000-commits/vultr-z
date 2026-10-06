@@ -46,9 +46,12 @@ def test_fit_artifact_job_is_single_file_descendant_and_non_economic() -> None:
     assert token in workflow
     block = workflow.split("  source-fit-artifact:", 1)[1]
     assert "['git', 'diff', '--name-status', '--no-renames', parent, head]" in block
+    assert "['git', 'rev-list', parent, '--', str(activation_path)]" in block
     assert "['git', 'diff-tree'" not in block
     assert "changed != ['A\\t' + str(activation_path)]" in block
     assert "FIT_ACTIVATION_NOT_NEW_SINGLE_FILE" in block
+    assert "FIT_ACTIVATION_PATH_ALREADY_IN_HISTORY" in block
+    assert "fetch-depth: 0" in block
     assert "git checkout --detach '${{ steps.activation.outputs.source_head }}'" in block
     assert "persist-credentials: false" in block
     assert "issue1361_history_v1.py prepare" in block

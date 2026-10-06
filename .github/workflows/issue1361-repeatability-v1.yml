@@ -149,7 +149,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
           persist-credentials: false
       - name: Verify source-only activation descendant
         id: activation
@@ -169,6 +169,10 @@ jobs:
               ['git', 'diff', '--name-status', '--no-renames', parent, head],
               text=True,
           ).splitlines()
+          prior = subprocess.check_output(
+              ['git', 'rev-list', parent, '--', str(activation_path)],
+              text=True,
+          ).splitlines()
           required = {
               'schema': 'zel.issue1361.fit_artifact_activation.v1',
               'issue': 1361,
@@ -182,6 +186,8 @@ jobs:
               raise SystemExit('FIT_ACTIVATION_HEAD_MISMATCH')
           if changed != ['A\t' + str(activation_path)]:
               raise SystemExit('FIT_ACTIVATION_NOT_NEW_SINGLE_FILE')
+          if prior:
+              raise SystemExit('FIT_ACTIVATION_PATH_ALREADY_IN_HISTORY')
           if activation.get('H_claimed') != 0 or activation.get('economic_runs') != 0:
               raise SystemExit('FIT_ACTIVATION_ECONOMIC_STATE')
           out = Path(os.environ['RUNNER_TEMP']) / 'FIT_ARTIFACT_ACTIVATION.json'

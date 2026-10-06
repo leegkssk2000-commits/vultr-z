@@ -297,11 +297,19 @@ def build_manifest(
         "authority": "FIT_ONLY_NO_ECONOMIC_CLAIM_NO_ORDER",
     }
     manifest["manifest_sha256"] = canonical_sha256(manifest)
-    validate_manifest(manifest)
+    validate_manifest(
+        manifest,
+        trusted_fit_sha256={row["id"]: fit["sha256"] for row, fit in zip(rows, fits, strict=True)},
+    )
     return manifest
 
 
-def validate_manifest(value: Mapping[str, Any], *, root: Path = ROOT) -> None:
+def validate_manifest(
+    value: Mapping[str, Any],
+    *,
+    trusted_fit_sha256: Mapping[str, str],
+    root: Path = ROOT,
+) -> None:
     if (
         value.get("schema") != FIT_SCHEMA
         or value.get("issue") != 1361
@@ -354,6 +362,17 @@ def validate_manifest(value: Mapping[str, Any], *, root: Path = ROOT) -> None:
 
     fit_rows = value.get("fits")
     planned = scope.planned_history()
+    expected_fit_ids = {row["id"] for row in planned}
+    if (
+        set(trusted_fit_sha256) != expected_fit_ids
+        or any(
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(c not in "0123456789abcdef" for c in digest)
+            for digest in trusted_fit_sha256.values()
+        )
+    ):
+        raise HistoryPreparationError("TRUSTED_FIT_CLAIM_PROFILE")
     if (
         not isinstance(fit_rows, list)
         or len(fit_rows) != len(planned)
@@ -365,7 +384,10 @@ def validate_manifest(value: Mapping[str, Any], *, root: Path = ROOT) -> None:
         fit = fit_row.get("fit")
         if not isinstance(fit, Mapping):
             raise HistoryPreparationError("FIT_PAYLOAD_PROFILE")
-        fit_by_id[planned_row["id"]] = validate_fit(fit, planned_row)
+        checked = validate_fit(fit, planned_row)
+        if checked["sha256"] != trusted_fit_sha256[planned_row["id"]]:
+            raise HistoryPreparationError("TRUSTED_FIT_CLAIM_MISMATCH:" + planned_row["id"])
+        fit_by_id[planned_row["id"]] = checked
 
     instances = value.get("instances", [])
     if len(instances) != 6 or len({x.get("instance_id") for x in instances}) != 6:

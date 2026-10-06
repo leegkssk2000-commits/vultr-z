@@ -57,6 +57,19 @@ def manifest():
     )
 
 
+def trusted_fits():
+    return {
+        row["id"]: fit["sha256"]
+        for row, fit in zip(scope.planned_history(), fits(), strict=True)
+    }
+
+
+def validate(value, trusted=None):
+    return h.validate_manifest(
+        value, trusted_fit_sha256=trusted if trusted is not None else trusted_fits()
+    )
+
+
 def test_exact_three_past_only_fits_make_six_unclaimed_instances():
     value = manifest()
     assert value["phase"] == "FIT_COMPLETE_NO_TEST_SIGNALS"
@@ -99,7 +112,7 @@ def test_each_instance_state_hash_rejects_mutation(key):
             "INSTANCE_FROZEN_PROFILE|INSTANCE_COST_BINDING"
         ),
     ):
-        h.validate_manifest(value)
+        validate(value)
 
 
 def test_manifest_hash_rejects_allocation_or_source_mutation():
@@ -108,7 +121,7 @@ def test_manifest_hash_rejects_allocation_or_source_mutation():
     with pytest.raises(
         h.HistoryPreparationError, match="FIT_MANIFEST_HASH|UNCLAIMED_TEST_EXECUTION"
     ):
-        h.validate_manifest(value)
+        validate(value)
 
 
 def test_duplicate_instance_identity_is_rejected_even_if_rehashed():
@@ -117,7 +130,7 @@ def test_duplicate_instance_identity_is_rejected_even_if_rehashed():
     frozen = {k: v for k, v in value.items() if k != "manifest_sha256"}
     value["manifest_sha256"] = h.canonical_sha256(frozen)
     with pytest.raises(h.HistoryPreparationError, match="EXACT_SIX_INSTANCE"):
-        h.validate_manifest(value)
+        validate(value)
 
 
 def test_identity_entry_profile_swap_is_rejected_even_if_rehashed():
@@ -130,7 +143,7 @@ def test_identity_entry_profile_swap_is_rejected_even_if_rehashed():
     frozen_manifest = {k: v for k, v in value.items() if k != "manifest_sha256"}
     value["manifest_sha256"] = h.canonical_sha256(frozen_manifest)
     with pytest.raises(h.HistoryPreparationError, match="INSTANCE_FROZEN_PROFILE"):
-        h.validate_manifest(value)
+        validate(value)
 
 
 def _rehash_manifest(value):
@@ -152,7 +165,7 @@ def test_rehashed_fold_substitution_cannot_drop_h2_candidate():
     candidate["instance_id"] = "H1:EMA21_BUY_LIMIT_DUPLICATE_NAME"
     _rehash_manifest(value)
     with pytest.raises(h.HistoryPreparationError, match="FOLD_MODEL_INSTANCE_MATRIX"):
-        h.validate_manifest(value)
+        validate(value)
 
 
 @pytest.mark.parametrize("key", ["fit_sha256", "test_start_ms", "test_end_ms"])
@@ -162,7 +175,7 @@ def test_rehashed_instance_must_remain_bound_to_declared_fold(key):
     instance[key] = "f" * 64 if key == "fit_sha256" else instance[key] + 1
     _rehash_manifest(value)
     with pytest.raises(h.HistoryPreparationError, match="INSTANCE_FROZEN_PROFILE"):
-        h.validate_manifest(value)
+        validate(value)
 
 
 def test_rehashed_top_level_code_map_must_match_each_instance_bundle():
@@ -171,7 +184,7 @@ def test_rehashed_top_level_code_map_must_match_each_instance_bundle():
     frozen = {k: v for k, v in value.items() if k != "manifest_sha256"}
     value["manifest_sha256"] = h.canonical_sha256(frozen)
     with pytest.raises(h.HistoryPreparationError, match="CODE_MAP_CHECKOUT"):
-        h.validate_manifest(value)
+        validate(value)
 
 
 def test_forged_complete_code_map_cannot_replace_checkout_identity():
@@ -182,7 +195,7 @@ def test_forged_complete_code_map_cannot_replace_checkout_identity():
         instance["code_bundle_sha256"] = forged_bundle
     _rehash_manifest(value)
     with pytest.raises(h.HistoryPreparationError, match="CODE_MAP_CHECKOUT"):
-        h.validate_manifest(value)
+        validate(value)
 
 
 @pytest.mark.parametrize(
@@ -204,7 +217,7 @@ def test_top_level_phase_one_control_state_rejects_forged_rehash(key, value):
     with pytest.raises(
         h.HistoryPreparationError, match="FIT_MANIFEST_PROFILE|UNCLAIMED_TEST_EXECUTION"
     ):
-        h.validate_manifest(item)
+        validate(item)
 
 
 @pytest.mark.parametrize(
@@ -222,7 +235,7 @@ def test_top_level_source_profile_rejects_forged_rehash(key, value):
     item["source"][key] = value
     _rehash_manifest(item)
     with pytest.raises(h.HistoryPreparationError, match="FROZEN_SOURCE_PROFILE"):
-        h.validate_manifest(item)
+        validate(item)
 
 
 @pytest.mark.parametrize(
@@ -243,7 +256,7 @@ def test_every_frozen_instance_field_rejects_forged_rehash(key, value):
     item["instances"][0][key] = value
     _rehash_manifest(item)
     with pytest.raises(h.HistoryPreparationError, match="INSTANCE_FROZEN_PROFILE"):
-        h.validate_manifest(item)
+        validate(item)
 
 
 def test_fit_window_matches_existing_rolling_context_contract():
@@ -268,7 +281,26 @@ def test_fit_digest_is_recomputed_after_outer_manifest_rehash():
     value["fits"][0]["fit"]["disp_q67"] += 0.001
     _rehash_manifest(value)
     with pytest.raises(h.HistoryPreparationError, match="FIT_CHRONOLOGY_OR_HASH"):
-        h.validate_manifest(value)
+        validate(value)
+
+
+def test_rehashed_fit_and_instances_cannot_replace_trusted_fit_claim():
+    value = manifest()
+    fit = value["fits"][0]["fit"]
+    fit["disp_q67"] += 0.001
+    fit["sha256"] = h.fit_payload_sha256(fit)
+    for instance in value["instances"]:
+        if instance["fold_id"] == "H1":
+            instance["fit_sha256"] = fit["sha256"]
+    _rehash_manifest(value)
+    with pytest.raises(h.HistoryPreparationError, match="TRUSTED_FIT_CLAIM_MISMATCH"):
+        validate(value)
+
+
+def test_trusted_fit_claim_requires_exact_three_hashes():
+    value = manifest()
+    with pytest.raises(h.HistoryPreparationError, match="TRUSTED_FIT_CLAIM_PROFILE"):
+        validate(value, {"H1": "0" * 64})
 
 
 @pytest.mark.parametrize("mutation", ["changed_table", "missing_table", "changed_hash"])
@@ -282,7 +314,7 @@ def test_frozen_costs_are_revalidated_after_outer_manifest_rehash(mutation):
         value["cost_sha256"] = "0" * 64
     _rehash_manifest(value)
     with pytest.raises(h.HistoryPreparationError, match="FROZEN_COST"):
-        h.validate_manifest(value)
+        validate(value)
 
 
 @pytest.mark.parametrize(
@@ -293,7 +325,7 @@ def test_instance_cost_binding_rejects_forged_rehash(key, value):
     item["instances"][0][key] = value
     _rehash_manifest(item)
     with pytest.raises(h.HistoryPreparationError, match="INSTANCE_COST_BINDING"):
-        h.validate_manifest(item)
+        validate(item)
 
 
 def test_actual_fit_context_payload_serialization_matches_manifest_validator():

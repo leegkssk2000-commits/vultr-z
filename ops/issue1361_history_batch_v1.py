@@ -23,6 +23,7 @@ from ops import issue1361_repeatability_v1 as scope
 
 ROOT = Path(__file__).resolve().parents[1]
 CLAIM_REF = prep.HISTORY_CLAIM_REF
+APPROVAL_REF = "refs/heads/research-approvals/issue1361-history-20261006-v1"
 SCHEMA = "zel.issue1361.history_batch.v1"
 RESULT_SCHEMA = "zel.issue1361.history_instance_result.v1"
 IDENTITY_MODEL = {
@@ -121,7 +122,82 @@ def verified_claim(api: Callable[[str, str], Mapping[str, Any]] = github) -> dic
     return {**value, "claim_commit_sha": commit_sha}
 
 
-def validate_claim(claim: Mapping[str, Any], manifest: Mapping[str, Any]) -> dict[str, Any]:
+def _verified_single_file_ref(
+    ref_name: str,
+    filename: str,
+    api: Callable[[str, str], Mapping[str, Any]],
+) -> tuple[dict[str, Any], str]:
+    ref = api("GET", "/git/ref/" + ref_name.removeprefix("refs/"))
+    commit_sha = ref.get("object", {}).get("sha")
+    if ref.get("ref") != ref_name or ref.get("object", {}).get("type") != "commit" or not _commit(commit_sha):
+        raise HistoryBatchError("APPROVAL_REF_PROFILE")
+    commit = api("GET", "/git/commits/" + commit_sha)
+    tree_sha = commit.get("tree", {}).get("sha")
+    if not isinstance(tree_sha, str) or commit.get("parents"):
+        raise HistoryBatchError("APPROVAL_COMMIT_PROFILE")
+    tree = api("GET", "/git/trees/" + tree_sha)
+    entries = tree.get("tree", [])
+    if len(entries) != 1 or entries[0].get("path") != filename or entries[0].get("type") != "blob":
+        raise HistoryBatchError("APPROVAL_TREE_PROFILE")
+    blob = api("GET", "/git/blobs/" + entries[0]["sha"])
+    if blob.get("encoding") != "base64":
+        raise HistoryBatchError("APPROVAL_BLOB_ENCODING")
+    raw = base64.b64decode(blob.get("content", ""), validate=False)
+    if _git_blob_sha(raw) != entries[0]["sha"]:
+        raise HistoryBatchError("APPROVAL_BLOB_HASH")
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise HistoryBatchError("APPROVAL_CONTENT_PROFILE")
+    return value, commit_sha
+
+
+def verified_approval(api: Callable[[str, str], Mapping[str, Any]] = github) -> dict[str, Any]:
+    value, commit_sha = _verified_single_file_ref(APPROVAL_REF, "APPROVED.json", api)
+    return {**value, "approval_commit_sha": commit_sha}
+
+
+def validate_approval(approval: Mapping[str, Any], manifest: Mapping[str, Any]) -> dict[str, Any]:
+    instances = sorted(x["instance_id"] for x in manifest.get("instances", []))
+    required = {
+        "schema": "zel.issue1361.history_approval.v1",
+        "issue": 1361,
+        "state": "APPROVED_RETROSPECTIVE_H_ONLY",
+        "approval_ref": APPROVAL_REF,
+        "classification": scope.CLASSIFICATION,
+        "manifest_sha256": manifest.get("manifest_sha256"),
+        "source_inventory_sha256": scope.SOURCE_INVENTORY_SHA256,
+        "protocol_sha256": scope.PROTOCOL_SHA256,
+        "rule_sha256": scope.RULE_SHA256,
+        "cost_sha256": scope.COST_SHA256,
+        "runtime_sha256": manifest.get("runtime_sha256"),
+        "trusted_fit_sha256": {row["id"]: row["fit"]["sha256"] for row in manifest.get("fits", [])},
+        "trusted_coverage_sha256": manifest.get("coverage_sha256"),
+        "instance_ids": instances,
+        "max_instances": 6,
+        "order_authority": "BLOCKED",
+    }
+    for key, expected in required.items():
+        if approval.get(key) != expected:
+            raise HistoryBatchError("APPROVAL_BINDING_MISMATCH:" + key)
+    if not _commit(approval.get("approval_commit_sha")) or not _commit(approval.get("reviewed_source_sha")):
+        raise HistoryBatchError("APPROVAL_COMMIT_IDENTITY")
+    if not isinstance(approval.get("fit_artifact_id"), int) or approval["fit_artifact_id"] <= 0:
+        raise HistoryBatchError("APPROVAL_ARTIFACT_ID")
+    digest = approval.get("fit_artifact_digest")
+    receipt = approval.get("fit_receipt_sha256")
+    if not isinstance(digest, str) or not digest.startswith("sha256:") or len(digest) != 71:
+        raise HistoryBatchError("APPROVAL_ARTIFACT_DIGEST")
+    if not isinstance(receipt, str) or len(receipt) != 64:
+        raise HistoryBatchError("APPROVAL_RECEIPT_HASH")
+    return dict(approval)
+
+
+def validate_claim(
+    claim: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    approval: Mapping[str, Any],
+) -> dict[str, Any]:
+    validate_approval(approval, manifest)
     expected_instances = sorted(x["instance_id"] for x in manifest.get("instances", []))
     required = {
         "schema": "zel.issue1361.history_claim.v1",
@@ -140,12 +216,20 @@ def validate_claim(claim: Mapping[str, Any], manifest: Mapping[str, Any]) -> dic
         "global_heavy_exclusive": True,
         "order_authority": "BLOCKED",
     }
+    for key in (
+        "reviewed_source_sha",
+        "fit_artifact_id",
+        "fit_artifact_digest",
+        "fit_receipt_sha256",
+        "runtime_sha256",
+    ):
+        required[key] = approval.get(key)
     for key, expected in required.items():
         if claim.get(key) != expected:
             raise HistoryBatchError("CLAIM_BINDING_MISMATCH:" + key)
-    if not _commit(claim.get("claim_commit_sha")) or not _commit(
-        claim.get("independent_approval_commit_sha")
-    ):
+    if not _commit(claim.get("claim_commit_sha")) or claim.get(
+        "independent_approval_commit_sha"
+    ) != approval.get("approval_commit_sha"):
         raise HistoryBatchError("CLAIM_OR_APPROVAL_COMMIT_IDENTITY")
     fits = claim.get("trusted_fit_sha256")
     coverage = claim.get("trusted_coverage_sha256")
@@ -302,11 +386,12 @@ def execute_batch(
     output: Path,
     *,
     claim_loader: Callable[[], Mapping[str, Any]] = verified_claim,
+    approval_loader: Callable[[], Mapping[str, Any]] = verified_approval,
     market_loader: Callable[[Path, Mapping[str, Any]], Mapping[str, Any]] = prepare_market,
     instance_runner: Callable[..., dict[str, Any]] = run_instance,
 ) -> dict[str, Any]:
-    manifest, claim = read_json(manifest_path), dict(claim_loader())
-    validate_claim(claim, manifest)
+    manifest, claim, approval = read_json(manifest_path), dict(claim_loader()), dict(approval_loader())
+    validate_claim(claim, manifest, approval)
     output.mkdir(parents=True, exist_ok=False)
     write_once(output / "STARTED.json", {"schema": SCHEMA, "claim_commit_sha": claim["claim_commit_sha"]})
     market = market_loader(source_root, manifest)

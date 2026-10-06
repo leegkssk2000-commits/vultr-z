@@ -156,9 +156,45 @@ def sha_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def full_archive_inventory(
+    root: str | Path,
+    expected_manifests: Mapping[str, str] = MANIFEST_HASHES,
+) -> dict[str, str]:
+    """Hash the exact archive file set used by scalp7_source_data_v2._inventory."""
+    root = Path(root)
+    inventory = {
+        relative: sha_file(root / relative)
+        for relative in sorted(expected_manifests)
+        if (root / relative).is_file()
+    }
+    for segment in ("canonical_12m", "canonical_postgap_20260213"):
+        base = root / segment
+        for sub, pattern in (
+            ("daily_receipts", "*.json"),
+            ("requests", "*.receipt.json"),
+            ("requests", "*.body"),
+            ("normalized_chunks", "*.csv.gz"),
+            ("1m", "*.csv.gz"),
+        ):
+            for path in sorted((base / sub).rglob(pattern)):
+                if path.is_file():
+                    inventory[str(path.relative_to(root))] = sha_file(path)
+    prefix = root / "canonical_gapday_prefix"
+    for path in sorted(prefix.glob("*/1m.csv.gz")):
+        if path.is_file():
+            inventory[str(path.relative_to(root))] = sha_file(path)
+    return inventory
+
+
+def archive_inventory_sha256(inventory: Mapping[str, str]) -> str:
+    raw = (json.dumps(inventory, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    return hashlib.sha256(raw).hexdigest()
+
+
 def inventory_source(
     root: str | Path,
     expected: Mapping[str, str] = MANIFEST_HASHES,
+    expected_inventory_sha256: str = SOURCE_INVENTORY_SHA256,
 ) -> dict[str, Any]:
     root = Path(root)
     entries = []
@@ -179,11 +215,19 @@ def inventory_source(
             "expected_sha256": expected_sha,
             "actual_sha256": actual,
         })
-    ready = all(row["state"] == "AVAILABLE_HASH_MATCH" for row in entries)
+    full_inventory = full_archive_inventory(root, expected)
+    inventory_sha = archive_inventory_sha256(full_inventory)
+    manifests_match = all(row["state"] == "AVAILABLE_HASH_MATCH" for row in entries)
+    inventory_matches = inventory_sha == expected_inventory_sha256
+    ready = manifests_match and inventory_matches
     return {
         "schema": "scalp7.issue1361.source_inventory.v1",
         "root": str(root),
         "entries": entries,
+        "full_inventory_files": len(full_inventory),
+        "full_inventory_sha256": inventory_sha,
+        "expected_full_inventory_sha256": expected_inventory_sha256,
+        "full_inventory_state": "HASH_MATCH" if inventory_matches else "HASH_MISMATCH",
         "history_input_state": "READY" if ready else "INPUT_NOT_READY",
         "economic_authority": False,
         "network_actions": 0,

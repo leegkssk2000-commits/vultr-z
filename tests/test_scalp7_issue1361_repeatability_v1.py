@@ -112,14 +112,14 @@ def test_inventory_distinguishes_missing_match_and_mismatch(tmp_path) -> None:
     }
     (tmp_path / "a").mkdir()
     (tmp_path / "a/MANIFEST.json").write_bytes(b"a")
-    result = repeat.inventory_source(tmp_path, expected)
+    result = repeat.inventory_source(tmp_path, expected, "0" * 64)
     assert [row["state"] for row in result["entries"]] == [
         "AVAILABLE_HASH_MATCH", "MISSING"
     ]
     assert result["history_input_state"] == "INPUT_NOT_READY"
     (tmp_path / "b").mkdir()
     (tmp_path / "b/MANIFEST.json").write_bytes(b"wrong")
-    assert repeat.inventory_source(tmp_path, expected)["entries"][1]["state"] == "HASH_MISMATCH"
+    assert repeat.inventory_source(tmp_path, expected, "0" * 64)["entries"][1]["state"] == "HASH_MISMATCH"
 
 
 def test_inventory_ready_only_when_every_hash_matches(tmp_path) -> None:
@@ -129,9 +129,35 @@ def test_inventory_ready_only_when_every_hash_matches(tmp_path) -> None:
         path.parent.mkdir()
         path.write_bytes(body)
         expected[f"{name}/MANIFEST.json"] = hashlib.sha256(body).hexdigest()
-    result = repeat.inventory_source(tmp_path, expected)
+    inventory = repeat.full_archive_inventory(tmp_path, expected)
+    result = repeat.inventory_source(
+        tmp_path, expected, repeat.archive_inventory_sha256(inventory)
+    )
     assert result["history_input_state"] == "READY"
     assert result["network_actions"] == result["service_actions"] == 0
+
+
+def test_inventory_rejects_missing_or_corrupt_archive_member(tmp_path) -> None:
+    manifests = {}
+    for segment, body in (
+        ("canonical_12m", b"12m"),
+        ("canonical_gapday_prefix", b"gap"),
+        ("canonical_postgap_20260213", b"post"),
+    ):
+        path = tmp_path / segment / "MANIFEST.json"
+        path.parent.mkdir()
+        path.write_bytes(body)
+        manifests[f"{segment}/MANIFEST.json"] = hashlib.sha256(body).hexdigest()
+    body = tmp_path / "canonical_12m/requests/BTC.body"
+    body.parent.mkdir()
+    body.write_bytes(b"preserved")
+    expected_inventory = repeat.full_archive_inventory(tmp_path, manifests)
+    expected_sha = repeat.archive_inventory_sha256(expected_inventory)
+    assert repeat.inventory_source(tmp_path, manifests, expected_sha)["history_input_state"] == "READY"
+    body.write_bytes(b"corrupt")
+    result = repeat.inventory_source(tmp_path, manifests, expected_sha)
+    assert result["history_input_state"] == "INPUT_NOT_READY"
+    assert result["full_inventory_state"] == "HASH_MISMATCH"
 
 
 def test_protocol_preserves_scope_cost_and_no_economic_authority() -> None:

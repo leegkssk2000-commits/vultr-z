@@ -73,6 +73,8 @@ def test_fit_artifact_transfer_is_read_only_and_not_published() -> None:
     assert "issue1361-source/" not in upload
     assert "'source_transport': 'EXISTING_SSH_READ_ONLY'" in block
     assert "'market_data_requests': 0" in block
+    assert "archive.read_bytes()" not in block
+    assert "handle.read(1024 * 1024)" in block
 
 
 def test_history_is_exact_three_past_only_90d_fit_30d_test() -> None:

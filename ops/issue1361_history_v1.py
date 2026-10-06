@@ -239,6 +239,71 @@ def source_coverage(frames: Mapping[str, Any], rows: list[dict[str, Any]]) -> di
     return coverage
 
 
+def validate_coverage(
+    value: Any,
+    *,
+    trusted_coverage_sha256: str,
+) -> dict[str, Any]:
+    """Validate complete six-symbol fold coverage against an external digest."""
+    if (
+        not isinstance(trusted_coverage_sha256, str)
+        or len(trusted_coverage_sha256) != 64
+        or any(c not in "0123456789abcdef" for c in trusted_coverage_sha256)
+    ):
+        raise HistoryPreparationError("TRUSTED_COVERAGE_CLAIM_PROFILE")
+    if not isinstance(value, Mapping) or set(value) != set(scope.SYMBOLS):
+        raise HistoryPreparationError("EXACT_SIX_SYMBOL_COVERAGE_REQUIRED")
+    planned = scope.planned_history()
+    expected_fold_ids = [row["id"] for row in planned]
+    for symbol in scope.SYMBOLS:
+        item = value[symbol]
+        if not isinstance(item, Mapping) or set(item) != {
+            "first_open_ms",
+            "last_open_ms",
+            "rows_30m",
+            "availability_basis",
+            "folds",
+        }:
+            raise HistoryPreparationError("COVERAGE_SYMBOL_PROFILE:" + symbol)
+        if (
+            item["availability_basis"]
+            != "BAR_CLOSE_MODEL_NOT_OBSERVED_HISTORICAL_DELIVERY"
+            or isinstance(item["rows_30m"], bool)
+            or not isinstance(item["rows_30m"], int)
+            or item["rows_30m"] <= 0
+            or not isinstance(item["first_open_ms"], int)
+            or not isinstance(item["last_open_ms"], int)
+            or item["first_open_ms"] > planned[0]["fit_start_ms"]
+            or item["last_open_ms"] < planned[-1]["test_end_ms"] - 30 * 60 * 1000
+        ):
+            raise HistoryPreparationError("COVERAGE_SOURCE_BOUNDS:" + symbol)
+        folds = item["folds"]
+        if (
+            not isinstance(folds, list)
+            or len(folds) != len(planned)
+            or [fold.get("id") for fold in folds] != expected_fold_ids
+        ):
+            raise HistoryPreparationError("COVERAGE_FOLD_MATRIX:" + symbol)
+        for row, fold in zip(planned, folds, strict=True):
+            expected_train_rows = (row["fit_end_ms"] - row["fit_start_ms"]) // (30 * 60 * 1000)
+            expected_test_rows = (row["test_end_ms"] - row["test_start_ms"]) // (30 * 60 * 1000)
+            expected = {
+                "id": row["id"],
+                "train_rows_30m": expected_train_rows,
+                "test_rows_30m": expected_test_rows,
+                "train_first_open_ms": row["fit_start_ms"],
+                "train_last_open_ms": row["fit_end_ms"] - 30 * 60 * 1000,
+                "test_first_open_ms": row["test_start_ms"],
+                "test_last_open_ms": row["test_end_ms"] - 30 * 60 * 1000,
+            }
+            if fold != expected:
+                raise HistoryPreparationError(f"COVERAGE_FOLD_BOUNDS:{symbol}:{row['id']}")
+    frozen = dict(value)
+    if canonical_sha256(frozen) != trusted_coverage_sha256:
+        raise HistoryPreparationError("TRUSTED_COVERAGE_CLAIM_MISMATCH")
+    return frozen
+
+
 def build_manifest(
     *,
     inventory: Mapping[str, Any],
@@ -290,6 +355,7 @@ def build_manifest(
         "fits": fit_rows,
         "instances": instances,
         "coverage": coverage,
+        "coverage_sha256": canonical_sha256(coverage),
         "allocation": {"H_claimed": 0, "H_limit": 6, "economic_runs": 0},
         "history_claim_ref": HISTORY_CLAIM_REF,
         "test_period_signal_generation": 0,
@@ -300,6 +366,7 @@ def build_manifest(
     validate_manifest(
         manifest,
         trusted_fit_sha256={row["id"]: fit["sha256"] for row, fit in zip(rows, fits, strict=True)},
+        trusted_coverage_sha256=manifest["coverage_sha256"],
     )
     return manifest
 
@@ -308,6 +375,7 @@ def validate_manifest(
     value: Mapping[str, Any],
     *,
     trusted_fit_sha256: Mapping[str, str],
+    trusted_coverage_sha256: str,
     root: Path = ROOT,
 ) -> None:
     if (
@@ -336,6 +404,11 @@ def validate_manifest(
     }
     if value.get("source") != expected_source:
         raise HistoryPreparationError("FROZEN_SOURCE_PROFILE_MISMATCH")
+    coverage = validate_coverage(
+        value.get("coverage"), trusted_coverage_sha256=trusted_coverage_sha256
+    )
+    if value.get("coverage_sha256") != canonical_sha256(coverage):
+        raise HistoryPreparationError("COVERAGE_HASH_MISMATCH")
     validate_costs(value.get("costs_bps"))
     if value.get("cost_sha256") != scope.COST_SHA256:
         raise HistoryPreparationError("FROZEN_COST_HASH_MISMATCH")

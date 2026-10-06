@@ -40,7 +40,33 @@ def inventory():
 
 
 def coverage():
-    return {symbol: {"rows_30m": 1, "folds": []} for symbol in scope.SYMBOLS}
+    planned = scope.planned_history()
+    return {
+        symbol: {
+            "first_open_ms": planned[0]["fit_start_ms"],
+            "last_open_ms": planned[-1]["test_end_ms"] - 30 * 60 * 1000,
+            "rows_30m": (
+                planned[-1]["test_end_ms"] - planned[0]["fit_start_ms"]
+            )
+            // (30 * 60 * 1000),
+            "availability_basis": "BAR_CLOSE_MODEL_NOT_OBSERVED_HISTORICAL_DELIVERY",
+            "folds": [
+                {
+                    "id": row["id"],
+                    "train_rows_30m": (row["fit_end_ms"] - row["fit_start_ms"])
+                    // (30 * 60 * 1000),
+                    "test_rows_30m": (row["test_end_ms"] - row["test_start_ms"])
+                    // (30 * 60 * 1000),
+                    "train_first_open_ms": row["fit_start_ms"],
+                    "train_last_open_ms": row["fit_end_ms"] - 30 * 60 * 1000,
+                    "test_first_open_ms": row["test_start_ms"],
+                    "test_last_open_ms": row["test_end_ms"] - 30 * 60 * 1000,
+                }
+                for row in planned
+            ],
+        }
+        for symbol in scope.SYMBOLS
+    }
 
 
 def costs():
@@ -66,8 +92,27 @@ def trusted_fits():
 
 def validate(value, trusted=None):
     return h.validate_manifest(
-        value, trusted_fit_sha256=trusted if trusted is not None else trusted_fits()
+        value,
+        trusted_fit_sha256=trusted if trusted is not None else trusted_fits(),
+        trusted_coverage_sha256=h.canonical_sha256(coverage()),
     )
+
+
+@pytest.mark.parametrize("mutation", ["empty", "rows", "bounds", "fold"])
+def test_coverage_mutation_is_rejected_even_after_external_rehash(mutation):
+    value = manifest()
+    if mutation == "empty":
+        value["coverage"] = {}
+    elif mutation == "rows":
+        value["coverage"][scope.SYMBOLS[0]]["folds"][0]["train_rows_30m"] -= 1
+    elif mutation == "bounds":
+        value["coverage"][scope.SYMBOLS[0]]["folds"][0]["train_first_open_ms"] += 1
+    else:
+        value["coverage"][scope.SYMBOLS[0]]["folds"].pop()
+    value["coverage_sha256"] = h.canonical_sha256(value["coverage"])
+    _rehash_manifest(value)
+    with pytest.raises(h.HistoryPreparationError, match="COVERAGE|TRUSTED_COVERAGE"):
+        validate(value)
 
 
 def test_exact_three_past_only_fits_make_six_unclaimed_instances():

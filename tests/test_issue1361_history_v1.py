@@ -126,6 +126,8 @@ def test_exact_three_past_only_fits_make_six_unclaimed_instances():
     assert all(x["classification"] == scope.CLASSIFICATION for x in value["instances"])
     assert len({x["entry_profile"] for x in value["instances"]}) == 2
     assert all(len(x["code_bundle_sha256"]) == 64 for x in value["instances"])
+    assert value["runtime"] == {"python": "3.12", "numpy": "2.4.3", "pandas": "3.0.1"}
+    assert all(x["runtime_sha256"] == value["runtime_sha256"] for x in value["instances"])
 
 
 def test_final_fit_backapplication_is_rejected():
@@ -438,6 +440,17 @@ def test_history_fit_rebuilds_from_verified_minutes_not_mutable_cache():
     assert "_load_verified_minutes(source_root)" in body
     assert "aggregate_minutes(minutes[symbol], 30)" in body
     assert "load_candles(" not in body
+    assert "verify_time_witness(TIME_WITNESS_DIR)" in body
+    assert "TIME_WITNESS_HASH_MISMATCH" in body
+
+
+def test_runtime_profile_is_bound_and_rehashed_mutation_is_rejected():
+    value = manifest()
+    value["runtime"]["pandas"] = "9.9.9"
+    value["runtime_sha256"] = h.canonical_sha256(value["runtime"])
+    _rehash_manifest(value)
+    with pytest.raises(h.HistoryPreparationError, match="FROZEN_RUNTIME"):
+        validate(value)
 
 
 def test_code_bundle_lists_candidate_transitive_runtime_dependencies():

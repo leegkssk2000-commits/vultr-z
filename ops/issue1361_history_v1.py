@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 import math
+import sys
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -25,6 +26,9 @@ PARENT = "scalp7_squeeze_panic_cost4_parent_utc30m_v2"
 HISTORY_CLAIM_REF = "refs/heads/research-execution-claims/issue1361-history-20261006-v1"
 FIT_SCHEMA = "zel.issue1361.history_fit_manifest.v1"
 SOURCE_INVENTORY_FILES = 17_541
+TIME_WITNESS_DIR = ROOT / "research/campaigns/scalp7_20260915/source_time_v2"
+TIME_WITNESS_SHA256 = "885820be52497509588c6b1add37d3b4211fda3d9b636ef2690c2aa6753b6e67"
+RUNTIME_PROFILE = {"python": "3.12", "numpy": "2.4.3", "pandas": "3.0.1"}
 FROZEN_COSTS_BPS = {
     "BTC-USDT": 14.0,
     "DOGE-USDT": 16.73064726730116,
@@ -140,6 +144,20 @@ def validate_costs(costs: Any) -> dict[str, float]:
     return dict(costs)
 
 
+def validate_runtime() -> dict[str, str]:
+    import numpy as np
+    import pandas as pd
+
+    actual = {
+        "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+        "numpy": np.__version__,
+        "pandas": pd.__version__,
+    }
+    if actual != RUNTIME_PROFILE:
+        raise HistoryPreparationError("FROZEN_RUNTIME_MISMATCH")
+    return actual
+
+
 def frozen_instance(
     row: Mapping[str, Any],
     *,
@@ -161,6 +179,7 @@ def frozen_instance(
         "rule_sha256": scope.RULE_SHA256,
         "cost_sha256": scope.COST_SHA256,
         "code_bundle_sha256": code_bundle_sha256,
+        "runtime_sha256": canonical_sha256(RUNTIME_PROFILE),
         "fit_start_ms": row["fit_start_ms"],
         "fit_end_ms": row["fit_end_ms"],
         "test_start_ms": row["test_start_ms"],
@@ -352,6 +371,8 @@ def build_manifest(
         "cost_sha256": scope.COST_SHA256,
         "costs_bps": dict(sorted(costs.items())),
         "code_sha256": dict(sorted(hashes.items())),
+        "runtime": dict(RUNTIME_PROFILE),
+        "runtime_sha256": canonical_sha256(RUNTIME_PROFILE),
         "fits": fit_rows,
         "instances": instances,
         "coverage": coverage,
@@ -404,6 +425,11 @@ def validate_manifest(
     }
     if value.get("source") != expected_source:
         raise HistoryPreparationError("FROZEN_SOURCE_PROFILE_MISMATCH")
+    if (
+        value.get("runtime") != RUNTIME_PROFILE
+        or value.get("runtime_sha256") != canonical_sha256(RUNTIME_PROFILE)
+    ):
+        raise HistoryPreparationError("FROZEN_RUNTIME_PROFILE_MISMATCH")
     coverage = validate_coverage(
         value.get("coverage"), trusted_coverage_sha256=trusted_coverage_sha256
     )
@@ -513,10 +539,14 @@ def prepare_history(source_root: Path, output: Path, cache_dir: Path, contract_p
         raise HistoryPreparationError("SOURCE_INVENTORY_NOT_READY")
     contract = json.loads(contract_path.read_bytes())
     costs = validate_costs(contract.get("reference_costs_bps"))
+    validate_runtime()
     # The generic loader cache has no independent receipt trust anchor.  H fits
     # therefore rebuild directly from the receipt-verified minute archives;
     # ``cache_dir`` remains a CLI compatibility argument and is never trusted.
     del cache_dir
+    witness = source.verify_time_witness(TIME_WITNESS_DIR)
+    if canonical_sha256(witness) != TIME_WITNESS_SHA256:
+        raise HistoryPreparationError("TIME_WITNESS_HASH_MISMATCH")
     minutes = source._load_verified_minutes(source_root)
     frames = {
         symbol: source.aggregate_minutes(minutes[symbol], 30)

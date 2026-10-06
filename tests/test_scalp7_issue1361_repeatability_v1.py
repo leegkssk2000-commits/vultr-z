@@ -219,6 +219,28 @@ def test_inventory_rejects_missing_or_corrupt_archive_member(tmp_path) -> None:
     assert result["full_inventory_state"] == "HASH_MISMATCH"
 
 
+def test_inventory_rejects_matching_non_regular_entry(tmp_path) -> None:
+    manifests = {}
+    for segment, body in (
+        ("canonical_12m", b"12m"),
+        ("canonical_gapday_prefix", b"gap"),
+        ("canonical_postgap_20260213", b"post"),
+    ):
+        path = tmp_path / segment / "MANIFEST.json"
+        path.parent.mkdir()
+        path.write_bytes(body)
+        manifests[f"{segment}/MANIFEST.json"] = hashlib.sha256(body).hexdigest()
+    expected = repeat.archive_inventory_sha256(
+        repeat.full_archive_inventory(tmp_path, manifests)
+    )
+    non_file = tmp_path / "canonical_12m/requests/stale.body"
+    non_file.mkdir(parents=True)
+    result = repeat.inventory_source(tmp_path, manifests, expected)
+    assert result["history_input_state"] == "INPUT_NOT_READY"
+    assert result["full_inventory_sha256"] is None
+    assert result["full_inventory_error"].startswith("SOURCE_INVENTORY_NON_REGULAR:")
+
+
 def test_protocol_preserves_scope_cost_and_no_economic_authority() -> None:
     row = repeat.protocol()
     assert row["allocation"] == {

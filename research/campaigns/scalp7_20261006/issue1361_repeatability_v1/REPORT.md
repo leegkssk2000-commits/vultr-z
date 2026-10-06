@@ -14,7 +14,7 @@ State at 2026-10-06T01:11:26Z: protocol and source-admission implementation only
 
 The repository retains the published 2026-09-15 receipt (3,153,576 raw rows, 24 missing minutes, 17,519 complete 30-minute bars per symbol, two segments) and its source inventory hash. The canonical archive root is not mounted in this Work environment, which is an access result—not evidence that the archive is absent. Historical delivery remains a modeled bar-close profile; volume units, funding, mark, and NAV are not filled with zero.
 
-The added post-merge manual workflow performs one read-only manifest hash inventory over the already configured SSH path. It neither starts/restarts services nor fetches market data. H remains `INPUT_NOT_READY` until that readback succeeds. F remains separately `INPUT_NOT_READY` until an existing observation path can supply persistent recorded receipts; historical REST data is not relabeled as forward reception.
+The added post-merge manual workflow performs one read-only manifest hash inventory over the already configured SSH path. It neither starts/restarts services nor fetches market data. The metadata-only tool lives under `ops/` so unrelated historical measurement guards do not mistake it for a replacement of their owned backend. H remains `INPUT_NOT_READY` until that readback succeeds. F remains separately `INPUT_NOT_READY` until an existing observation path can supply persistent recorded receipts; historical REST data is not relabeled as forward reception.
 
 ## Verification and next gate
 

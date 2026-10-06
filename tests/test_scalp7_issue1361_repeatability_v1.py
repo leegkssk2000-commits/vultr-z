@@ -4,7 +4,7 @@ import hashlib
 
 import pytest
 
-from backend.research.rebuild import scalp7_issue1361_repeatability_v1 as repeat
+from ops import issue1361_repeatability_v1 as repeat
 
 
 def test_history_is_exact_three_past_only_90d_fit_30d_test() -> None:

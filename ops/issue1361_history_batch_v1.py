@@ -24,6 +24,9 @@ from ops import issue1361_repeatability_v1 as scope
 ROOT = Path(__file__).resolve().parents[1]
 CLAIM_REF = prep.HISTORY_CLAIM_REF
 APPROVAL_REF = "refs/heads/research-approvals/issue1361-history-20261006-v1"
+FIT_ARTIFACT_ID = 11_419_311_671
+FIT_ARTIFACT_DIGEST = "sha256:a39e65afc4c7557a4864a4a0192b6278cdba51a051969b684f20c97da4f73d1f"
+FIT_RECEIPT_SHA256 = "210251e2e9268877a8463c4a96cc5867df94aaf50dd7d845cf20bf90e869fa1a"
 SCHEMA = "zel.issue1361.history_batch.v1"
 RESULT_SCHEMA = "zel.issue1361.history_instance_result.v1"
 IDENTITY_MODEL = {
@@ -170,6 +173,9 @@ def validate_approval(approval: Mapping[str, Any], manifest: Mapping[str, Any]) 
         "rule_sha256": scope.RULE_SHA256,
         "cost_sha256": scope.COST_SHA256,
         "runtime_sha256": manifest.get("runtime_sha256"),
+        "fit_artifact_id": FIT_ARTIFACT_ID,
+        "fit_artifact_digest": FIT_ARTIFACT_DIGEST,
+        "fit_receipt_sha256": FIT_RECEIPT_SHA256,
         "trusted_fit_sha256": {row["id"]: row["fit"]["sha256"] for row in manifest.get("fits", [])},
         "trusted_coverage_sha256": manifest.get("coverage_sha256"),
         "instance_ids": instances,
@@ -181,14 +187,6 @@ def validate_approval(approval: Mapping[str, Any], manifest: Mapping[str, Any]) 
             raise HistoryBatchError("APPROVAL_BINDING_MISMATCH:" + key)
     if not _commit(approval.get("approval_commit_sha")) or not _commit(approval.get("reviewed_source_sha")):
         raise HistoryBatchError("APPROVAL_COMMIT_IDENTITY")
-    if not isinstance(approval.get("fit_artifact_id"), int) or approval["fit_artifact_id"] <= 0:
-        raise HistoryBatchError("APPROVAL_ARTIFACT_ID")
-    digest = approval.get("fit_artifact_digest")
-    receipt = approval.get("fit_receipt_sha256")
-    if not isinstance(digest, str) or not digest.startswith("sha256:") or len(digest) != 71:
-        raise HistoryBatchError("APPROVAL_ARTIFACT_DIGEST")
-    if not isinstance(receipt, str) or len(receipt) != 64:
-        raise HistoryBatchError("APPROVAL_RECEIPT_HASH")
     return dict(approval)
 
 

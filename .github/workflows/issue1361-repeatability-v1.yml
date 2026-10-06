@@ -383,3 +383,188 @@ jobs:
             ${{ runner.temp }}/SOURCE_FIT_RECEIPT.json
             ${{ runner.temp }}/FIT_ARTIFACT_ACTIVATION.json
           if-no-files-found: error
+
+  history-economic-batch:
+    # This is the only H economic activation.  It remains separate from the
+    # source-fit job and refuses to form a signal until both immutable external
+    # approval and permanent six-instance claim refs validate.
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/master' &&
+      contains(
+        github.event.head_commit.message,
+        '[issue1361-history-batch-once-20261006T1420Z-f18d2c7]'
+      )
+    needs: contract-tests
+    runs-on: ubuntu-latest
+    concurrency:
+      group: a1-global-heavy-economic-evaluator-v1
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify one-shot H activation
+        id: activation
+        run: |
+          python - <<'PY'
+          import json, os, re, subprocess
+          from pathlib import Path
+
+          path = Path('research/campaigns/scalp7_20261006/issue1361_repeatability_v1/HISTORY_BATCH_ACTIVATION.json')
+          token = '[issue1361-history-batch-once-20261006T1420Z-f18d2c7]'
+          value = json.loads(path.read_bytes())
+          head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          parent = subprocess.check_output(['git', 'rev-parse', 'HEAD^'], text=True).strip()
+          changed = subprocess.check_output(
+              ['git', 'diff', '--name-status', '--no-renames', parent, head], text=True
+          ).splitlines()
+          message = subprocess.check_output(['git', 'log', '-1', '--pretty=%B'], text=True)
+          required = {
+              'schema': 'zel.issue1361.history_batch_activation.v1',
+              'issue': 1361,
+              'token': token,
+              'fit_artifact_id': 11419311671,
+              'fit_artifact_digest': 'sha256:a39e65afc4c7557a4864a4a0192b6278cdba51a051969b684f20c97da4f73d1f',
+              'manifest_sha256': '21f5a3ddd6cc49faef9d7964879dc6c08b4f6f46141941bcf60130a21791a49f',
+              'fit_receipt_sha256': '210251e2e9268877a8463c4a96cc5867df94aaf50dd7d845cf20bf90e869fa1a',
+              'fit_source_head': '13d5a9c1753db9cc899f8d419031d5ddb220fb05',
+              'approval_ref': 'refs/heads/research-approvals/issue1361-history-20261006-v1',
+              'claim_ref': 'refs/heads/research-execution-claims/issue1361-history-20261006-v1',
+              'economic_instances': 6,
+              'order_authority': 'BLOCKED',
+          }
+          if token not in message or any(value.get(k) != v for k, v in required.items()):
+              raise SystemExit('HISTORY_ACTIVATION_PROFILE_MISMATCH')
+          source = value.get('reviewed_source_sha')
+          if not isinstance(source, str) or not re.fullmatch(r'[0-9a-f]{40}', source):
+              raise SystemExit('HISTORY_REVIEWED_SOURCE_INVALID')
+          if subprocess.run(['git', 'merge-base', '--is-ancestor', source, parent]).returncode:
+              raise SystemExit('HISTORY_REVIEWED_SOURCE_NOT_ANCESTOR')
+          if changed != ['A\t' + str(path)]:
+              raise SystemExit('HISTORY_ACTIVATION_NOT_NEW_SINGLE_FILE')
+          if subprocess.check_output(['git', 'rev-list', parent, '--', str(path)], text=True).splitlines():
+              raise SystemExit('HISTORY_ACTIVATION_PATH_ALREADY_USED')
+          out = Path(os.environ['RUNNER_TEMP']) / 'HISTORY_BATCH_ACTIVATION.json'
+          out.write_bytes(path.read_bytes())
+          with Path(os.environ['GITHUB_OUTPUT']).open('a') as handle:
+              handle.write(f'reviewed_source_sha={source}\n')
+          PY
+      - name: Checkout exact reviewed H executable
+        run: git checkout --detach '${{ steps.activation.outputs.reviewed_source_sha }}'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.14'
+      - name: Install frozen economic runtime
+        run: python -m pip install --disable-pip-version-check numpy==2.4.3 pandas==3.0.1
+      - name: Download and verify exact fit artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api /repos/${{ github.repository }}/actions/artifacts/11419311671 > "$RUNNER_TEMP/artifact.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          row = json.loads((Path(os.environ['RUNNER_TEMP']) / 'artifact.json').read_bytes())
+          assert row['id'] == 11419311671
+          assert row['name'] == 'issue1361-source-fit-manifest'
+          assert row['digest'] == 'sha256:a39e65afc4c7557a4864a4a0192b6278cdba51a051969b684f20c97da4f73d1f'
+          assert row['expired'] is False
+          assert row['workflow_run']['id'] == 37475710645
+          PY
+          gh api /repos/${{ github.repository }}/actions/artifacts/11419311671/zip > "$RUNNER_TEMP/fit.zip"
+          printf '%s  %s\n' \
+            'a39e65afc4c7557a4864a4a0192b6278cdba51a051969b684f20c97da4f73d1f' \
+            "$RUNNER_TEMP/fit.zip" | sha256sum --check --strict
+          install -d "$RUNNER_TEMP/fit"
+          unzip -q "$RUNNER_TEMP/fit.zip" -d "$RUNNER_TEMP/fit"
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP']) / 'fit'
+          manifest = json.loads((root / 'FIT_MANIFEST.json').read_bytes())
+          receipt = json.loads((root / 'SOURCE_FIT_RECEIPT.json').read_bytes())
+          def canonical(value):
+              return (json.dumps(value, sort_keys=True, separators=(',', ':')) + '\n').encode()
+          manifest_hash = manifest.pop('manifest_sha256')
+          receipt_hash = receipt.pop('receipt_sha256')
+          assert manifest_hash == '21f5a3ddd6cc49faef9d7964879dc6c08b4f6f46141941bcf60130a21791a49f'
+          assert hashlib.sha256(canonical(manifest)).hexdigest() == manifest_hash
+          assert receipt_hash == '210251e2e9268877a8463c4a96cc5867df94aaf50dd7d845cf20bf90e869fa1a'
+          assert hashlib.sha256(canonical(receipt)).hexdigest() == receipt_hash
+          assert receipt['source_head'] == '13d5a9c1753db9cc899f8d419031d5ddb220fb05'
+          PY
+      - name: Require configured existing read-only connection
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: test -n "$VPS_HOST" && test -n "$VPS_USER" && test -n "$VPS_SSH_KEY"
+      - name: Configure existing SSH credential
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Read canonical archive without remote mutation
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
+            tar -C /home/z/z/runtime/economic7_campaign_20260915 -czf - \
+              canonical_12m canonical_gapday_prefix canonical_postgap_20260213 \
+            > "$RUNNER_TEMP/issue1361-source.tar.gz"
+          test -s "$RUNNER_TEMP/issue1361-source.tar.gz"
+      - name: Reject unsafe archive members and stage source
+        run: |
+          stage=/home/z/z/runtime/economic7_campaign_20260915
+          test ! -e "$stage"
+          sudo install -d -o "$(id -u)" -g "$(id -g)" "$stage"
+          printf '%s\n' issue1361-ephemeral-history-stage > "$stage/.issue1361-runner-stage"
+          python - <<'PY'
+          import os, tarfile
+          from pathlib import Path, PurePosixPath
+          archive = Path(os.environ['RUNNER_TEMP']) / 'issue1361-source.tar.gz'
+          destination = Path('/home/z/z/runtime/economic7_campaign_20260915')
+          with tarfile.open(archive, 'r:gz') as handle:
+              members = handle.getmembers()
+              if len(members) > 100_000 or sum(row.size for row in members) > 12 * 1024**3:
+                  raise SystemExit('SOURCE_ARCHIVE_BOUND_EXCEEDED')
+              for member in members:
+                  path = PurePosixPath(member.name)
+                  if (path.is_absolute() or '..' in path.parts or not (member.isdir() or member.isfile())
+                      or not path.parts or path.parts[0] not in {'canonical_12m', 'canonical_gapday_prefix', 'canonical_postgap_20260213'}):
+                      raise SystemExit('UNSAFE_SOURCE_ARCHIVE_MEMBER:' + member.name)
+              handle.extractall(destination, filter='data')
+          PY
+      - name: Execute claimed H1 through H3 once
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python -m ops.issue1361_history_batch_v1 \
+            --source-root /home/z/z/runtime/economic7_campaign_20260915 \
+            --manifest "$RUNNER_TEMP/fit/FIT_MANIFEST.json" \
+            --output "$RUNNER_TEMP/H_RESULTS"
+      - name: Remove transferred source and credential
+        if: always()
+        run: |
+          rm -f ~/.ssh/vps_key "$RUNNER_TEMP/issue1361-source.tar.gz" "$RUNNER_TEMP/fit.zip"
+          stage=/home/z/z/runtime/economic7_campaign_20260915
+          if [ -f "$stage/.issue1361-runner-stage" ]; then
+            sudo rm -rf -- "$stage"
+          fi
+          sudo rmdir --ignore-fail-on-non-empty /home/z/z/runtime /home/z/z /home/z 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: issue1361-history-economic-results
+          path: |
+            ${{ runner.temp }}/H_RESULTS
+            ${{ runner.temp }}/HISTORY_BATCH_ACTIVATION.json
+            ${{ runner.temp }}/fit/FIT_MANIFEST.json
+            ${{ runner.temp }}/fit/SOURCE_FIT_RECEIPT.json
+          if-no-files-found: error

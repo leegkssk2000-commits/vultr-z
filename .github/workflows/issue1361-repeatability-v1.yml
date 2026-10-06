@@ -443,6 +443,11 @@ jobs:
           if token not in message or any(value.get(k) != v for k, v in required.items()):
               raise SystemExit('HISTORY_ACTIVATION_PROFILE_MISMATCH')
           approval = batch.verified_approval()
+          if value.get('approval_commit_sha') != approval.get('approval_commit_sha'):
+              raise SystemExit('HISTORY_APPROVAL_COMMIT_NOT_PINNED')
+          claim = batch.verified_claim()
+          if value.get('claim_commit_sha') != claim.get('claim_commit_sha'):
+              raise SystemExit('HISTORY_CLAIM_COMMIT_NOT_PINNED')
           source = value.get('reviewed_source_sha')
           if not isinstance(source, str) or not re.fullmatch(r'[0-9a-f]{40}', source):
               raise SystemExit('HISTORY_REVIEWED_SOURCE_INVALID')
@@ -453,12 +458,23 @@ jobs:
                   raise SystemExit('HISTORY_ARTIFACT_NOT_APPROVED:' + key)
           if subprocess.run(['git', 'merge-base', '--is-ancestor', source, parent]).returncode:
               raise SystemExit('HISTORY_REVIEWED_SOURCE_NOT_ANCESTOR')
-          if changed != ['A\t' + str(path)]:
-              raise SystemExit('HISTORY_ACTIVATION_NOT_NEW_SINGLE_FILE')
+          expected_changed = [
+              'M\t.github/workflows/issue1361-repeatability-v1.yml',
+              'A\t' + str(path),
+              'M\ttests/test_scalp7_issue1361_repeatability_v1.py',
+          ]
+          if changed != expected_changed:
+              raise SystemExit('HISTORY_ACTIVATION_CHANGED_PATH_PROFILE')
           if subprocess.check_output(['git', 'rev-list', parent, '--', str(path)], text=True).splitlines():
               raise SystemExit('HISTORY_ACTIVATION_PATH_ALREADY_USED')
           out = Path(os.environ['RUNNER_TEMP']) / 'HISTORY_BATCH_ACTIVATION.json'
           out.write_bytes(path.read_bytes())
+          (Path(os.environ['RUNNER_TEMP']) / 'HISTORY_APPROVAL.json').write_bytes(
+              json.dumps(approval, sort_keys=True, separators=(',', ':')).encode() + b'\n'
+          )
+          (Path(os.environ['RUNNER_TEMP']) / 'HISTORY_CLAIM.json').write_bytes(
+              json.dumps(claim, sort_keys=True, separators=(',', ':')).encode() + b'\n'
+          )
           with Path(os.environ['GITHUB_OUTPUT']).open('a') as handle:
               handle.write(f'reviewed_source_sha={source}\n')
           PY
@@ -557,10 +573,26 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          python -m ops.issue1361_history_batch_v1 \
-            --source-root /home/z/z/runtime/economic7_campaign_20260915 \
-            --manifest "$RUNNER_TEMP/fit/FIT_MANIFEST.json" \
-            --output "$RUNNER_TEMP/H_RESULTS"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from ops import issue1361_history_batch_v1 as batch
+
+          temp = Path(os.environ['RUNNER_TEMP'])
+          claim = batch.read_json(temp / 'HISTORY_CLAIM.json')
+          approval = batch.read_json(temp / 'HISTORY_APPROVAL.json')
+          result = batch.execute_batch(
+              Path('/home/z/z/runtime/economic7_campaign_20260915'),
+              temp / 'fit/FIT_MANIFEST.json',
+              temp / 'H_RESULTS',
+              claim_loader=lambda: claim,
+              approval_loader=lambda: approval,
+          )
+          print(json.dumps({
+              'state': result['state'],
+              'summary_sha256': result['summary_sha256'],
+          }, sort_keys=True))
+          PY
       - name: Remove transferred source and credential
         if: always()
         run: |
@@ -577,6 +609,8 @@ jobs:
           path: |
             ${{ runner.temp }}/H_RESULTS
             ${{ runner.temp }}/HISTORY_BATCH_ACTIVATION.json
+            ${{ runner.temp }}/HISTORY_APPROVAL.json
+            ${{ runner.temp }}/HISTORY_CLAIM.json
             ${{ runner.temp }}/fit/FIT_MANIFEST.json
             ${{ runner.temp }}/fit/SOURCE_FIT_RECEIPT.json
           if-no-files-found: error

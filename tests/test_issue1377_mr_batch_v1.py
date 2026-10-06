@@ -258,6 +258,23 @@ def test_rehashed_saved_paired_and_full_census_tamper_are_rejected(
     output.write_text(json.dumps(swapped))
     with pytest.raises(batch.Issue1377Error, match="SAVED_INSTANCE_IDENTITY"):
         batch.audit_result(output, m)
+    row_identity = copy.deepcopy(original)
+    row_identity["instances"]["N_PARENT"]["trades"][0]["identity"] = "forged"
+    row_identity["result_sha256"] = batch.digest(
+        {key: item for key, item in row_identity.items() if key != "result_sha256"}
+    )
+    output.write_text(json.dumps(row_identity))
+    with pytest.raises(batch.Issue1377Error, match="SAVED_ROW_IDENTITY"):
+        batch.audit_result(output, m)
+    safety = copy.deepcopy(original)
+    safety["order_authority"] = "ENABLED"
+    safety["promotion"] = True
+    safety["result_sha256"] = batch.digest(
+        {key: item for key, item in safety.items() if key != "result_sha256"}
+    )
+    output.write_text(json.dumps(safety))
+    with pytest.raises(batch.Issue1377Error, match="SAVED_PROFILE_MISMATCH"):
+        batch.audit_result(output, m)
 
 
 def test_authority_refs_are_git_verified_and_checkout_is_exact(
@@ -352,3 +369,16 @@ def test_end_boundary_has_no_later_h_bar_and_unresolved_is_not_forced_closed() -
     for instance in result["instances"].values():
         assert all(int(row["outcome_available_ts_ms"]) < batch.END_MS for row in instance["trades"])
         assert all(row["state"].startswith("UNRESOLVED") for row in instance["unresolved"])
+
+
+def test_workflow_tracks_all_execution_dependencies() -> None:
+    workflow = (
+        batch.ROOT / ".github/workflows/issue1377-keltner-orthogonal-v1.yml"
+    ).read_text()
+    for dependency in (
+        "scalp7_source_data_v2.py",
+        "scalp7_source_binding_repair_v2.py",
+        "scalp7_execution_v2.py",
+        "scalp7_metrics_v2.py",
+    ):
+        assert dependency in workflow

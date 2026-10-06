@@ -527,14 +527,45 @@ def audit_result(path: Path, manifest: Mapping[str, Any]) -> dict[str, Any]:
     supplied = value.pop("result_sha256", None)
     if supplied != digest(value):
         raise Issue1377Error("SAVED_RESULT_HASH_MISMATCH")
+    expected_profile = {
+        "schema": "zel.issue1377.mr_comparison_result.v1",
+        "issue": 1377,
+        "classification": CLASSIFICATION,
+        "clock_profile": "MODELED_BAR_CLOSE_NOT_OBSERVED_HISTORICAL_DELIVERY",
+        "period_ms": [START_MS, END_MS],
+        "fresh_oos": False,
+        "order_authority": "BLOCKED",
+        "promotion": False,
+    }
+    for key, expected in expected_profile.items():
+        if value.get(key) != expected:
+            raise Issue1377Error("SAVED_PROFILE_MISMATCH:" + key)
     if value.get("manifest_sha256") != manifest.get("manifest_sha256"):
         raise Issue1377Error("SAVED_MANIFEST_BINDING")
     if set(value.get("instances", {})) != set(INSTANCE_IDS):
         raise Issue1377Error("SAVED_INSTANCE_SET_MISMATCH")
     expected_identities = {"N_PARENT": PARENT, "N_CANDIDATE": CANDIDATE}
     for instance_id, instance in value["instances"].items():
-        if instance.get("identity") != expected_identities[instance_id]:
+        expected_identity = expected_identities[instance_id]
+        if instance.get("identity") != expected_identity:
             raise Issue1377Error("SAVED_INSTANCE_IDENTITY_MISMATCH:" + instance_id)
+        for collection in ("signals", "trades", "unresolved"):
+            for row in instance[collection]:
+                if row.get("identity") != expected_identity:
+                    raise Issue1377Error(
+                        "SAVED_ROW_IDENTITY_MISMATCH:"
+                        + instance_id
+                        + ":"
+                        + collection
+                    )
+                nested = row.get("signal")
+                if isinstance(nested, Mapping) and nested.get("identity") != expected_identity:
+                    raise Issue1377Error(
+                        "SAVED_NESTED_SIGNAL_IDENTITY_MISMATCH:"
+                        + instance_id
+                        + ":"
+                        + collection
+                    )
         for multiplier, name in ((1, "cost_1x"), (2, "cost_2x")):
             if metrics.summarize(instance["trades"], START_MS, END_MS, multiplier) != instance[name]:
                 raise Issue1377Error("SAVED_ACCOUNTING_MISMATCH:" + name)

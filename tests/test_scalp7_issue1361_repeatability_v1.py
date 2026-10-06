@@ -71,6 +71,11 @@ def test_fit_artifact_job_is_single_file_descendant_and_non_economic() -> None:
     assert "FIT_ACTIVATION_SOURCE_NOT_PARENT_ANCESTOR" in block
     assert "handle.write(f'source_head={source_head}\\n')" in block
     assert "'source_head': parent" not in block
+    assert "'source_head': approved_source" in block
+    assert "7d0f8d5efb6e539ad093e53e019c6d05715f2738" in block
+    assert "9b6cfb0aa644978fb08e34c37d1d9c23d81b010d" in block
+    assert "4165d7b6c1d66696b4cdd627495262876ff6d378" in block
+    assert "13d5a9c1753db9cc899f8d419031d5ddb220fb05" in block
     assert "test_period_signal_generation': 0" in block
     assert "test_period_model_replays': 0" in block
     assert "'H_claimed': 0" in block

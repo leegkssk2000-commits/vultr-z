@@ -113,8 +113,10 @@ def test_history_batch_is_one_shot_claimed_and_global_heavy() -> None:
     block = workflow.split("  history-economic-batch:", 1)[1]
     assert "[issue1361-history-batch-once-20261006T1420Z-f18d2c7]" in block
     assert "github.run_attempt == 1" in block.split("needs: contract-tests", 1)[0]
-    assert "changed != ['A\\t' + str(path)]" in block
-    assert "HISTORY_ACTIVATION_NOT_NEW_SINGLE_FILE" in block
+    assert "'M\\t.github/workflows/issue1361-repeatability-v1.yml'" in block
+    assert "'A\\t' + str(path)" in block
+    assert "'M\\ttests/test_scalp7_issue1361_repeatability_v1.py'" in block
+    assert "HISTORY_ACTIVATION_CHANGED_PATH_PROFILE" in block
     assert "git checkout --detach '${{ steps.activation.outputs.reviewed_source_sha }}'" in block
     assert "group: a1-global-heavy-economic-evaluator-v1" in block
     assert "cancel-in-progress: false" in block

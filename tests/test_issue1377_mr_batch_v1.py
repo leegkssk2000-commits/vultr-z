@@ -35,6 +35,7 @@ def market() -> dict:
             "low": values,
             "close": values,
         })
+        frame.attrs["source_inventory_sha256"] = batch.SOURCE_INVENTORY_SHA256
         frames[symbol] = frame
     return {"frames": frames, "costs": {symbol: 15.0 for symbol in batch.rules.PARENT_SYMBOLS}}
 
@@ -62,7 +63,12 @@ def authority(m: dict) -> tuple[dict, dict]:
         "order_authority": "BLOCKED",
     }
     approval = {**common, "schema": "zel.issue1377.mr_approval.v1", "state": "APPROVED_DEVELOPMENT_ONLY", "approval_ref": batch.APPROVAL_REF, "approval_commit_sha": "b" * 40}
-    claim = {**common, "schema": "zel.issue1377.mr_claim.v1", "state": "RESERVED_NONRETRYABLE", "claim_ref": batch.CLAIM_REF, "claim_commit_sha": "c" * 40, "economic_instances": 2, "independent_approval_commit_sha": approval["approval_commit_sha"], "global_heavy_group": "a1-global-heavy-economic-evaluator-v1", "global_heavy_exclusive": True}
+    activation = {
+        "github_run_id": "101",
+        "github_run_attempt": "1",
+        "github_job": "economic",
+    }
+    claim = {**common, "schema": "zel.issue1377.mr_claim.v1", "state": "RESERVED_NONRETRYABLE", "claim_ref": batch.CLAIM_REF, "claim_commit_sha": "c" * 40, "economic_instances": 2, "independent_approval_commit_sha": approval["approval_commit_sha"], "global_heavy_group": "a1-global-heavy-economic-evaluator-v1", "global_heavy_exclusive": True, "global_heavy_active_count": 1, "global_heavy_active_job": activation, "activation": activation}
     return approval, claim
 
 
@@ -151,11 +157,22 @@ def test_end_to_end_input_authority_model_save_audit_and_no_retry(
     m = manifest()
     api, _ = authority_api(m)
     monkeypatch.setattr(batch, "current_head", lambda: m["reviewed_source_sha"])
-    monkeypatch.setattr(batch, "load_market", lambda source_root, cache_dir=None: market())
+    calls = []
+    monkeypatch.setattr(
+        batch,
+        "atomic_consume_claim",
+        lambda claim, supplied: calls.append(("consume", supplied["manifest_sha256"])),
+    )
+    def loader(source_root):
+        assert calls == [("consume", m["manifest_sha256"])]
+        calls.append(("market", source_root))
+        return market()
+    monkeypatch.setattr(batch, "load_market", loader)
     output = tmp_path / "RESULT.json"
     result = batch.execute(output, tmp_path, api=api)
     assert result["instances"]["N_PARENT"]["census"]["signals"] >= 1
     assert result["instances"]["N_CANDIDATE"]["census"]["signals"] >= 1
+    assert calls[0][0] == "consume" and calls[1][0] == "market"
     assert batch.audit_result(output, m)["state"] == "PASS_SAVED_CENSUS_AND_ACCOUNTING"
     with pytest.raises(batch.Issue1377Error, match="RESULT_ALREADY_EXISTS_NO_RETRY"):
         batch.execute(output, tmp_path, api=api)
@@ -167,7 +184,8 @@ def test_saved_result_and_accounting_tamper_are_rejected(
     m = manifest()
     api, _ = authority_api(m)
     monkeypatch.setattr(batch, "current_head", lambda: m["reviewed_source_sha"])
-    monkeypatch.setattr(batch, "load_market", lambda source_root, cache_dir=None: market())
+    monkeypatch.setattr(batch, "atomic_consume_claim", lambda claim, supplied: None)
+    monkeypatch.setattr(batch, "load_market", lambda source_root: market())
     output = tmp_path / "RESULT.json"
     batch.execute(output, tmp_path, api=api)
     value = json.loads(output.read_text())
@@ -184,7 +202,8 @@ def test_rehashed_saved_result_missing_instance_is_rejected(
     m = manifest()
     api, _ = authority_api(m)
     monkeypatch.setattr(batch, "current_head", lambda: m["reviewed_source_sha"])
-    monkeypatch.setattr(batch, "load_market", lambda source_root, cache_dir=None: market())
+    monkeypatch.setattr(batch, "atomic_consume_claim", lambda claim, supplied: None)
+    monkeypatch.setattr(batch, "load_market", lambda source_root: market())
     output = tmp_path / "RESULT.json"
     batch.execute(output, tmp_path, api=api)
     value = json.loads(output.read_text())
@@ -215,9 +234,70 @@ def test_authority_refs_are_git_verified_and_checkout_is_exact(
         batch.verified_claim(api)
     routes["/git/blobs/" + claim_blob]["content"] = original_content
     monkeypatch.setattr(batch, "current_head", lambda: "f" * 40)
-    monkeypatch.setattr(batch, "load_market", lambda source_root, cache_dir=None: market())
+    monkeypatch.setattr(batch, "load_market", lambda source_root: market())
     with pytest.raises(batch.Issue1377Error, match="EXECUTING_CHECKOUT"):
         batch.execute(tmp_path / "RESULT.json", tmp_path, api=api)
+
+
+def test_current_head_rejects_dirty_checkout(monkeypatch) -> None:
+    def output(command, **kwargs):
+        if command[1:3] == ["rev-parse", "HEAD"]:
+            return "a" * 40 + "\n"
+        assert command[1:3] == ["status", "--porcelain=v1"]
+        return " M ops/issue1377_mr_batch_v1.py\n"
+
+    monkeypatch.setattr(batch.subprocess, "check_output", output)
+    with pytest.raises(batch.Issue1377Error, match="EXECUTING_CHECKOUT_DIRTY"):
+        batch.current_head()
+
+
+def test_load_market_disables_mutable_cache(monkeypatch) -> None:
+    from backend.research.rebuild import scalp7_source_data_v2 as source
+
+    data = market()
+    calls = []
+
+    def load_candles(source_root, timeframe, cache_dir):
+        calls.append((source_root, timeframe, cache_dir))
+        return data["frames"]
+
+    monkeypatch.setattr(source, "load_candles", load_candles)
+    monkeypatch.setattr(batch, "file_sha256", lambda path: batch.COST_SHA256)
+    monkeypatch.setattr(batch, "read_json", lambda path: {"costs_bps": data["costs"]})
+    loaded = batch.load_market(Path("/fixed/source"))
+    assert calls == [(Path("/fixed/source"), 30, None)]
+    assert set(loaded["frames"]) == set(batch.rules.PARENT_SYMBOLS)
+
+
+def test_claim_is_consumed_once_before_compute(monkeypatch) -> None:
+    m = manifest()
+    _, claim = authority(m)
+    for key, value in claim["activation"].items():
+        monkeypatch.setenv(key.upper(), value)
+    created = {"ref": False}
+
+    def api(method, route, payload):
+        assert method == "POST"
+        if route == "/git/blobs":
+            raw = base64.b64decode(payload["content"])
+            return {"sha": batch._git_blob_sha(raw)}
+        if route == "/git/trees":
+            return {"sha": "d" * 40}
+        if route == "/git/commits":
+            assert payload["parents"] == [claim["claim_commit_sha"]]
+            return {"sha": "e" * 40}
+        if created["ref"]:
+            raise batch.Issue1377Error("CLAIM_ALREADY_CONSUMED_NO_RETRY")
+        created["ref"] = True
+        return {
+            "ref": batch.CONSUMPTION_REF,
+            "object": {"sha": "e" * 40},
+        }
+
+    receipt = batch.atomic_consume_claim(claim, m, api)
+    assert receipt["state"] == "CONSUMED_NONRETRYABLE_BEFORE_COMPUTE"
+    with pytest.raises(batch.Issue1377Error, match="CLAIM_ALREADY_CONSUMED"):
+        batch.atomic_consume_claim(claim, m, api)
 
 
 def test_end_boundary_has_no_later_h_bar_and_unresolved_is_not_forced_closed() -> None:

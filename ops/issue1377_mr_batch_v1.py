@@ -40,6 +40,9 @@ CANDIDATE = rules.COST_COVERED_IDENTITY
 INSTANCE_IDS = ("N_PARENT", "N_CANDIDATE")
 APPROVAL_REF = "refs/heads/research-approvals/issue1377-mr-20261007-v1"
 CLAIM_REF = "refs/heads/research-execution-claims/issue1377-mr-20261007-v1"
+CONSUMPTION_REF = (
+    "refs/heads/research-execution-consumptions/issue1377-mr-20261007-v1"
+)
 CLASSIFICATION = "DEVELOPMENT_ONLY_ALREADY_INSPECTED_NOT_FRESH_NOT_OOS"
 
 
@@ -90,6 +93,41 @@ def github(method: str, route: str) -> dict[str, Any]:
             value = json.load(response)
     except HTTPError as exc:
         raise Issue1377Error("GITHUB_GET_HTTP_" + str(exc.code)) from None
+    if not isinstance(value, dict):
+        raise Issue1377Error("GITHUB_OBJECT_REQUIRED")
+    return value
+
+
+def github_create(
+    method: str, route: str, payload: Mapping[str, Any]
+) -> dict[str, Any]:
+    allowed = ("/git/blobs", "/git/trees", "/git/commits", "/git/refs")
+    if method != "POST" or route not in allowed:
+        raise Issue1377Error("FIXED_GIT_OBJECT_CREATE_ROUTE_REQUIRED")
+    token = os.environ.get("GH_TOKEN", "")
+    if not token:
+        raise Issue1377Error("GITHUB_TOKEN_REQUIRED")
+    base = "https://api.github.com/repos/leegkssk2000-commits/vultr-z"
+    request = Request(
+        base + route,
+        method="POST",
+        data=json.dumps(payload, separators=(",", ":")).encode(),
+        headers={
+            "Authorization": "Bearer " + token,
+            "Accept": "application/vnd.github+json",
+            "Content-Type": "application/json",
+            "X-GitHub-Api-Version": "2026-03-10",
+        },
+    )
+    try:
+        with urlopen(request, timeout=30) as response:
+            if not response.geturl().startswith(base + "/"):
+                raise Issue1377Error("GITHUB_REDIRECT_REJECTED")
+            value = json.load(response)
+    except HTTPError as exc:
+        if route == "/git/refs" and exc.code == 422:
+            raise Issue1377Error("CLAIM_ALREADY_CONSUMED_NO_RETRY") from None
+        raise Issue1377Error("GITHUB_CREATE_HTTP_" + str(exc.code)) from None
     if not isinstance(value, dict):
         raise Issue1377Error("GITHUB_OBJECT_REQUIRED")
     return value
@@ -173,9 +211,105 @@ def verified_claim(
 
 
 def current_head() -> str:
-    return subprocess.check_output(
+    head = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
     ).strip()
+    dirty = subprocess.check_output(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        cwd=ROOT,
+        text=True,
+    )
+    if dirty:
+        raise Issue1377Error("EXECUTING_CHECKOUT_DIRTY")
+    if not _commit(head):
+        raise Issue1377Error("EXECUTING_CHECKOUT_COMMIT")
+    return head
+
+
+def _activation(claim: Mapping[str, Any]) -> dict[str, str]:
+    expected = {
+        "github_run_id": os.environ.get("GITHUB_RUN_ID", ""),
+        "github_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+        "github_job": os.environ.get("GITHUB_JOB", ""),
+    }
+    if not all(expected.values()) or claim.get("activation") != expected:
+        raise Issue1377Error("CLAIM_ACTIVATION_IDENTITY")
+    if claim.get("global_heavy_active_count") != 1:
+        raise Issue1377Error("GLOBAL_HEAVY_ACTIVE_COUNT")
+    if claim.get("global_heavy_active_job") != expected:
+        raise Issue1377Error("GLOBAL_HEAVY_ACTIVE_JOB")
+    return expected
+
+
+def atomic_consume_claim(
+    claim: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    api: Callable[[str, str, Mapping[str, Any]], Mapping[str, Any]] = github_create,
+) -> dict[str, Any]:
+    activation = _activation(claim)
+    value = {
+        "schema": "zel.issue1377.mr_consumption.v1",
+        "issue": 1377,
+        "state": "CONSUMED_NONRETRYABLE_BEFORE_COMPUTE",
+        "consumption_ref": CONSUMPTION_REF,
+        "claim_ref": CLAIM_REF,
+        "claim_commit_sha": claim["claim_commit_sha"],
+        "manifest_sha256": manifest["manifest_sha256"],
+        "reviewed_source_sha": manifest["reviewed_source_sha"],
+        "instance_ids": list(INSTANCE_IDS),
+        "economic_instances": 2,
+        "activation": activation,
+        "order_authority": "BLOCKED",
+    }
+    raw = canonical_bytes(value)
+    expected_blob = _git_blob_sha(raw)
+    blob = api(
+        "POST",
+        "/git/blobs",
+        {"content": base64.b64encode(raw).decode(), "encoding": "base64"},
+    )
+    if blob.get("sha") != expected_blob:
+        raise Issue1377Error("CONSUMPTION_BLOB_CREATE_MISMATCH")
+    tree = api(
+        "POST",
+        "/git/trees",
+        {
+            "tree": [
+                {
+                    "path": "CONSUMED.json",
+                    "mode": "100644",
+                    "type": "blob",
+                    "sha": expected_blob,
+                }
+            ]
+        },
+    )
+    if not _commit(tree.get("sha")):
+        raise Issue1377Error("CONSUMPTION_TREE_CREATE")
+    commit = api(
+        "POST",
+        "/git/commits",
+        {
+            "message": "Issue1377 consume MR comparison claim",
+            "tree": tree["sha"],
+            "parents": [claim["claim_commit_sha"]],
+        },
+    )
+    if not _commit(commit.get("sha")):
+        raise Issue1377Error("CONSUMPTION_COMMIT_CREATE")
+    created = api(
+        "POST",
+        "/git/refs",
+        {"ref": CONSUMPTION_REF, "sha": commit["sha"]},
+    )
+    if (
+        created.get("ref") != CONSUMPTION_REF
+        or created.get("object", {}).get("sha") != commit["sha"]
+    ):
+        raise Issue1377Error("CONSUMPTION_REF_READBACK")
+    return {**value, "consumption_commit_sha": commit["sha"]}
+
+
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -275,12 +409,12 @@ def validate_authority(
         raise Issue1377Error("GLOBAL_HEAVY_BINDING")
 
 
-def load_market(source_root: Path, cache_dir: Path | None = None) -> dict[str, Any]:
+def load_market(source_root: Path) -> dict[str, Any]:
     from backend.research.rebuild import scalp7_source_data_v2 as source
 
     if file_sha256(COST_PATH) != COST_SHA256:
         raise Issue1377Error("FROZEN_COST_FILE_DRIFT")
-    frames = source.load_candles(source_root, 30, cache_dir=cache_dir)
+    frames = source.load_candles(source_root, 30, cache_dir=None)
     if set(frames) != set(rules.PARENT_SYMBOLS):
         raise Issue1377Error("SOURCE_SYMBOL_COHORT_DRIFT")
     sliced = {}
@@ -398,7 +532,6 @@ def audit_result(path: Path, manifest: Mapping[str, Any]) -> dict[str, Any]:
 def execute(
     output: Path,
     source_root: Path = SOURCE_ROOT,
-    cache_dir: Path | None = None,
     *,
     api: Callable[[str, str], Mapping[str, Any]] = github,
 ) -> dict[str, Any]:
@@ -411,7 +544,8 @@ def execute(
     validate_authority(manifest, approval, claim)
     if output.exists():
         raise Issue1377Error("RESULT_ALREADY_EXISTS_NO_RETRY")
-    market = load_market(source_root, cache_dir)
+    atomic_consume_claim(claim, manifest)
+    market = load_market(source_root)
     result = compare(market, manifest)
     write_once(output, result)
     audit_result(output, manifest)

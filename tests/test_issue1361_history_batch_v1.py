@@ -11,19 +11,51 @@ from ops import issue1361_repeatability_v1 as scope
 from tests.test_issue1361_history_v1 import manifest as fit_manifest
 
 
+def approval(manifest):
+    return {
+        "schema": "zel.issue1361.history_approval.v1",
+        "issue": 1361,
+        "state": "APPROVED_RETROSPECTIVE_H_ONLY",
+        "approval_ref": batch.APPROVAL_REF,
+        "approval_commit_sha": "b" * 40,
+        "classification": scope.CLASSIFICATION,
+        "reviewed_source_sha": "c" * 40,
+        "fit_artifact_id": batch.FIT_ARTIFACT_ID,
+        "fit_artifact_digest": batch.FIT_ARTIFACT_DIGEST,
+        "fit_receipt_sha256": batch.FIT_RECEIPT_SHA256,
+        "manifest_sha256": manifest["manifest_sha256"],
+        "source_inventory_sha256": scope.SOURCE_INVENTORY_SHA256,
+        "protocol_sha256": scope.PROTOCOL_SHA256,
+        "rule_sha256": scope.RULE_SHA256,
+        "cost_sha256": scope.COST_SHA256,
+        "runtime_sha256": manifest["runtime_sha256"],
+        "trusted_fit_sha256": {row["id"]: row["fit"]["sha256"] for row in manifest["fits"]},
+        "trusted_coverage_sha256": manifest["coverage_sha256"],
+        "instance_ids": sorted(row["instance_id"] for row in manifest["instances"]),
+        "max_instances": 6,
+        "order_authority": "BLOCKED",
+    }
+
+
 def claim(manifest):
+    approved = approval(manifest)
     return {
         "schema": "zel.issue1361.history_claim.v1",
         "issue": 1361,
         "state": "RESERVED_NONRETRYABLE",
         "claim_ref": prep.HISTORY_CLAIM_REF,
         "claim_commit_sha": "a" * 40,
-        "independent_approval_commit_sha": "b" * 40,
+        "independent_approval_commit_sha": approved["approval_commit_sha"],
+        "reviewed_source_sha": approved["reviewed_source_sha"],
+        "fit_artifact_id": approved["fit_artifact_id"],
+        "fit_artifact_digest": approved["fit_artifact_digest"],
+        "fit_receipt_sha256": approved["fit_receipt_sha256"],
         "manifest_sha256": manifest["manifest_sha256"],
         "source_inventory_sha256": scope.SOURCE_INVENTORY_SHA256,
         "protocol_sha256": scope.PROTOCOL_SHA256,
         "rule_sha256": scope.RULE_SHA256,
         "cost_sha256": scope.COST_SHA256,
+        "runtime_sha256": manifest["runtime_sha256"],
         "trusted_fit_sha256": {row["id"]: row["fit"]["sha256"] for row in manifest["fits"]},
         "trusted_coverage_sha256": manifest["coverage_sha256"],
         "instance_ids": sorted(row["instance_id"] for row in manifest["instances"]),
@@ -61,23 +93,40 @@ def test_claim_rejects_rehashed_manifest_or_unapproved_instance(monkeypatch):
     manifest = fit_manifest()
     monkeypatch.setattr(prep, "validate_runtime", lambda: prep.RUNTIME_PROFILE)
     good = claim(manifest)
-    batch.validate_claim(good, manifest)
+    approved = approval(manifest)
+    batch.validate_claim(good, manifest, approved)
     changed = copy.deepcopy(good)
     changed["instance_ids"].pop()
     with pytest.raises(batch.HistoryBatchError, match="CLAIM_BINDING"):
-        batch.validate_claim(changed, manifest)
+        batch.validate_claim(changed, manifest, approved)
     forged = copy.deepcopy(manifest)
     forged["costs_bps"][scope.SYMBOLS[0]] += 1
     forged["manifest_sha256"] = prep.canonical_sha256(
         {k: v for k, v in forged.items() if k != "manifest_sha256"}
     )
-    with pytest.raises(batch.HistoryBatchError, match="CLAIM_BINDING|FROZEN_COST"):
-        batch.validate_claim(good, forged)
+    with pytest.raises(batch.HistoryBatchError, match="APPROVAL_BINDING|CLAIM_BINDING|FROZEN_COST"):
+        batch.validate_claim(good, forged, approved)
+
+
+def test_claim_rejects_unpublished_or_rebound_approval(monkeypatch):
+    manifest = fit_manifest()
+    monkeypatch.setattr(prep, "validate_runtime", lambda: prep.RUNTIME_PROFILE)
+    approved = approval(manifest)
+    good = claim(manifest)
+    rebound = copy.deepcopy(approved)
+    rebound["fit_artifact_id"] += 1
+    with pytest.raises(batch.HistoryBatchError, match="APPROVAL_BINDING|CLAIM_BINDING"):
+        batch.validate_claim(good, manifest, rebound)
+    forged = copy.deepcopy(good)
+    forged["independent_approval_commit_sha"] = "f" * 40
+    with pytest.raises(batch.HistoryBatchError, match="CLAIM_OR_APPROVAL"):
+        batch.validate_claim(forged, manifest, approved)
 
 
 def test_one_invocation_runs_h1_h2_h3_saves_and_audits_before_next(tmp_path, monkeypatch):
     manifest = fit_manifest()
-    approval = claim(manifest)
+    approved_claim = claim(manifest)
+    approved = approval(manifest)
     manifest_path = tmp_path / "FIT.json"
     manifest_path.write_text(json.dumps(manifest))
     monkeypatch.setattr(prep, "validate_runtime", lambda: prep.RUNTIME_PROFILE)
@@ -98,7 +147,8 @@ def test_one_invocation_runs_h1_h2_h3_saves_and_audits_before_next(tmp_path, mon
         tmp_path,
         manifest_path,
         out,
-        claim_loader=lambda: approval,
+        claim_loader=lambda: approved_claim,
+        approval_loader=lambda: approved,
         market_loader=loader,
         instance_runner=runner,
     )

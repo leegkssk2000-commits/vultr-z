@@ -26,6 +26,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: issue1361-repeatability-${{ github.event.pull_request.number || github.ref }}
@@ -407,10 +408,13 @@ jobs:
           persist-credentials: false
       - name: Verify one-shot H activation
         id: activation
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           python - <<'PY'
           import json, os, re, subprocess
           from pathlib import Path
+          from ops import issue1361_history_batch_v1 as batch
 
           path = Path('research/campaigns/scalp7_20261006/issue1361_repeatability_v1/HISTORY_BATCH_ACTIVATION.json')
           token = '[issue1361-history-batch-once-20261006T1420Z-f18d2c7]'
@@ -437,9 +441,15 @@ jobs:
           }
           if token not in message or any(value.get(k) != v for k, v in required.items()):
               raise SystemExit('HISTORY_ACTIVATION_PROFILE_MISMATCH')
+          approval = batch.verified_approval()
           source = value.get('reviewed_source_sha')
           if not isinstance(source, str) or not re.fullmatch(r'[0-9a-f]{40}', source):
               raise SystemExit('HISTORY_REVIEWED_SOURCE_INVALID')
+          if source != approval.get('reviewed_source_sha'):
+              raise SystemExit('HISTORY_REVIEWED_SOURCE_NOT_APPROVED')
+          for key in ('fit_artifact_id', 'fit_artifact_digest', 'fit_receipt_sha256'):
+              if value.get(key) != approval.get(key):
+                  raise SystemExit('HISTORY_ARTIFACT_NOT_APPROVED:' + key)
           if subprocess.run(['git', 'merge-base', '--is-ancestor', source, parent]).returncode:
               raise SystemExit('HISTORY_REVIEWED_SOURCE_NOT_ANCESTOR')
           if changed != ['A\t' + str(path)]:

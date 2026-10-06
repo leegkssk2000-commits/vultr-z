@@ -108,6 +108,19 @@ def test_duplicate_instance_identity_is_rejected_even_if_rehashed():
         h.validate_manifest(value)
 
 
+def test_identity_entry_profile_swap_is_rejected_even_if_rehashed():
+    value = manifest()
+    first, second = value["instances"][0], value["instances"][1]
+    first["entry_profile"], second["entry_profile"] = second["entry_profile"], first["entry_profile"]
+    for instance in (first, second):
+        frozen = {k: v for k, v in instance.items() if k != "state_sha256"}
+        instance["state_sha256"] = h.canonical_sha256(frozen)
+    frozen_manifest = {k: v for k, v in value.items() if k != "manifest_sha256"}
+    value["manifest_sha256"] = h.canonical_sha256(frozen_manifest)
+    with pytest.raises(h.HistoryPreparationError, match="IDENTITY_ENTRY_PROFILE_MISMATCH"):
+        h.validate_manifest(value)
+
+
 def test_fit_window_matches_existing_rolling_context_contract():
     for planned in scope.planned_history():
         window = h.fit_window(planned)
@@ -142,6 +155,20 @@ def test_module_does_not_import_signal_or_execution_engines():
     body = source.split("def prepare_history", 1)[1]
     assert "generate_signals(" not in body
     assert ".replay(" not in body
+
+
+def test_code_bundle_lists_candidate_transitive_runtime_dependencies():
+    names = set(h.code_hashes())
+    assert {
+        "ops/issue1358_ema21_limit_v1.py",
+        "ops/scalp7_clocked_execution_v1.py",
+        "ops/squeeze_nonpositive_exit_v1.py",
+        "ops/kp_committed_cursor_snapshot_v1.py",
+        "ops/kp_connected_research_validation_v1.py",
+        "ops/kp_price_input_export_v1.py",
+        "backend/research/rebuild/scalp7_positive_lanes_v2.py",
+        "backend/research/rebuild/scalp7_execution_v2.py",
+    } <= names
 
 
 def test_write_once_refuses_restart_overwrite(tmp_path, monkeypatch):

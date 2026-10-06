@@ -31,6 +31,10 @@ FROZEN_COSTS_BPS = {
     "SOL-USDT": 14.019991840065801,
     "XRP-USDT": 15.2464337863639,
 }
+ENTRY_PROFILES = {
+    CANDIDATE: "MODELED_MINUTE_TOUCH_ADVERSE_LIMIT_BOUND",
+    PARENT: "UTC_NEXT_30M_OPEN_MARKET_MODEL",
+}
 
 
 class HistoryPreparationError(RuntimeError):
@@ -80,6 +84,11 @@ def code_hashes(root: Path = ROOT) -> dict[str, str]:
         "ops/issue1361_history_v1.py",
         "ops/issue1361_repeatability_v1.py",
         "ops/issue1358_ema21_limit_v1.py",
+        "ops/scalp7_clocked_execution_v1.py",
+        "ops/squeeze_nonpositive_exit_v1.py",
+        "ops/kp_committed_cursor_snapshot_v1.py",
+        "ops/kp_connected_research_validation_v1.py",
+        "ops/kp_price_input_export_v1.py",
         "backend/research/rebuild/scalp7_source_data_v2.py",
         "backend/research/rebuild/scalp7_rolling_context_v2.py",
         "backend/research/rebuild/scalp7_positive_lanes_v2.py",
@@ -158,9 +167,9 @@ def build_manifest(
         ):
             raise HistoryPreparationError("FIT_CHRONOLOGY_OR_HASH:" + row["id"])
         fit_rows.append({"id": row["id"], "fit": fit})
-        for identity, model, entry_profile in (
-            (CANDIDATE, "EMA21_BUY_LIMIT", "MODELED_MINUTE_TOUCH_ADVERSE_LIMIT_BOUND"),
-            (PARENT, "SQUEEZE_PARENT", "UTC_NEXT_30M_OPEN_MARKET_MODEL"),
+        for identity, model in (
+            (CANDIDATE, "EMA21_BUY_LIMIT"),
+            (PARENT, "SQUEEZE_PARENT"),
         ):
             frozen = {
                 "schema": "zel.issue1361.history_instance.v1",
@@ -181,7 +190,7 @@ def build_manifest(
                 "test_end_ms": row["test_end_ms"],
                 "clock_profile": row["clock_profile"],
                 "classification": scope.CLASSIFICATION,
-                "entry_profile": entry_profile,
+                "entry_profile": ENTRY_PROFILES[identity],
                 "cost_profiles": ["1x", "2x"],
                 "fresh_oos": False,
                 "order_authority": "BLOCKED",
@@ -232,6 +241,8 @@ def validate_manifest(value: Mapping[str, Any]) -> None:
     if {x.get("identity") for x in instances} != {CANDIDATE, PARENT}:
         raise HistoryPreparationError("MODEL_IDENTITY_MISMATCH")
     for instance in instances:
+        if instance.get("entry_profile") != ENTRY_PROFILES.get(instance.get("identity")):
+            raise HistoryPreparationError("IDENTITY_ENTRY_PROFILE_MISMATCH")
         frozen = {k: v for k, v in instance.items() if k != "state_sha256"}
         if canonical_sha256(frozen) != instance.get("state_sha256"):
             raise HistoryPreparationError("INSTANCE_STATE_HASH_MISMATCH")

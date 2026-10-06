@@ -126,6 +126,10 @@ def test_history_batch_is_one_shot_claimed_and_global_heavy() -> None:
     assert "HISTORY_APPROVAL_COMMIT_NOT_PINNED" in block
     assert "value.get('claim_commit_sha') != claim.get('claim_commit_sha')" in block
     assert "HISTORY_CLAIM_COMMIT_NOT_PINNED" in block
+    assert "HISTORY_APPROVAL.json" in block
+    assert "HISTORY_CLAIM.json" in block
+    assert "claim_loader=lambda: claim" in block
+    assert "approval_loader=lambda: approval" in block
     assert "HISTORY_ARTIFACT_NOT_APPROVED" in block
     assert "issue1361_history_batch_v1" in block
     assert "fit_artifact_id': 11419311671" in block

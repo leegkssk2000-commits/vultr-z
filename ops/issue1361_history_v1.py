@@ -513,7 +513,15 @@ def prepare_history(source_root: Path, output: Path, cache_dir: Path, contract_p
         raise HistoryPreparationError("SOURCE_INVENTORY_NOT_READY")
     contract = json.loads(contract_path.read_bytes())
     costs = validate_costs(contract.get("reference_costs_bps"))
-    frames = source.load_candles(source_root, 30, cache_dir=cache_dir)
+    # The generic loader cache has no independent receipt trust anchor.  H fits
+    # therefore rebuild directly from the receipt-verified minute archives;
+    # ``cache_dir`` remains a CLI compatibility argument and is never trusted.
+    del cache_dir
+    minutes = source._load_verified_minutes(source_root)
+    frames = {
+        symbol: source.aggregate_minutes(minutes[symbol], 30)
+        for symbol in scope.SYMBOLS
+    }
     rows = scope.planned_history()
     coverage = source_coverage(frames, rows)
     features = context.cross_features(frames)

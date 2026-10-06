@@ -432,6 +432,14 @@ def test_module_does_not_import_signal_or_execution_engines():
     assert ".replay(" not in body
 
 
+def test_history_fit_rebuilds_from_verified_minutes_not_mutable_cache():
+    source = (h.ROOT / "ops/issue1361_history_v1.py").read_text()
+    body = source.split("def prepare_history", 1)[1]
+    assert "_load_verified_minutes(source_root)" in body
+    assert "aggregate_minutes(minutes[symbol], 30)" in body
+    assert "load_candles(" not in body
+
+
 def test_code_bundle_lists_candidate_transitive_runtime_dependencies():
     names = set(h.code_hashes())
     assert {

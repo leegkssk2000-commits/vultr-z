@@ -24,6 +24,7 @@ CANDIDATE = "scalp7_squeeze_release_ema21_limit_utc30m_v1"
 PARENT = "scalp7_squeeze_panic_cost4_parent_utc30m_v2"
 HISTORY_CLAIM_REF = "refs/heads/research-execution-claims/issue1361-history-20261006-v1"
 FIT_SCHEMA = "zel.issue1361.history_fit_manifest.v1"
+SOURCE_INVENTORY_FILES = 17_541
 FROZEN_COSTS_BPS = {
     "BTC-USDT": 14.0,
     "DOGE-USDT": 16.73064726730116,
@@ -300,11 +301,33 @@ def build_manifest(
     return manifest
 
 
-def validate_manifest(value: Mapping[str, Any]) -> None:
-    if value.get("schema") != FIT_SCHEMA or value.get("phase") != "FIT_COMPLETE_NO_TEST_SIGNALS":
+def validate_manifest(value: Mapping[str, Any], *, root: Path = ROOT) -> None:
+    if (
+        value.get("schema") != FIT_SCHEMA
+        or value.get("issue") != 1361
+        or value.get("phase") != "FIT_COMPLETE_NO_TEST_SIGNALS"
+        or value.get("classification") != scope.CLASSIFICATION
+    ):
         raise HistoryPreparationError("FIT_MANIFEST_PROFILE")
-    if value.get("test_period_signal_generation") != 0 or value.get("test_period_model_replays") != 0:
+    expected_controls = {
+        "allocation": {"H_claimed": 0, "H_limit": 6, "economic_runs": 0},
+        "history_claim_ref": HISTORY_CLAIM_REF,
+        "test_period_signal_generation": 0,
+        "test_period_model_replays": 0,
+        "authority": "FIT_ONLY_NO_ECONOMIC_CLAIM_NO_ORDER",
+    }
+    if any(value.get(key) != expected for key, expected in expected_controls.items()):
         raise HistoryPreparationError("UNCLAIMED_TEST_EXECUTION")
+    expected_source = {
+        "root_label": "canonical_12m+gapday+postgap",
+        "full_inventory_files": SOURCE_INVENTORY_FILES,
+        "full_inventory_sha256": scope.SOURCE_INVENTORY_SHA256,
+        "expected_full_inventory_sha256": scope.SOURCE_INVENTORY_SHA256,
+        "state": "READY",
+        "clock_profile": "MODELED_BAR_CLOSE_NOT_OBSERVED_HISTORICAL_DELIVERY",
+    }
+    if value.get("source") != expected_source:
+        raise HistoryPreparationError("FROZEN_SOURCE_PROFILE_MISMATCH")
     validate_costs(value.get("costs_bps"))
     if value.get("cost_sha256") != scope.COST_SHA256:
         raise HistoryPreparationError("FROZEN_COST_HASH_MISMATCH")
@@ -313,6 +336,7 @@ def validate_manifest(value: Mapping[str, Any]) -> None:
     if value.get("protocol_sha256") != scope.PROTOCOL_SHA256:
         raise HistoryPreparationError("FROZEN_PROTOCOL_HASH_MISMATCH")
     code_map = value.get("code_sha256")
+    checkout_code_map = code_hashes(root)
     if (
         not isinstance(code_map, Mapping)
         or not code_map
@@ -324,6 +348,8 @@ def validate_manifest(value: Mapping[str, Any]) -> None:
         )
     ):
         raise HistoryPreparationError("CODE_MAP_PROFILE")
+    if dict(code_map) != checkout_code_map:
+        raise HistoryPreparationError("CODE_MAP_CHECKOUT_MISMATCH")
     code_bundle_sha256 = canonical_sha256(dict(sorted(code_map.items())))
 
     fit_rows = value.get("fits")

@@ -48,7 +48,7 @@ def costs():
 
 
 def hashes():
-    return {"code.py": "b" * 64}
+    return h.code_hashes()
 
 
 def manifest():
@@ -105,7 +105,9 @@ def test_each_instance_state_hash_rejects_mutation(key):
 def test_manifest_hash_rejects_allocation_or_source_mutation():
     value = manifest()
     value["allocation"]["H_claimed"] = 6
-    with pytest.raises(h.HistoryPreparationError, match="FIT_MANIFEST_HASH"):
+    with pytest.raises(
+        h.HistoryPreparationError, match="FIT_MANIFEST_HASH|UNCLAIMED_TEST_EXECUTION"
+    ):
         h.validate_manifest(value)
 
 
@@ -168,8 +170,59 @@ def test_rehashed_top_level_code_map_must_match_each_instance_bundle():
     value["code_sha256"]["new_dependency.py"] = "c" * 64
     frozen = {k: v for k, v in value.items() if k != "manifest_sha256"}
     value["manifest_sha256"] = h.canonical_sha256(frozen)
-    with pytest.raises(h.HistoryPreparationError, match="INSTANCE_FROZEN_PROFILE"):
+    with pytest.raises(h.HistoryPreparationError, match="CODE_MAP_CHECKOUT"):
         h.validate_manifest(value)
+
+
+def test_forged_complete_code_map_cannot_replace_checkout_identity():
+    value = manifest()
+    value["code_sha256"] = {name: "0" * 64 for name in value["code_sha256"]}
+    forged_bundle = h.canonical_sha256(dict(sorted(value["code_sha256"].items())))
+    for instance in value["instances"]:
+        instance["code_bundle_sha256"] = forged_bundle
+    _rehash_manifest(value)
+    with pytest.raises(h.HistoryPreparationError, match="CODE_MAP_CHECKOUT"):
+        h.validate_manifest(value)
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("issue", 0),
+        ("classification", "FRESH_OOS"),
+        ("allocation", {"H_claimed": 6, "H_limit": 7, "economic_runs": 6}),
+        ("history_claim_ref", "refs/heads/forged"),
+        ("authority", "ORDERS_GRANTED"),
+        ("test_period_signal_generation", 1),
+        ("test_period_model_replays", 1),
+    ],
+)
+def test_top_level_phase_one_control_state_rejects_forged_rehash(key, value):
+    item = manifest()
+    item[key] = value
+    _rehash_manifest(item)
+    with pytest.raises(
+        h.HistoryPreparationError, match="FIT_MANIFEST_PROFILE|UNCLAIMED_TEST_EXECUTION"
+    ):
+        h.validate_manifest(item)
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("full_inventory_files", 1),
+        ("full_inventory_sha256", "0" * 64),
+        ("expected_full_inventory_sha256", "0" * 64),
+        ("state", "READY_FORGED"),
+        ("clock_profile", "OBSERVED_RECEIPTS"),
+    ],
+)
+def test_top_level_source_profile_rejects_forged_rehash(key, value):
+    item = manifest()
+    item["source"][key] = value
+    _rehash_manifest(item)
+    with pytest.raises(h.HistoryPreparationError, match="FROZEN_SOURCE_PROFILE"):
+        h.validate_manifest(item)
 
 
 @pytest.mark.parametrize(

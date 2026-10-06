@@ -173,7 +173,12 @@ def test_saved_result_tamper_is_rejected(tmp_path):
 
 
 def test_claim_is_read_from_fixed_ref_and_git_blob_not_caller_file():
-    content = {"schema": "zel.issue1361.history_claim.v1", "state": "RESERVED_NONRETRYABLE"}
+    approval_sha = "b" * 40
+    content = {
+        "schema": "zel.issue1361.history_claim.v1",
+        "state": "RESERVED_NONRETRYABLE",
+        "independent_approval_commit_sha": approval_sha,
+    }
     raw = json.dumps(content).encode()
     blob_sha = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
     commit_sha = "c" * 40
@@ -182,7 +187,10 @@ def test_claim_is_read_from_fixed_ref_and_git_blob_not_caller_file():
             "ref": prep.HISTORY_CLAIM_REF,
             "object": {"type": "commit", "sha": commit_sha},
         },
-        "/git/commits/" + commit_sha: {"tree": {"sha": "d" * 40}, "parents": []},
+        "/git/commits/" + commit_sha: {
+            "tree": {"sha": "d" * 40},
+            "parents": [{"sha": approval_sha}],
+        },
         "/git/trees/" + "d" * 40: {
             "tree": [{"path": "CLAIM.json", "type": "blob", "sha": blob_sha}]
         },
@@ -197,6 +205,44 @@ def test_claim_is_read_from_fixed_ref_and_git_blob_not_caller_file():
         return routes[route]
 
     assert batch.verified_claim(api) == {**content, "claim_commit_sha": commit_sha}
+    routes["/git/commits/" + commit_sha]["parents"] = [{"sha": "e" * 40}]
+    with pytest.raises(batch.HistoryBatchError, match="CLAIM_PARENT_IDENTITY"):
+        batch.verified_claim(api)
+    routes["/git/commits/" + commit_sha]["parents"] = [{"sha": approval_sha}]
     routes["/git/blobs/" + blob_sha]["content"] = base64.b64encode(raw + b" ").decode()
     with pytest.raises(batch.HistoryBatchError, match="CLAIM_BLOB_HASH"):
         batch.verified_claim(api)
+
+
+def test_approval_commit_has_reviewed_source_as_its_only_parent():
+    reviewed_source = "a" * 40
+    content = {"reviewed_source_sha": reviewed_source}
+    raw = json.dumps(content).encode()
+    blob_sha = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+    commit_sha = "c" * 40
+    routes = {
+        "/git/ref/" + batch.APPROVAL_REF.removeprefix("refs/"): {
+            "ref": batch.APPROVAL_REF,
+            "object": {"type": "commit", "sha": commit_sha},
+        },
+        "/git/commits/" + commit_sha: {
+            "tree": {"sha": "d" * 40},
+            "parents": [{"sha": reviewed_source}],
+        },
+        "/git/trees/" + "d" * 40: {
+            "tree": [{"path": "APPROVED.json", "type": "blob", "sha": blob_sha}]
+        },
+        "/git/blobs/" + blob_sha: {
+            "encoding": "base64",
+            "content": base64.b64encode(raw).decode(),
+        },
+    }
+
+    def api(method, route):
+        assert method == "GET"
+        return routes[route]
+
+    assert batch.verified_approval(api) == {**content, "approval_commit_sha": commit_sha}
+    routes["/git/commits/" + commit_sha]["parents"] = [{"sha": "e" * 40}]
+    with pytest.raises(batch.HistoryBatchError, match="APPROVAL_PARENT_IDENTITY"):
+        batch.verified_approval(api)

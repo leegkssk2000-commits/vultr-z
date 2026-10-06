@@ -1,0 +1,100 @@
+name: issue1361-repeatability-v1
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/issue1361-repeatability-v1.yml'
+      - 'ops/issue1361_repeatability_v1.py'
+      - 'tests/test_scalp7_issue1361_repeatability_v1.py'
+      - 'research/campaigns/scalp7_20261006/issue1361_repeatability_v1/**'
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/issue1361-repeatability-v1.yml'
+      - 'ops/issue1361_repeatability_v1.py'
+      - 'tests/test_scalp7_issue1361_repeatability_v1.py'
+      - 'research/campaigns/scalp7_20261006/issue1361_repeatability_v1/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: issue1361-repeatability-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  contract-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check numpy==2.4.3 pandas==3.0.1 pytest==9.0.2
+      - name: Focused chronology and source tests
+        run: >-
+          python -m pytest -q
+          tests/test_scalp7_issue1361_repeatability_v1.py
+          tests/test_scalp7_rolling_context_v2.py
+          tests/test_scalp7_source_data_v2.py
+          tests/test_issue1358_ema21_limit_v1.py
+      - name: Metadata-only preflight
+        run: >-
+          python ops/issue1361_repeatability_v1.py
+          --source-root "$RUNNER_TEMP/not-present"
+          --output "$RUNNER_TEMP/issue1361-preflight.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: issue1361-contract-preflight
+          path: ${{ runner.temp }}/issue1361-preflight.json
+          if-no-files-found: error
+
+  source-inventory:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master'
+    needs: contract-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require configured existing read-only connection
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          test -n "$VPS_HOST" && test -n "$VPS_USER" && test -n "$VPS_SSH_KEY"
+      - name: Configure existing SSH credential
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Read-only canonical archive inventory
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
+            python3 - --source-root /home/z/z/runtime/economic7_campaign_20260915 \
+            < ops/issue1361_repeatability_v1.py \
+            > "$RUNNER_TEMP/issue1361-source-inventory.json"
+      - name: Assert probe made no service or network action
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p = Path(os.environ['RUNNER_TEMP']) / 'issue1361-source-inventory.json'
+          row = json.loads(p.read_text())
+          inventory = row['inventory']
+          assert inventory['network_actions'] == 0
+          assert inventory['service_actions'] == 0
+          print(inventory['history_input_state'])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: issue1361-canonical-source-inventory
+          path: ${{ runner.temp }}/issue1361-source-inventory.json
+          if-no-files-found: error

@@ -474,17 +474,38 @@ def _run_identity(identity: str, market: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _paired(parent: Mapping[str, Any], child: Mapping[str, Any]) -> dict[str, Any]:
+    parent_rows = {_key(row): row for row in parent["trades"]}
+    child_rows = {_key(row): row for row in child["trades"]}
+    common = sorted(set(parent_rows) & set(child_rows))
+    parent_winners = {
+        key for key, row in parent_rows.items() if float(row["net_bps"]) > 0
+    }
+    harmed = [
+        key
+        for key in common
+        if float(parent_rows[key]["net_bps"]) > 0
+        and float(child_rows[key]["net_bps"]) <= 0
+    ]
+    return {
+        "common_completed": len(common),
+        "parent_only_completed": len(set(parent_rows) - set(child_rows)),
+        "candidate_only_completed": len(set(child_rows) - set(parent_rows)),
+        "parent_winners": len(parent_winners),
+        "parent_winners_preserved": len(parent_winners & set(child_rows)) - len(harmed),
+        "parent_winners_harmed": len(harmed),
+        "parent_winners_missed": len(parent_winners - set(child_rows)),
+        "common_trade_net_delta_1x_bps": sum(
+            float(child_rows[key]["net_bps"])
+            - float(parent_rows[key]["net_bps"])
+            for key in common
+        ),
+    }
+
+
 def compare(market: Mapping[str, Any], manifest: Mapping[str, Any]) -> dict[str, Any]:
     parent = _run_identity(PARENT, market)
     child = _run_identity(CANDIDATE, market)
-    p = {_key(row): row for row in parent["trades"]}
-    c = {_key(row): row for row in child["trades"]}
-    common = sorted(set(p) & set(c))
-    parent_winners = {key for key, row in p.items() if float(row["net_bps"]) > 0}
-    harmed = [
-        key for key in common
-        if float(p[key]["net_bps"]) > 0 and float(c[key]["net_bps"]) <= 0
-    ]
     value = {
         "schema": "zel.issue1377.mr_comparison_result.v1",
         "issue": 1377,
@@ -493,16 +514,7 @@ def compare(market: Mapping[str, Any], manifest: Mapping[str, Any]) -> dict[str,
         "clock_profile": "MODELED_BAR_CLOSE_NOT_OBSERVED_HISTORICAL_DELIVERY",
         "period_ms": [START_MS, END_MS],
         "instances": {"N_PARENT": parent, "N_CANDIDATE": child},
-        "paired": {
-            "common_completed": len(common),
-            "parent_only_completed": len(set(p) - set(c)),
-            "candidate_only_completed": len(set(c) - set(p)),
-            "parent_winners": len(parent_winners),
-            "parent_winners_preserved": len(parent_winners & set(c)) - len(harmed),
-            "parent_winners_harmed": len(harmed),
-            "parent_winners_missed": len(parent_winners - set(c)),
-            "common_trade_net_delta_1x_bps": sum(float(c[k]["net_bps"]) - float(p[k]["net_bps"]) for k in common),
-        },
+        "paired": _paired(parent, child),
         "fresh_oos": False,
         "order_authority": "BLOCKED",
         "promotion": False,
@@ -524,8 +536,21 @@ def audit_result(path: Path, manifest: Mapping[str, Any]) -> dict[str, Any]:
             if metrics.summarize(instance["trades"], START_MS, END_MS, multiplier) != instance[name]:
                 raise Issue1377Error("SAVED_ACCOUNTING_MISMATCH:" + name)
         census = instance["census"]
-        if census["completed"] != len(instance["trades"]) or census["unresolved"] != len(instance["unresolved"]):
+        expected_census = {
+            "signals": len(instance["signals"]),
+            "completed": len(instance["trades"]),
+            "unresolved": len(instance["unresolved"]),
+            "rejected": sum(instance["rejections"].values()),
+            "rejection_reasons": instance["rejections"],
+        }
+        if census != expected_census:
             raise Issue1377Error("SAVED_CENSUS_MISMATCH")
+    expected_paired = _paired(
+        value["instances"]["N_PARENT"],
+        value["instances"]["N_CANDIDATE"],
+    )
+    if value.get("paired") != expected_paired:
+        raise Issue1377Error("SAVED_PAIRED_MISMATCH")
     return {"state": "PASS_SAVED_CENSUS_AND_ACCOUNTING", "result_sha256": supplied}
 
 

@@ -216,6 +216,35 @@ def test_rehashed_saved_result_missing_instance_is_rejected(
         batch.audit_result(output, m)
 
 
+def test_rehashed_saved_paired_and_full_census_tamper_are_rejected(
+    tmp_path: Path, monkeypatch
+) -> None:
+    m = manifest()
+    api, _ = authority_api(m)
+    monkeypatch.setattr(batch, "current_head", lambda: m["reviewed_source_sha"])
+    monkeypatch.setattr(batch, "atomic_consume_claim", lambda claim, supplied: None)
+    monkeypatch.setattr(batch, "load_market", lambda source_root: market())
+    output = tmp_path / "RESULT.json"
+    batch.execute(output, tmp_path, api=api)
+    original = json.loads(output.read_text())
+    paired = copy.deepcopy(original)
+    paired["paired"]["parent_winners_harmed"] += 1
+    paired["result_sha256"] = batch.digest(
+        {key: item for key, item in paired.items() if key != "result_sha256"}
+    )
+    output.write_text(json.dumps(paired))
+    with pytest.raises(batch.Issue1377Error, match="SAVED_PAIRED_MISMATCH"):
+        batch.audit_result(output, m)
+    census = copy.deepcopy(original)
+    census["instances"]["N_PARENT"]["census"]["signals"] += 1
+    census["result_sha256"] = batch.digest(
+        {key: item for key, item in census.items() if key != "result_sha256"}
+    )
+    output.write_text(json.dumps(census))
+    with pytest.raises(batch.Issue1377Error, match="SAVED_CENSUS_MISMATCH"):
+        batch.audit_result(output, m)
+
+
 def test_authority_refs_are_git_verified_and_checkout_is_exact(
     tmp_path: Path, monkeypatch
 ) -> None:

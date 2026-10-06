@@ -8,11 +8,15 @@ calendar.  Historical bars are modeled bar-close research evidence only.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
+import subprocess
 from pathlib import Path
 from typing import Any, Callable, Mapping
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 from backend.research.rebuild import scalp7_metrics_v2 as metrics
 from backend.research.rebuild import scalp7_mr_formation_v2 as rules
@@ -55,6 +59,125 @@ def file_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _commit(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 40
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def github(method: str, route: str) -> dict[str, Any]:
+    if method != "GET" or not route.startswith("/"):
+        raise Issue1377Error("READ_ONLY_RELATIVE_GITHUB_API_REQUIRED")
+    token = os.environ.get("GH_TOKEN", "")
+    if not token:
+        raise Issue1377Error("GITHUB_TOKEN_REQUIRED")
+    base = "https://api.github.com/repos/leegkssk2000-commits/vultr-z"
+    request = Request(
+        base + route,
+        method="GET",
+        headers={
+            "Authorization": "Bearer " + token,
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2026-03-10",
+        },
+    )
+    try:
+        with urlopen(request, timeout=30) as response:
+            if not response.geturl().startswith(base + "/"):
+                raise Issue1377Error("GITHUB_REDIRECT_REJECTED")
+            value = json.load(response)
+    except HTTPError as exc:
+        raise Issue1377Error("GITHUB_GET_HTTP_" + str(exc.code)) from None
+    if not isinstance(value, dict):
+        raise Issue1377Error("GITHUB_OBJECT_REQUIRED")
+    return value
+
+
+def _git_blob_sha(raw: bytes) -> str:
+    return hashlib.sha1(
+        b"blob " + str(len(raw)).encode() + b"\0" + raw,
+        usedforsecurity=False,
+    ).hexdigest()
+
+
+def _verified_single_file_ref(
+    ref_name: str,
+    filename: str,
+    api: Callable[[str, str], Mapping[str, Any]],
+) -> tuple[dict[str, Any], str, str]:
+    ref = api("GET", "/git/ref/" + ref_name.removeprefix("refs/"))
+    commit_sha = ref.get("object", {}).get("sha")
+    if (
+        ref.get("ref") != ref_name
+        or ref.get("object", {}).get("type") != "commit"
+        or not _commit(commit_sha)
+    ):
+        raise Issue1377Error("AUTHORITY_REF_PROFILE")
+    commit = api("GET", "/git/commits/" + commit_sha)
+    tree_sha = commit.get("tree", {}).get("sha")
+    parents = commit.get("parents")
+    if (
+        not _commit(tree_sha)
+        or not isinstance(parents, list)
+        or len(parents) != 1
+        or not _commit(parents[0].get("sha"))
+    ):
+        raise Issue1377Error("AUTHORITY_COMMIT_PROFILE")
+    tree = api("GET", "/git/trees/" + tree_sha)
+    entries = tree.get("tree", [])
+    if (
+        len(entries) != 1
+        or entries[0].get("path") != filename
+        or entries[0].get("type") != "blob"
+        or not _commit(entries[0].get("sha"))
+    ):
+        raise Issue1377Error("AUTHORITY_TREE_PROFILE")
+    blob = api("GET", "/git/blobs/" + entries[0]["sha"])
+    if blob.get("encoding") != "base64":
+        raise Issue1377Error("AUTHORITY_BLOB_ENCODING")
+    raw = base64.b64decode(blob.get("content", ""), validate=False)
+    if _git_blob_sha(raw) != entries[0]["sha"]:
+        raise Issue1377Error("AUTHORITY_BLOB_HASH")
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise Issue1377Error("AUTHORITY_CONTENT_PROFILE")
+    return value, commit_sha, parents[0]["sha"]
+
+
+def verified_approval(
+    api: Callable[[str, str], Mapping[str, Any]] = github,
+) -> dict[str, Any]:
+    value, commit_sha, parent_sha = _verified_single_file_ref(
+        APPROVAL_REF, "APPROVED.json", api
+    )
+    if value.get("approval_commit_sha") is not None:
+        raise Issue1377Error("APPROVAL_SELF_ASSERTED_COMMIT")
+    if parent_sha != value.get("reviewed_source_sha"):
+        raise Issue1377Error("APPROVAL_PARENT_IDENTITY")
+    return {**value, "approval_commit_sha": commit_sha}
+
+
+def verified_claim(
+    api: Callable[[str, str], Mapping[str, Any]] = github,
+) -> dict[str, Any]:
+    value, commit_sha, parent_sha = _verified_single_file_ref(
+        CLAIM_REF, "CLAIM.json", api
+    )
+    if value.get("claim_commit_sha") is not None:
+        raise Issue1377Error("CLAIM_SELF_ASSERTED_COMMIT")
+    if parent_sha != value.get("independent_approval_commit_sha"):
+        raise Issue1377Error("CLAIM_PARENT_IDENTITY")
+    return {**value, "claim_commit_sha": commit_sha}
+
+
+def current_head() -> str:
+    return subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+    ).strip()
+
+
 def read_json(path: Path) -> dict[str, Any]:
     value = json.loads(path.read_bytes())
     if not isinstance(value, dict):
@@ -84,7 +207,7 @@ def protocol() -> dict[str, Any]:
 
 
 def build_manifest(reviewed_source_sha: str, source_inventory_sha256: str) -> dict[str, Any]:
-    if len(reviewed_source_sha) != 40 or any(c not in "0123456789abcdef" for c in reviewed_source_sha):
+    if not _commit(reviewed_source_sha):
         raise Issue1377Error("REVIEWED_SOURCE_COMMIT_REQUIRED")
     if source_inventory_sha256 != SOURCE_INVENTORY_SHA256:
         raise Issue1377Error("SOURCE_INVENTORY_HASH_MISMATCH")
@@ -132,6 +255,8 @@ def validate_authority(
         raise Issue1377Error("APPROVAL_STATE")
     if approval.get("approval_ref") != APPROVAL_REF:
         raise Issue1377Error("APPROVAL_REF")
+    if not _commit(approval.get("approval_commit_sha")):
+        raise Issue1377Error("APPROVAL_COMMIT_IDENTITY")
     for key, expected in common.items():
         if approval.get(key) != expected:
             raise Issue1377Error("APPROVAL_BINDING:" + key)
@@ -139,6 +264,8 @@ def validate_authority(
         raise Issue1377Error("CLAIM_STATE")
     if claim.get("claim_ref") != CLAIM_REF or claim.get("economic_instances") != 2:
         raise Issue1377Error("CLAIM_REF_OR_COUNT")
+    if not _commit(claim.get("claim_commit_sha")):
+        raise Issue1377Error("CLAIM_COMMIT_IDENTITY")
     for key, expected in common.items():
         if claim.get(key) != expected:
             raise Issue1377Error("CLAIM_BINDING:" + key)
@@ -256,6 +383,8 @@ def audit_result(path: Path, manifest: Mapping[str, Any]) -> dict[str, Any]:
         raise Issue1377Error("SAVED_RESULT_HASH_MISMATCH")
     if value.get("manifest_sha256") != manifest.get("manifest_sha256"):
         raise Issue1377Error("SAVED_MANIFEST_BINDING")
+    if set(value.get("instances", {})) != set(INSTANCE_IDS):
+        raise Issue1377Error("SAVED_INSTANCE_SET_MISMATCH")
     for instance in value["instances"].values():
         for multiplier, name in ((1, "cost_1x"), (2, "cost_2x")):
             if metrics.summarize(instance["trades"], START_MS, END_MS, multiplier) != instance[name]:
@@ -267,15 +396,22 @@ def audit_result(path: Path, manifest: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def execute(
-    manifest: Mapping[str, Any],
-    approval: Mapping[str, Any],
-    claim: Mapping[str, Any],
-    market: Mapping[str, Any],
     output: Path,
+    source_root: Path = SOURCE_ROOT,
+    cache_dir: Path | None = None,
+    *,
+    api: Callable[[str, str], Mapping[str, Any]] = github,
 ) -> dict[str, Any]:
+    head = current_head()
+    manifest = build_manifest(head, SOURCE_INVENTORY_SHA256)
+    approval = verified_approval(api)
+    claim = verified_claim(api)
+    if approval.get("reviewed_source_sha") != head:
+        raise Issue1377Error("EXECUTING_CHECKOUT_NOT_REVIEWED_SOURCE")
     validate_authority(manifest, approval, claim)
     if output.exists():
         raise Issue1377Error("RESULT_ALREADY_EXISTS_NO_RETRY")
+    market = load_market(source_root, cache_dir)
     result = compare(market, manifest)
     write_once(output, result)
     audit_result(output, manifest)

@@ -40,8 +40,20 @@ def test_history_rejects_future_fit_source() -> None:
         repeat.check_history(rows)
 
 
-def forward_contract() -> dict:
-    frozen = repeat._ms("2026-10-06T03:00:00Z")
+def freeze_receipt() -> dict:
+    return {
+        "schema": "scalp7.issue1361.forward_freeze.v1",
+        "issue": 1361,
+        "protocol_sha256": repeat.PROTOCOL_SHA256,
+        "rule_sha256": repeat.RULE_SHA256,
+        "source_binding_sha256": "1" * 64,
+        "source_verified": True,
+        "receipt_cursor_persistent": True,
+        "frozen_at_ms": repeat._ms("2026-10-06T03:00:00Z"),
+    }
+
+
+def forward_contract(receipt: dict) -> dict:
     start = repeat._ms("2026-10-06T03:30:00Z")
     return {
         "fit_end_ms": repeat._ms("2026-09-15T00:00:00Z"),
@@ -52,24 +64,45 @@ def forward_contract() -> dict:
         "receipt_cursor_persistent": True,
         "carry_in_positions": False,
         "outcome_used_to_choose_start": False,
-        "protocol_frozen_ms": frozen,
+        "freeze_receipt_sha256": repeat.canonical_sha(receipt),
         "start_ms": start,
         "end_ms": start + 90 * repeat.DAY_MS,
     }
 
 
 def test_forward_requires_prospective_utc30m_and_real_receipts() -> None:
-    repeat.check_forward(forward_contract())
+    receipt = freeze_receipt()
+    repeat.check_forward(forward_contract(receipt), receipt)
     for field, value in (
         ("start_ms", repeat._ms("2026-10-06T03:31:00Z")),
         ("source_verified", False),
         ("clock_profile", "MODELED_BAR_CLOSE"),
         ("outcome_used_to_choose_start", True),
     ):
-        row = forward_contract()
+        row = forward_contract(receipt)
         row[field] = value
         with pytest.raises(repeat.AdmissionError):
-            repeat.check_forward(row)
+            repeat.check_forward(row, receipt)
+
+
+def test_forward_start_cannot_self_assert_an_earlier_freeze() -> None:
+    receipt = freeze_receipt()
+    row = forward_contract(receipt)
+    row["start_ms"] = repeat._ms("2026-10-06T02:30:00Z")
+    row["end_ms"] = row["start_ms"] + 90 * repeat.DAY_MS
+    row["protocol_frozen_ms"] = 0
+    with pytest.raises(repeat.AdmissionError, match="NOT_PROSPECTIVE"):
+        repeat.check_forward(row, receipt)
+    tampered = dict(receipt, frozen_at_ms=0)
+    with pytest.raises(repeat.AdmissionError, match="RECEIPT_IDENTITY"):
+        repeat.check_forward(row, tampered)
+
+
+def test_history_rejects_strategy_instance_substitution() -> None:
+    rows = repeat.planned_history()
+    rows[2]["instances"] = ["SOME_OTHER_STRATEGY"]
+    with pytest.raises(repeat.AdmissionError, match="instances"):
+        repeat.check_history(rows)
 
 
 def test_inventory_distinguishes_missing_match_and_mismatch(tmp_path) -> None:

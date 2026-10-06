@@ -19,3 +19,5 @@ The added post-merge manual workflow performs one read-only manifest hash invent
 ## Verification and next gate
 
 Local compilation and direct contract assertions passed. The full focused pytest set was not available in this Work image because `pytest` is not installed; the dedicated GitHub job installs pinned test dependencies and runs the new tests plus the source, rolling-context, and EMA21 suites. After exact-source CI/review and normal merge, run the read-only inventory job, store its artifact/hash, then obtain independent approval and create immutable per-instance claims before any H economics. F starts only after genuine recorded-receipt binding.
+
+Review hardening binds every H fold to the exact candidate/comparator identities and removes the caller-controlled F freeze timestamp. F admission now requires a separately persisted source-binding receipt whose canonical hash is bound in the contract and permanent claim; its protocol/rule/source identity and timestamp are checked before the future 30-minute boundary is accepted.

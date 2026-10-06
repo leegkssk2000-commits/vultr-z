@@ -25,6 +25,7 @@ SYMBOLS = ("BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "LINK-USDT", "DOGE-US
 RULE_SHA256 = "004d374096f31eadb3ef883e4481a58be7673eea7d679ad66ac5c59a73c1964d"
 COST_SHA256 = "cb9c337d95aa9eb65c32776ca68c63390350c501de4df8024b5416ed778dbe73"
 SOURCE_INVENTORY_SHA256 = "53c64616fa98ddd446533cbc7b8e90eb2866ce9b1b0b3243df4211d59f155ba2"
+PROTOCOL_SHA256 = "5e58240d121587f91d48292324544250af904154fa9e0c59aa8d7ecefe045401"
 SOURCE_ROOT = "/home/z/z/runtime/economic7_campaign_20260915"
 CLASSIFICATION = "RETROSPECTIVE_PIPELINE_STABILITY_NOT_FRESH"
 
@@ -63,7 +64,14 @@ def check_history(rows: list[Mapping[str, Any]]) -> None:
     if len(rows) != 3:
         raise AdmissionError("HISTORY_REQUIRES_EXACTLY_THREE_FOLDS")
     for supplied, frozen in zip(rows, expected, strict=True):
-        for key in ("id", "fit_start_ms", "fit_end_ms", "test_start_ms", "test_end_ms"):
+        for key in (
+            "id",
+            "fit_start_ms",
+            "fit_end_ms",
+            "test_start_ms",
+            "test_end_ms",
+            "instances",
+        ):
             if supplied.get(key) != frozen[key]:
                 raise AdmissionError(f"HISTORY_FROZEN_FIELD_MISMATCH:{frozen['id']}:{key}")
         if supplied["fit_end_ms"] != supplied["test_start_ms"]:
@@ -82,7 +90,42 @@ def check_history(rows: list[Mapping[str, Any]]) -> None:
         raise AdmissionError("FINAL_FIT_BACKAPPLIED")
 
 
-def check_forward(contract: Mapping[str, Any]) -> None:
+def canonical_sha(row: Mapping[str, Any]) -> str:
+    payload = json.dumps(row, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _sha(value: Any) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+
+
+def check_forward(
+    contract: Mapping[str, Any],
+    immutable_freeze_receipt: Mapping[str, Any],
+) -> None:
+    """Validate F against a separately persisted source-binding receipt.
+
+    The caller cannot self-assert the freeze timestamp in ``contract``.  The
+    driver must first persist the receipt write-once and bind its canonical hash
+    in the permanent claim; this function verifies that same hash and content.
+    """
+    receipt_required = {
+        "schema": "scalp7.issue1361.forward_freeze.v1",
+        "issue": 1361,
+        "protocol_sha256": PROTOCOL_SHA256,
+        "rule_sha256": RULE_SHA256,
+        "source_verified": True,
+        "receipt_cursor_persistent": True,
+    }
+    for key, value in receipt_required.items():
+        if immutable_freeze_receipt.get(key) != value:
+            raise AdmissionError(f"FORWARD_FREEZE_RECEIPT_MISMATCH:{key}")
+    frozen = immutable_freeze_receipt.get("frozen_at_ms")
+    binding_sha = immutable_freeze_receipt.get("source_binding_sha256")
+    if not isinstance(frozen, int) or frozen <= 0 or not _sha(binding_sha):
+        raise AdmissionError("FORWARD_FREEZE_RECEIPT_IDENTITY")
+    if contract.get("freeze_receipt_sha256") != canonical_sha(immutable_freeze_receipt):
+        raise AdmissionError("FORWARD_FREEZE_RECEIPT_HASH")
     required = {
         "fit_end_ms": _ms("2026-09-15T00:00:00Z"),
         "duration_days": 90,
@@ -97,8 +140,7 @@ def check_forward(contract: Mapping[str, Any]) -> None:
         if contract.get(key) != value:
             raise AdmissionError(f"FORWARD_CONTRACT_MISMATCH:{key}")
     start = contract.get("start_ms")
-    frozen = contract.get("protocol_frozen_ms")
-    if not isinstance(start, int) or not isinstance(frozen, int) or start <= frozen:
+    if not isinstance(start, int) or start <= frozen:
         raise AdmissionError("FORWARD_START_NOT_PROSPECTIVE")
     if start % HALF_HOUR_MS:
         raise AdmissionError("FORWARD_START_NOT_UTC_30M_BOUNDARY")

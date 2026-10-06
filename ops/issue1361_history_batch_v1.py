@@ -9,11 +9,14 @@ explicit modeled bar-close profile, never reconstructed receipt time.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
 from pathlib import Path
 from typing import Any, Callable, Mapping
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 from ops import issue1361_history_v1 as prep
 from ops import issue1361_repeatability_v1 as scope
@@ -57,6 +60,65 @@ def write_once(path: Path, value: Any) -> None:
 
 def _commit(value: Any) -> bool:
     return isinstance(value, str) and len(value) == 40 and all(c in "0123456789abcdef" for c in value)
+
+
+def github(method: str, route: str) -> dict[str, Any]:
+    if method != "GET" or not route.startswith("/"):
+        raise HistoryBatchError("READ_ONLY_RELATIVE_GITHUB_API_REQUIRED")
+    token = os.environ.get("GH_TOKEN", "")
+    if not token:
+        raise HistoryBatchError("GITHUB_TOKEN_REQUIRED")
+    base = "https://api.github.com/repos/leegkssk2000-commits/vultr-z"
+    request = Request(
+        base + route,
+        method="GET",
+        headers={
+            "Authorization": "Bearer " + token,
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2026-03-10",
+        },
+    )
+    try:
+        with urlopen(request, timeout=30) as response:
+            if not response.geturl().startswith(base + "/"):
+                raise HistoryBatchError("GITHUB_REDIRECT_REJECTED")
+            value = json.load(response)
+    except HTTPError as exc:
+        raise HistoryBatchError("GITHUB_GET_HTTP_" + str(exc.code)) from None
+    if not isinstance(value, dict):
+        raise HistoryBatchError("GITHUB_OBJECT_REQUIRED")
+    return value
+
+
+def _git_blob_sha(raw: bytes) -> str:
+    return hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+
+
+def verified_claim(api: Callable[[str, str], Mapping[str, Any]] = github) -> dict[str, Any]:
+    """Read the claim only from the fixed authenticated permanent Git ref."""
+    route = "/git/ref/" + CLAIM_REF.removeprefix("refs/")
+    ref = api("GET", route)
+    commit_sha = ref.get("object", {}).get("sha")
+    if ref.get("ref") != CLAIM_REF or ref.get("object", {}).get("type") != "commit" or not _commit(commit_sha):
+        raise HistoryBatchError("CLAIM_REF_PROFILE")
+    commit = api("GET", "/git/commits/" + commit_sha)
+    tree_sha = commit.get("tree", {}).get("sha")
+    if not isinstance(tree_sha, str) or commit.get("parents"):
+        raise HistoryBatchError("CLAIM_COMMIT_PROFILE")
+    tree = api("GET", "/git/trees/" + tree_sha)
+    entries = tree.get("tree", [])
+    if len(entries) != 1 or entries[0].get("path") != "CLAIM.json" or entries[0].get("type") != "blob":
+        raise HistoryBatchError("CLAIM_TREE_PROFILE")
+    blob = api("GET", "/git/blobs/" + entries[0]["sha"])
+    if blob.get("encoding") != "base64":
+        raise HistoryBatchError("CLAIM_BLOB_ENCODING")
+    raw = base64.b64decode(blob.get("content", ""), validate=False)
+    if _git_blob_sha(raw) != entries[0]["sha"]:
+        raise HistoryBatchError("CLAIM_BLOB_HASH")
+    value = json.loads(raw)
+    if not isinstance(value, dict) or "claim_commit_sha" in value:
+        raise HistoryBatchError("CLAIM_CONTENT_PROFILE")
+    return {**value, "claim_commit_sha": commit_sha}
 
 
 def validate_claim(claim: Mapping[str, Any], manifest: Mapping[str, Any]) -> dict[str, Any]:
@@ -237,13 +299,13 @@ def audit_saved_result(path: Path) -> dict[str, Any]:
 def execute_batch(
     source_root: Path,
     manifest_path: Path,
-    claim_path: Path,
     output: Path,
     *,
+    claim_loader: Callable[[], Mapping[str, Any]] = verified_claim,
     market_loader: Callable[[Path, Mapping[str, Any]], Mapping[str, Any]] = prepare_market,
     instance_runner: Callable[..., dict[str, Any]] = run_instance,
 ) -> dict[str, Any]:
-    manifest, claim = read_json(manifest_path), read_json(claim_path)
+    manifest, claim = read_json(manifest_path), dict(claim_loader())
     validate_claim(claim, manifest)
     output.mkdir(parents=True, exist_ok=False)
     write_once(output / "STARTED.json", {"schema": SCHEMA, "claim_commit_sha": claim["claim_commit_sha"]})
@@ -283,10 +345,9 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-root", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
-    parser.add_argument("--claim", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    result = execute_batch(args.source_root, args.manifest, args.claim, args.output)
+    result = execute_batch(args.source_root, args.manifest, args.output)
     print(json.dumps({"state": result["state"], "summary_sha256": result["summary_sha256"]}, sort_keys=True))
     return 0
 

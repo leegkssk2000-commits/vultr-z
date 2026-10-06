@@ -1,4 +1,6 @@
 import copy
+import base64
+import hashlib
 import json
 
 import pytest
@@ -76,9 +78,8 @@ def test_claim_rejects_rehashed_manifest_or_unapproved_instance(monkeypatch):
 def test_one_invocation_runs_h1_h2_h3_saves_and_audits_before_next(tmp_path, monkeypatch):
     manifest = fit_manifest()
     approval = claim(manifest)
-    manifest_path, claim_path = tmp_path / "FIT.json", tmp_path / "CLAIM.json"
+    manifest_path = tmp_path / "FIT.json"
     manifest_path.write_text(json.dumps(manifest))
-    claim_path.write_text(json.dumps(approval))
     monkeypatch.setattr(prep, "validate_runtime", lambda: prep.RUNTIME_PROFILE)
     calls = []
 
@@ -94,7 +95,12 @@ def test_one_invocation_runs_h1_h2_h3_saves_and_audits_before_next(tmp_path, mon
 
     out = tmp_path / "out"
     result = batch.execute_batch(
-        tmp_path, manifest_path, claim_path, out, market_loader=loader, instance_runner=runner
+        tmp_path,
+        manifest_path,
+        out,
+        claim_loader=lambda: approval,
+        market_loader=loader,
+        instance_runner=runner,
     )
     assert [row[0] for row in calls[1:]] == ["H1", "H1", "H2", "H2", "H3", "H3"]
     assert result["economic_instances"] == 6
@@ -114,3 +120,33 @@ def test_saved_result_tamper_is_rejected(tmp_path):
     path.write_text(json.dumps(value))
     with pytest.raises(batch.HistoryBatchError, match="SAVED_RESULT_HASH"):
         batch.audit_saved_result(path)
+
+
+def test_claim_is_read_from_fixed_ref_and_git_blob_not_caller_file():
+    content = {"schema": "zel.issue1361.history_claim.v1", "state": "RESERVED_NONRETRYABLE"}
+    raw = json.dumps(content).encode()
+    blob_sha = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+    commit_sha = "c" * 40
+    routes = {
+        "/git/ref/" + prep.HISTORY_CLAIM_REF.removeprefix("refs/"): {
+            "ref": prep.HISTORY_CLAIM_REF,
+            "object": {"type": "commit", "sha": commit_sha},
+        },
+        "/git/commits/" + commit_sha: {"tree": {"sha": "d" * 40}, "parents": []},
+        "/git/trees/" + "d" * 40: {
+            "tree": [{"path": "CLAIM.json", "type": "blob", "sha": blob_sha}]
+        },
+        "/git/blobs/" + blob_sha: {
+            "encoding": "base64",
+            "content": base64.b64encode(raw).decode(),
+        },
+    }
+
+    def api(method, route):
+        assert method == "GET"
+        return routes[route]
+
+    assert batch.verified_claim(api) == {**content, "claim_commit_sha": commit_sha}
+    routes["/git/blobs/" + blob_sha]["content"] = base64.b64encode(raw + b" ").decode()
+    with pytest.raises(batch.HistoryBatchError, match="CLAIM_BLOB_HASH"):
+        batch.verified_claim(api)

@@ -117,6 +117,9 @@ def test_history_batch_is_one_shot_claimed_and_global_heavy() -> None:
     assert "git checkout --detach '${{ steps.activation.outputs.reviewed_source_sha }}'" in block
     assert "group: a1-global-heavy-economic-evaluator-v1" in block
     assert "cancel-in-progress: false" in block
+    assert "actions: read" in workflow
+    assert "source != approval.get('reviewed_source_sha')" in block
+    assert "HISTORY_ARTIFACT_NOT_APPROVED" in block
     assert "issue1361_history_batch_v1" in block
     assert "fit_artifact_id': 11419311671" in block
     assert "a39e65afc4c7557a4864a4a0192b6278cdba51a051969b684f20c97da4f73d1f" in block

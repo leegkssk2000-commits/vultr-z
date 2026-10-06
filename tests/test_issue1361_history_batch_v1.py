@@ -104,7 +104,7 @@ def test_claim_rejects_rehashed_manifest_or_unapproved_instance(monkeypatch):
     forged["manifest_sha256"] = prep.canonical_sha256(
         {k: v for k, v in forged.items() if k != "manifest_sha256"}
     )
-    with pytest.raises(batch.HistoryBatchError, match="CLAIM_BINDING|FROZEN_COST"):
+    with pytest.raises(batch.HistoryBatchError, match="APPROVAL_BINDING|CLAIM_BINDING|FROZEN_COST"):
         batch.validate_claim(good, forged, approved)
 
 

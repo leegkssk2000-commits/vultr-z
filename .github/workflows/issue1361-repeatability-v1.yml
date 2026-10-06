@@ -152,6 +152,10 @@ jobs:
       contains(
         github.event.head_commit.message,
         '[issue1361-fit-artifact-repair2-once-20261006T1330Z-c82ef51]'
+      ) ||
+      contains(
+        github.event.head_commit.message,
+        '[issue1361-fit-artifact-merge-churn-once-20261006T1345Z-3aa4d8e]'
       )
       )
     needs: contract-tests
@@ -165,7 +169,7 @@ jobs:
         id: activation
         run: |
           python - <<'PY'
-          import json, os, subprocess
+          import json, os, re, subprocess
           from pathlib import Path
 
           activation_dir = Path(
@@ -178,6 +182,8 @@ jobs:
                   '[issue1361-fit-artifact-repair1-once-20261006T1310Z-6d9a1c4]',
               activation_dir / 'FIT_ARTIFACT_ACTIVATION_REPAIR2.json':
                   '[issue1361-fit-artifact-repair2-once-20261006T1330Z-c82ef51]',
+              activation_dir / 'FIT_ARTIFACT_ACTIVATION_MERGE_CHURN.json':
+                  '[issue1361-fit-artifact-merge-churn-once-20261006T1345Z-3aa4d8e]',
           }
           message = subprocess.check_output(
               ['git', 'log', '-1', '--pretty=%B', 'HEAD'], text=True
@@ -200,12 +206,19 @@ jobs:
           required = {
               'schema': 'zel.issue1361.fit_artifact_activation.v1',
               'issue': 1361,
-              'source_head': parent,
               'mode': 'FIT_ONLY_NO_TEST_SIGNALS_NO_ECONOMIC_CLAIM',
               'token': activation_token,
           }
           if any(activation.get(k) != v for k, v in required.items()):
               raise SystemExit('FIT_ACTIVATION_PROFILE_MISMATCH')
+          source_head = activation.get('source_head')
+          if not isinstance(source_head, str) or not re.fullmatch(r'[0-9a-f]{40}', source_head):
+              raise SystemExit('FIT_ACTIVATION_SOURCE_HEAD_INVALID')
+          if subprocess.run(
+              ['git', 'merge-base', '--is-ancestor', source_head, parent],
+              check=False,
+          ).returncode != 0:
+              raise SystemExit('FIT_ACTIVATION_SOURCE_NOT_PARENT_ANCESTOR')
           if activation.get('activation_head') not in (None, head):
               raise SystemExit('FIT_ACTIVATION_HEAD_MISMATCH')
           if changed != ['A\t' + str(activation_path)]:
@@ -217,10 +230,10 @@ jobs:
           out = Path(os.environ['RUNNER_TEMP']) / 'FIT_ARTIFACT_ACTIVATION.json'
           out.write_bytes(activation_path.read_bytes())
           with Path(os.environ['GITHUB_OUTPUT']).open('a') as handle:
-              handle.write(f'source_head={parent}\n')
+              handle.write(f'source_head={source_head}\n')
               handle.write(f'activation_head={head}\n')
           PY
-      - name: Checkout reviewed source parent
+      - name: Checkout exact reviewed source
         run: git checkout --detach '${{ steps.activation.outputs.source_head }}'
       - uses: actions/setup-python@v5
         with:

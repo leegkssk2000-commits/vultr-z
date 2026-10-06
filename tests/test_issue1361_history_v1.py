@@ -40,7 +40,7 @@ def coverage():
 
 
 def costs():
-    return {symbol: 14.0 for symbol in scope.SYMBOLS}
+    return dict(h.FROZEN_COSTS_BPS)
 
 
 def hashes():
@@ -113,6 +113,14 @@ def test_fit_window_matches_existing_rolling_context_contract():
         assert window["train_end_ms"] == window["start_ms"] == planned["test_start_ms"]
         assert window["end_ms"] == planned["test_end_ms"]
         assert window["oos_scope"] == scope.CLASSIFICATION
+
+
+def test_cost_values_are_exact_not_merely_positive():
+    assert h.validate_costs(costs()) == h.FROZEN_COSTS_BPS
+    changed = costs()
+    changed["XRP-USDT"] = 14.0
+    with pytest.raises(h.HistoryPreparationError, match="FROZEN_COSTS_CHANGED"):
+        h.validate_costs(changed)
 
 
 def test_module_does_not_import_signal_or_execution_engines():

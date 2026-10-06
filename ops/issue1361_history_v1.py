@@ -23,6 +23,14 @@ CANDIDATE = "scalp7_squeeze_release_ema21_limit_utc30m_v1"
 PARENT = "scalp7_squeeze_panic_cost4_parent_utc30m_v2"
 HISTORY_CLAIM_REF = "refs/heads/research-execution-claims/issue1361-history-20261006-v1"
 FIT_SCHEMA = "zel.issue1361.history_fit_manifest.v1"
+FROZEN_COSTS_BPS = {
+    "BTC-USDT": 14.0,
+    "DOGE-USDT": 16.73064726730116,
+    "ETH-USDT": 14.0,
+    "LINK-USDT": 15.705017808034006,
+    "SOL-USDT": 14.019991840065801,
+    "XRP-USDT": 15.2464337863639,
+}
 
 
 class HistoryPreparationError(RuntimeError):
@@ -59,6 +67,12 @@ def fit_window(row: Mapping[str, Any]) -> dict[str, Any]:
         "initial_position": "FLAT_INDEPENDENT_WINDOW",
         "boundary_trade_policy": "NO_SYNTHETIC_CLOSE_EXCLUDE_UNRESOLVED_AND_CROSS_BOUNDARY",
     }
+
+
+def validate_costs(costs: Any) -> dict[str, float]:
+    if costs != FROZEN_COSTS_BPS:
+        raise HistoryPreparationError("FROZEN_COSTS_CHANGED")
+    return dict(costs)
 
 
 def code_hashes(root: Path = ROOT) -> dict[str, str]:
@@ -229,9 +243,7 @@ def prepare_history(source_root: Path, output: Path, cache_dir: Path, contract_p
     if inventory["history_input_state"] != "READY":
         raise HistoryPreparationError("SOURCE_INVENTORY_NOT_READY")
     contract = json.loads(contract_path.read_bytes())
-    costs = contract.get("reference_costs_bps")
-    if set(costs or {}) != set(scope.SYMBOLS) or any(float(x) <= 0 for x in costs.values()):
-        raise HistoryPreparationError("FROZEN_COSTS_UNAVAILABLE")
+    costs = validate_costs(contract.get("reference_costs_bps"))
     frames = source.load_candles(source_root, 30, cache_dir=cache_dir)
     rows = scope.planned_history()
     coverage = source_coverage(frames, rows)

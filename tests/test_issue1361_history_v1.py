@@ -88,7 +88,10 @@ def test_test_boundary_observation_in_fit_is_rejected():
 def test_each_instance_state_hash_rejects_mutation(key):
     value = manifest()
     value["instances"][0][key] = "changed"
-    with pytest.raises(h.HistoryPreparationError, match="INSTANCE_STATE_HASH|MODEL_IDENTITY"):
+    with pytest.raises(
+        h.HistoryPreparationError,
+        match="INSTANCE_STATE_HASH|FOLD_MODEL_INSTANCE_MATRIX|INSTANCE_FOLD_BINDING",
+    ):
         h.validate_manifest(value)
 
 
@@ -118,6 +121,47 @@ def test_identity_entry_profile_swap_is_rejected_even_if_rehashed():
     frozen_manifest = {k: v for k, v in value.items() if k != "manifest_sha256"}
     value["manifest_sha256"] = h.canonical_sha256(frozen_manifest)
     with pytest.raises(h.HistoryPreparationError, match="IDENTITY_ENTRY_PROFILE_MISMATCH"):
+        h.validate_manifest(value)
+
+
+def _rehash_manifest(value):
+    for instance in value["instances"]:
+        frozen = {k: v for k, v in instance.items() if k != "state_sha256"}
+        instance["state_sha256"] = h.canonical_sha256(frozen)
+    frozen = {k: v for k, v in value.items() if k != "manifest_sha256"}
+    value["manifest_sha256"] = h.canonical_sha256(frozen)
+
+
+def test_rehashed_fold_substitution_cannot_drop_h2_candidate():
+    value = manifest()
+    candidate = next(
+        row
+        for row in value["instances"]
+        if row["fold_id"] == "H2" and row["identity"] == h.CANDIDATE
+    )
+    candidate["fold_id"] = "H1"
+    candidate["instance_id"] = "H1:EMA21_BUY_LIMIT_DUPLICATE_NAME"
+    _rehash_manifest(value)
+    with pytest.raises(h.HistoryPreparationError, match="FOLD_MODEL_INSTANCE_MATRIX"):
+        h.validate_manifest(value)
+
+
+@pytest.mark.parametrize("key", ["fit_sha256", "test_start_ms", "test_end_ms"])
+def test_rehashed_instance_must_remain_bound_to_declared_fold(key):
+    value = manifest()
+    instance = value["instances"][0]
+    instance[key] = "f" * 64 if key == "fit_sha256" else instance[key] + 1
+    _rehash_manifest(value)
+    with pytest.raises(h.HistoryPreparationError, match="INSTANCE_FOLD_BINDING"):
+        h.validate_manifest(value)
+
+
+def test_rehashed_top_level_code_map_must_match_each_instance_bundle():
+    value = manifest()
+    value["code_sha256"]["new_dependency.py"] = "c" * 64
+    frozen = {k: v for k, v in value.items() if k != "manifest_sha256"}
+    value["manifest_sha256"] = h.canonical_sha256(frozen)
+    with pytest.raises(h.HistoryPreparationError, match="INSTANCE_CODE_BUNDLE"):
         h.validate_manifest(value)
 
 
@@ -168,6 +212,9 @@ def test_code_bundle_lists_candidate_transitive_runtime_dependencies():
         "ops/kp_price_input_export_v1.py",
         "backend/research/rebuild/scalp7_positive_lanes_v2.py",
         "backend/research/rebuild/scalp7_execution_v2.py",
+        "backend/research/rebuild/economic7_canonical_history_v1.py",
+        "backend/research/rebuild/scalp7_fresh_forward_v2.py",
+        "backend/research/rebuild/scalp7_fresh_source_v2.py",
     } <= names
 
 

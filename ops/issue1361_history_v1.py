@@ -90,6 +90,9 @@ def code_hashes(root: Path = ROOT) -> dict[str, str]:
         "ops/kp_connected_research_validation_v1.py",
         "ops/kp_price_input_export_v1.py",
         "backend/research/rebuild/scalp7_source_data_v2.py",
+        "backend/research/rebuild/economic7_canonical_history_v1.py",
+        "backend/research/rebuild/scalp7_fresh_forward_v2.py",
+        "backend/research/rebuild/scalp7_fresh_source_v2.py",
         "backend/research/rebuild/scalp7_rolling_context_v2.py",
         "backend/research/rebuild/scalp7_positive_lanes_v2.py",
         "backend/research/rebuild/scalp7_execution_v2.py",
@@ -233,16 +236,76 @@ def validate_manifest(value: Mapping[str, Any]) -> None:
         raise HistoryPreparationError("FIT_MANIFEST_PROFILE")
     if value.get("test_period_signal_generation") != 0 or value.get("test_period_model_replays") != 0:
         raise HistoryPreparationError("UNCLAIMED_TEST_EXECUTION")
+    code_map = value.get("code_sha256")
+    if (
+        not isinstance(code_map, Mapping)
+        or not code_map
+        or any(
+            not isinstance(name, str)
+            or not isinstance(digest, str)
+            or len(digest) != 64
+            for name, digest in code_map.items()
+        )
+    ):
+        raise HistoryPreparationError("CODE_MAP_PROFILE")
+    code_bundle_sha256 = canonical_sha256(dict(sorted(code_map.items())))
+
+    fit_rows = value.get("fits")
+    planned = scope.planned_history()
+    if (
+        not isinstance(fit_rows, list)
+        or len(fit_rows) != len(planned)
+        or [row.get("id") for row in fit_rows] != [row["id"] for row in planned]
+    ):
+        raise HistoryPreparationError("EXACT_THREE_CANONICAL_FITS_REQUIRED")
+    fit_by_id: dict[str, Mapping[str, Any]] = {}
+    for planned_row, fit_row in zip(planned, fit_rows, strict=True):
+        fit = fit_row.get("fit")
+        if (
+            not isinstance(fit, Mapping)
+            or fit.get("train_start_ms") != planned_row["fit_start_ms"]
+            or fit.get("train_end_ms") != planned_row["fit_end_ms"]
+            or int(fit.get("last_fit_observation_ms", 2**63 - 1))
+            >= planned_row["test_start_ms"]
+            or not isinstance(fit.get("sha256"), str)
+            or len(fit["sha256"]) != 64
+        ):
+            raise HistoryPreparationError("FIT_CHRONOLOGY_OR_HASH:" + planned_row["id"])
+        fit_by_id[planned_row["id"]] = fit
+
     instances = value.get("instances", [])
     if len(instances) != 6 or len({x.get("instance_id") for x in instances}) != 6:
         raise HistoryPreparationError("EXACT_SIX_INSTANCE_IDENTITIES_REQUIRED")
-    if {x.get("fold_id") for x in instances} != {"H1", "H2", "H3"}:
-        raise HistoryPreparationError("FOLD_IDENTITY_MISMATCH")
-    if {x.get("identity") for x in instances} != {CANDIDATE, PARENT}:
-        raise HistoryPreparationError("MODEL_IDENTITY_MISMATCH")
+    expected_matrix = {
+        (row["id"], CANDIDATE, "EMA21_BUY_LIMIT") for row in planned
+    } | {(row["id"], PARENT, "SQUEEZE_PARENT") for row in planned}
+    actual_matrix = {
+        (instance.get("fold_id"), instance.get("identity"), instance.get("model"))
+        for instance in instances
+    }
+    if actual_matrix != expected_matrix:
+        raise HistoryPreparationError("FOLD_MODEL_INSTANCE_MATRIX_MISMATCH")
+    planned_by_id = {row["id"]: row for row in planned}
     for instance in instances:
+        row = planned_by_id[instance["fold_id"]]
+        fit = fit_by_id[instance["fold_id"]]
+        expected_model = (
+            "EMA21_BUY_LIMIT" if instance["identity"] == CANDIDATE else "SQUEEZE_PARENT"
+        )
+        if (
+            instance.get("instance_id") != instance["fold_id"] + ":" + expected_model
+            or instance.get("fit_sha256") != fit["sha256"]
+            or instance.get("fit_start_ms") != row["fit_start_ms"]
+            or instance.get("fit_end_ms") != row["fit_end_ms"]
+            or instance.get("test_start_ms") != row["test_start_ms"]
+            or instance.get("test_end_ms") != row["test_end_ms"]
+            or instance.get("clock_profile") != row["clock_profile"]
+        ):
+            raise HistoryPreparationError("INSTANCE_FOLD_BINDING_MISMATCH")
         if instance.get("entry_profile") != ENTRY_PROFILES.get(instance.get("identity")):
             raise HistoryPreparationError("IDENTITY_ENTRY_PROFILE_MISMATCH")
+        if instance.get("code_bundle_sha256") != code_bundle_sha256:
+            raise HistoryPreparationError("INSTANCE_CODE_BUNDLE_MISMATCH")
         frozen = {k: v for k, v in instance.items() if k != "state_sha256"}
         if canonical_sha256(frozen) != instance.get("state_sha256"):
             raise HistoryPreparationError("INSTANCE_STATE_HASH_MISMATCH")

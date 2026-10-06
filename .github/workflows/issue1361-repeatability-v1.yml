@@ -51,7 +51,21 @@ jobs:
           if-no-files-found: error
 
   source-inventory:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master'
+    # The exact token is a one-shot recovery for environments whose GitHub
+    # connector cannot call workflow_dispatch. It remains bound to a reviewed
+    # merge commit on master and does not open the economic jobs.
+    if: >-
+      github.ref == 'refs/heads/master' &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        (
+          github.event_name == 'push' &&
+          contains(
+            github.event.head_commit.message,
+            '[issue1361-source-inventory-once-20261006T0202Z-a90ab50]'
+          )
+        )
+      )
     needs: contract-tests
     runs-on: ubuntu-latest
     steps:

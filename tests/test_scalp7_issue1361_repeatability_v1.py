@@ -3,10 +3,32 @@ from __future__ import annotations
 import hashlib
 import base64
 import json
+from pathlib import Path
 
 import pytest
 
 from ops import issue1361_repeatability_v1 as repeat
+
+
+def test_source_inventory_one_shot_recovery_is_master_bound_and_non_economic() -> None:
+    workflow = Path(
+        ".github/workflows/issue1361-repeatability-v1.yml"
+    ).read_text()
+    token = "[issue1361-source-inventory-once-20261006T0202Z-a90ab50]"
+    assert "github.ref == 'refs/heads/master'" in workflow
+    assert "github.event_name == 'workflow_dispatch'" in workflow
+    assert "github.event_name == 'push'" in workflow
+    assert token in workflow
+
+    receipt = json.loads(Path(
+        "research/campaigns/scalp7_20261006/"
+        "issue1361_repeatability_v1/SOURCE_INVENTORY_DISPATCH_RECOVERY.json"
+    ).read_text())
+    assert receipt["one_shot_merge_token"] == token
+    assert receipt["economic_jobs_opened"] == 0
+    assert receipt["economic_claims_created"] == 0
+    assert receipt["services_or_collectors_changed"] == 0
+    assert receipt["schedules_changed"] == 0
 
 
 def test_history_is_exact_three_past_only_90d_fit_30d_test() -> None:

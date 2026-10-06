@@ -531,7 +531,10 @@ def audit_result(path: Path, manifest: Mapping[str, Any]) -> dict[str, Any]:
         raise Issue1377Error("SAVED_MANIFEST_BINDING")
     if set(value.get("instances", {})) != set(INSTANCE_IDS):
         raise Issue1377Error("SAVED_INSTANCE_SET_MISMATCH")
-    for instance in value["instances"].values():
+    expected_identities = {"N_PARENT": PARENT, "N_CANDIDATE": CANDIDATE}
+    for instance_id, instance in value["instances"].items():
+        if instance.get("identity") != expected_identities[instance_id]:
+            raise Issue1377Error("SAVED_INSTANCE_IDENTITY_MISMATCH:" + instance_id)
         for multiplier, name in ((1, "cost_1x"), (2, "cost_2x")):
             if metrics.summarize(instance["trades"], START_MS, END_MS, multiplier) != instance[name]:
                 raise Issue1377Error("SAVED_ACCOUNTING_MISMATCH:" + name)

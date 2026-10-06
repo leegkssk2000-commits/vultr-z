@@ -243,6 +243,21 @@ def test_rehashed_saved_paired_and_full_census_tamper_are_rejected(
     output.write_text(json.dumps(census))
     with pytest.raises(batch.Issue1377Error, match="SAVED_CENSUS_MISMATCH"):
         batch.audit_result(output, m)
+    swapped = copy.deepcopy(original)
+    swapped["instances"]["N_PARENT"], swapped["instances"]["N_CANDIDATE"] = (
+        swapped["instances"]["N_CANDIDATE"],
+        swapped["instances"]["N_PARENT"],
+    )
+    swapped["paired"] = batch._paired(
+        swapped["instances"]["N_PARENT"],
+        swapped["instances"]["N_CANDIDATE"],
+    )
+    swapped["result_sha256"] = batch.digest(
+        {key: item for key, item in swapped.items() if key != "result_sha256"}
+    )
+    output.write_text(json.dumps(swapped))
+    with pytest.raises(batch.Issue1377Error, match="SAVED_INSTANCE_IDENTITY"):
+        batch.audit_result(output, m)
 
 
 def test_authority_refs_are_git_verified_and_checkout_is_exact(

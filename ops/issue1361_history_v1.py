@@ -28,7 +28,8 @@ FIT_SCHEMA = "zel.issue1361.history_fit_manifest.v1"
 SOURCE_INVENTORY_FILES = 17_541
 TIME_WITNESS_DIR = ROOT / "research/campaigns/scalp7_20260915/source_time_v2"
 TIME_WITNESS_SHA256 = "885820be52497509588c6b1add37d3b4211fda3d9b636ef2690c2aa6753b6e67"
-RUNTIME_PROFILE = {"python": "3.12", "numpy": "2.4.3", "pandas": "3.0.1"}
+TIME_WITNESS_BUNDLE_SHA256 = "45a84674fcac750315ece4e9bdaf67fb0815dbcd7c64e335932381696207ddd1"
+RUNTIME_PROFILE = {"python": "3.12.14", "numpy": "2.4.3", "pandas": "3.0.1"}
 FROZEN_COSTS_BPS = {
     "BTC-USDT": 14.0,
     "DOGE-USDT": 16.73064726730116,
@@ -149,13 +150,31 @@ def validate_runtime() -> dict[str, str]:
     import pandas as pd
 
     actual = {
-        "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+        "python": (
+            f"{sys.version_info.major}.{sys.version_info.minor}."
+            f"{sys.version_info.micro}"
+        ),
         "numpy": np.__version__,
         "pandas": pd.__version__,
     }
     if actual != RUNTIME_PROFILE:
         raise HistoryPreparationError("FROZEN_RUNTIME_MISMATCH")
     return actual
+
+
+def time_witness_bundle_sha256(directory: Path = TIME_WITNESS_DIR) -> str:
+    """Bind every raw body and receipt used to establish close-time semantics."""
+    expected = {
+        f"{symbol}_live_1m_{phase}{suffix}"
+        for symbol in scope.SYMBOLS
+        for phase in ("first", "closed")
+        for suffix in (".body", ".receipt.json")
+    }
+    actual = {path.name for path in directory.iterdir() if path.is_file()}
+    if actual != expected:
+        raise HistoryPreparationError("TIME_WITNESS_FILE_SET_MISMATCH")
+    hashes = {name: sha_file(directory / name) for name in sorted(expected)}
+    return canonical_sha256(hashes)
 
 
 def frozen_instance(
@@ -544,6 +563,8 @@ def prepare_history(source_root: Path, output: Path, cache_dir: Path, contract_p
     # therefore rebuild directly from the receipt-verified minute archives;
     # ``cache_dir`` remains a CLI compatibility argument and is never trusted.
     del cache_dir
+    if time_witness_bundle_sha256() != TIME_WITNESS_BUNDLE_SHA256:
+        raise HistoryPreparationError("TIME_WITNESS_BUNDLE_HASH_MISMATCH")
     witness = source.verify_time_witness(TIME_WITNESS_DIR)
     if canonical_sha256(witness) != TIME_WITNESS_SHA256:
         raise HistoryPreparationError("TIME_WITNESS_HASH_MISMATCH")

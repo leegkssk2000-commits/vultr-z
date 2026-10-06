@@ -8,11 +8,12 @@ bar-close availability; prospective observations require recorded receipts.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 DAY_MS = 86_400_000
 HALF_HOUR_MS = 1_800_000
@@ -28,6 +29,7 @@ SOURCE_INVENTORY_SHA256 = "53c64616fa98ddd446533cbc7b8e90eb2866ce9b1b0b3243df421
 PROTOCOL_SHA256 = "5e58240d121587f91d48292324544250af904154fa9e0c59aa8d7ecefe045401"
 SOURCE_ROOT = "/home/z/z/runtime/economic7_campaign_20260915"
 CLASSIFICATION = "RETROSPECTIVE_PIPELINE_STABILITY_NOT_FRESH"
+FORWARD_CLAIM_REF = "refs/heads/research-execution-claims/issue1361-forward-20261006-v1"
 
 
 class AdmissionError(RuntimeError):
@@ -99,9 +101,14 @@ def _sha(value: Any) -> bool:
     return isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
 
 
+def _commit_sha(value: Any) -> bool:
+    return isinstance(value, str) and len(value) == 40 and all(c in "0123456789abcdef" for c in value)
+
+
 def check_forward(
     contract: Mapping[str, Any],
     immutable_freeze_receipt: Mapping[str, Any],
+    expected_freeze_receipt_sha256: str,
 ) -> None:
     """Validate F against a separately persisted source-binding receipt.
 
@@ -124,7 +131,12 @@ def check_forward(
     binding_sha = immutable_freeze_receipt.get("source_binding_sha256")
     if not isinstance(frozen, int) or frozen <= 0 or not _sha(binding_sha):
         raise AdmissionError("FORWARD_FREEZE_RECEIPT_IDENTITY")
-    if contract.get("freeze_receipt_sha256") != canonical_sha(immutable_freeze_receipt):
+    if not _sha(expected_freeze_receipt_sha256):
+        raise AdmissionError("FORWARD_TRUSTED_FREEZE_DIGEST_REQUIRED")
+    receipt_sha = canonical_sha(immutable_freeze_receipt)
+    if receipt_sha != expected_freeze_receipt_sha256:
+        raise AdmissionError("FORWARD_FREEZE_NOT_IN_TRUSTED_CLAIM")
+    if contract.get("freeze_receipt_sha256") != expected_freeze_receipt_sha256:
         raise AdmissionError("FORWARD_FREEZE_RECEIPT_HASH")
     required = {
         "fit_end_ms": _ms("2026-09-15T00:00:00Z"),
@@ -140,12 +152,72 @@ def check_forward(
         if contract.get(key) != value:
             raise AdmissionError(f"FORWARD_CONTRACT_MISMATCH:{key}")
     start = contract.get("start_ms")
-    if not isinstance(start, int) or start <= frozen:
-        raise AdmissionError("FORWARD_START_NOT_PROSPECTIVE")
-    if start % HALF_HOUR_MS:
-        raise AdmissionError("FORWARD_START_NOT_UTC_30M_BOUNDARY")
+    first_boundary = (frozen // HALF_HOUR_MS + 1) * HALF_HOUR_MS
+    if not isinstance(start, int) or start != first_boundary:
+        raise AdmissionError("FORWARD_START_NOT_FIRST_POST_FREEZE_UTC30M")
     if contract.get("end_ms") != start + 90 * DAY_MS:
         raise AdmissionError("FORWARD_END_NOT_EXACTLY_90_DAYS")
+
+
+def _git_blob(raw: bytes) -> str:
+    return hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+
+
+def verified_forward_freeze(
+    api: Callable[[str, str], Mapping[str, Any]],
+) -> tuple[dict[str, Any], str]:
+    """Read the trusted digest from the fixed permanent GitHub claim ref.
+
+    The execution driver supplies the authenticated GitHub API callback.  It
+    never derives trust from the contract or receipt passed to check_forward.
+    Ref administration remains a trusted-maintainer boundary.
+    """
+    route = "/git/ref/" + FORWARD_CLAIM_REF.removeprefix("refs/")
+    ref = api("GET", route)
+    if (
+        ref.get("ref") != FORWARD_CLAIM_REF
+        or ref.get("object", {}).get("type") != "commit"
+        or not _commit_sha(ref.get("object", {}).get("sha"))
+    ):
+        raise AdmissionError("FORWARD_CLAIM_REF_PROFILE")
+    commit = api("GET", "/git/commits/" + ref["object"]["sha"])
+    tree = api("GET", "/git/trees/" + commit["tree"]["sha"])
+    entries = {entry["path"]: entry for entry in tree.get("tree", [])}
+    if set(entries) != {"CLAIM.json", "FREEZE.json"} or any(
+        entry.get("type") != "blob" for entry in entries.values()
+    ):
+        raise AdmissionError("FORWARD_CLAIM_TREE_PROFILE")
+
+    def read_blob(name: str) -> tuple[dict[str, Any], str]:
+        entry = entries[name]
+        blob = api("GET", "/git/blobs/" + entry["sha"])
+        if blob.get("encoding") != "base64":
+            raise AdmissionError("FORWARD_CLAIM_BLOB_ENCODING")
+        raw = base64.b64decode(blob["content"], validate=False)
+        if _git_blob(raw) != entry["sha"]:
+            raise AdmissionError("FORWARD_CLAIM_BLOB_HASH")
+        return json.loads(raw), entry["sha"]
+
+    claim, _ = read_blob("CLAIM.json")
+    receipt, receipt_blob_sha = read_blob("FREEZE.json")
+    expected = canonical_sha(receipt)
+    required_claim = {
+        "schema": "scalp7.issue1361.forward_claim.v1",
+        "issue": 1361,
+        "state": "RESERVED_NONRETRYABLE",
+        "claim_ref": FORWARD_CLAIM_REF,
+        "protocol_sha256": PROTOCOL_SHA256,
+        "rule_sha256": RULE_SHA256,
+        "freeze_blob_sha": receipt_blob_sha,
+        "freeze_receipt_sha256": expected,
+        "source_binding_sha256": receipt.get("source_binding_sha256"),
+    }
+    for key, value in required_claim.items():
+        if claim.get(key) != value:
+            raise AdmissionError(f"FORWARD_CLAIM_MISMATCH:{key}")
+    if not _commit_sha(claim.get("independent_approval_commit_sha")):
+        raise AdmissionError("FORWARD_CLAIM_APPROVAL_IDENTITY")
+    return receipt, expected
 
 
 def sha_file(path: Path) -> str:

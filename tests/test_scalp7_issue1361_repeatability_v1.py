@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import base64
+import json
 
 import pytest
 
@@ -72,7 +74,8 @@ def forward_contract(receipt: dict) -> dict:
 
 def test_forward_requires_prospective_utc30m_and_real_receipts() -> None:
     receipt = freeze_receipt()
-    repeat.check_forward(forward_contract(receipt), receipt)
+    trusted = repeat.canonical_sha(receipt)
+    repeat.check_forward(forward_contract(receipt), receipt, trusted)
     for field, value in (
         ("start_ms", repeat._ms("2026-10-06T03:31:00Z")),
         ("source_verified", False),
@@ -82,7 +85,7 @@ def test_forward_requires_prospective_utc30m_and_real_receipts() -> None:
         row = forward_contract(receipt)
         row[field] = value
         with pytest.raises(repeat.AdmissionError):
-            repeat.check_forward(row, receipt)
+            repeat.check_forward(row, receipt, trusted)
 
 
 def test_forward_start_cannot_self_assert_an_earlier_freeze() -> None:
@@ -91,11 +94,67 @@ def test_forward_start_cannot_self_assert_an_earlier_freeze() -> None:
     row["start_ms"] = repeat._ms("2026-10-06T02:30:00Z")
     row["end_ms"] = row["start_ms"] + 90 * repeat.DAY_MS
     row["protocol_frozen_ms"] = 0
-    with pytest.raises(repeat.AdmissionError, match="NOT_PROSPECTIVE"):
-        repeat.check_forward(row, receipt)
+    with pytest.raises(repeat.AdmissionError, match="FIRST_POST_FREEZE"):
+        repeat.check_forward(row, receipt, repeat.canonical_sha(receipt))
     tampered = dict(receipt, frozen_at_ms=0)
     with pytest.raises(repeat.AdmissionError, match="RECEIPT_IDENTITY"):
-        repeat.check_forward(row, tampered)
+        repeat.check_forward(row, tampered, repeat.canonical_sha(receipt))
+
+
+def test_forward_requires_exact_first_boundary_and_external_trusted_digest() -> None:
+    receipt = freeze_receipt()
+    row = forward_contract(receipt)
+    row["start_ms"] += repeat.HALF_HOUR_MS
+    row["end_ms"] += repeat.HALF_HOUR_MS
+    with pytest.raises(repeat.AdmissionError, match="FIRST_POST_FREEZE"):
+        repeat.check_forward(row, receipt, repeat.canonical_sha(receipt))
+    with pytest.raises(repeat.AdmissionError, match="TRUSTED_CLAIM"):
+        repeat.check_forward(forward_contract(receipt), receipt, "2" * 64)
+
+
+def test_forward_freeze_is_loaded_from_fixed_permanent_claim_ref() -> None:
+    receipt = freeze_receipt()
+    receipt_raw = json.dumps(receipt).encode()
+    receipt_blob = repeat._git_blob(receipt_raw)
+    claim = {
+        "schema": "scalp7.issue1361.forward_claim.v1",
+        "issue": 1361,
+        "state": "RESERVED_NONRETRYABLE",
+        "claim_ref": repeat.FORWARD_CLAIM_REF,
+        "protocol_sha256": repeat.PROTOCOL_SHA256,
+        "rule_sha256": repeat.RULE_SHA256,
+        "freeze_blob_sha": receipt_blob,
+        "freeze_receipt_sha256": repeat.canonical_sha(receipt),
+        "source_binding_sha256": receipt["source_binding_sha256"],
+        "independent_approval_commit_sha": "a" * 40,
+    }
+    claim_raw = json.dumps(claim).encode()
+    claim_blob = repeat._git_blob(claim_raw)
+    objects = {
+        "/git/ref/heads/research-execution-claims/issue1361-forward-20261006-v1": {
+            "ref": repeat.FORWARD_CLAIM_REF,
+            "object": {"type": "commit", "sha": "b" * 40},
+        },
+        "/git/commits/" + "b" * 40: {"tree": {"sha": "c" * 40}},
+        "/git/trees/" + "c" * 40: {"tree": [
+            {"path": "CLAIM.json", "type": "blob", "sha": claim_blob},
+            {"path": "FREEZE.json", "type": "blob", "sha": receipt_blob},
+        ]},
+        "/git/blobs/" + claim_blob: {
+            "encoding": "base64", "content": base64.b64encode(claim_raw).decode()
+        },
+        "/git/blobs/" + receipt_blob: {
+            "encoding": "base64", "content": base64.b64encode(receipt_raw).decode()
+        },
+    }
+
+    def api(method: str, route: str) -> dict:
+        assert method == "GET"
+        return objects[route]
+
+    loaded, trusted = repeat.verified_forward_freeze(api)
+    assert loaded == receipt
+    repeat.check_forward(forward_contract(receipt), loaded, trusted)
 
 
 def test_history_rejects_strategy_instance_substitution() -> None:

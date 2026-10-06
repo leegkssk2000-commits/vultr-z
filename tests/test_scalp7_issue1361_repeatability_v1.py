@@ -50,7 +50,7 @@ def test_fit_artifact_job_is_single_file_descendant_and_non_economic() -> None:
     assert repair_token in workflow
     assert repair2_token in workflow
     assert churn_token in workflow
-    block = workflow.split("  source-fit-artifact:", 1)[1]
+    block = workflow.split("  source-fit-artifact:", 1)[1].split("  history-economic-batch:", 1)[0]
     assert "['git', 'diff', '--name-status', '--no-renames', parent, head]" in block
     assert "['git', 'rev-list', parent, '--', str(activation_path)]" in block
     assert "['git', 'diff-tree'" not in block
@@ -87,7 +87,7 @@ def test_fit_artifact_job_is_single_file_descendant_and_non_economic() -> None:
 
 def test_fit_artifact_transfer_is_read_only_and_not_published() -> None:
     workflow = Path(".github/workflows/issue1361-repeatability-v1.yml").read_text()
-    block = workflow.split("  source-fit-artifact:", 1)[1]
+    block = workflow.split("  source-fit-artifact:", 1)[1].split("  history-economic-batch:", 1)[0]
     assert "tar -C /home/z/z/runtime/economic7_campaign_20260915 -czf -" in block
     assert "UNSAFE_SOURCE_ARCHIVE_MEMBER" in block
     assert "SOURCE_ARCHIVE_BOUND_EXCEEDED" in block
@@ -105,6 +105,23 @@ def test_fit_artifact_transfer_is_read_only_and_not_published() -> None:
     assert "issue1361-ephemeral-source-stage" in block
     assert "--source-root /home/z/z/runtime/economic7_campaign_20260915" in block
     assert "sudo rm -rf -- \"$stage\"" in block
+    assert "systemctl" not in block
+
+
+def test_history_batch_is_one_shot_claimed_and_global_heavy() -> None:
+    workflow = Path(".github/workflows/issue1361-repeatability-v1.yml").read_text()
+    block = workflow.split("  history-economic-batch:", 1)[1]
+    assert "[issue1361-history-batch-once-20261006T1420Z-f18d2c7]" in block
+    assert "changed != ['A\\t' + str(path)]" in block
+    assert "HISTORY_ACTIVATION_NOT_NEW_SINGLE_FILE" in block
+    assert "git checkout --detach '${{ steps.activation.outputs.reviewed_source_sha }}'" in block
+    assert "group: a1-global-heavy-economic-evaluator-v1" in block
+    assert "cancel-in-progress: false" in block
+    assert "issue1361_history_batch_v1" in block
+    assert "fit_artifact_id': 11419311671" in block
+    assert "a39e65afc4c7557a4864a4a0192b6278cdba51a051969b684f20c97da4f73d1f" in block
+    assert "research-approvals/issue1361-history-20261006-v1" in block
+    assert "research-execution-claims/issue1361-history-20261006-v1" in block
     assert "systemctl" not in block
 
 

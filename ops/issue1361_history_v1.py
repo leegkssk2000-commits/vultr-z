@@ -139,6 +139,40 @@ def validate_costs(costs: Any) -> dict[str, float]:
     return dict(costs)
 
 
+def frozen_instance(
+    row: Mapping[str, Any],
+    *,
+    identity: str,
+    model: str,
+    fit_sha256: str,
+    code_bundle_sha256: str,
+) -> dict[str, Any]:
+    return {
+        "schema": "zel.issue1361.history_instance.v1",
+        "issue": 1361,
+        "instance_id": row["id"] + ":" + model,
+        "fold_id": row["id"],
+        "identity": identity,
+        "model": model,
+        "fit_sha256": fit_sha256,
+        "source_inventory_sha256": scope.SOURCE_INVENTORY_SHA256,
+        "protocol_sha256": scope.PROTOCOL_SHA256,
+        "rule_sha256": scope.RULE_SHA256,
+        "cost_sha256": scope.COST_SHA256,
+        "code_bundle_sha256": code_bundle_sha256,
+        "fit_start_ms": row["fit_start_ms"],
+        "fit_end_ms": row["fit_end_ms"],
+        "test_start_ms": row["test_start_ms"],
+        "test_end_ms": row["test_end_ms"],
+        "clock_profile": row["clock_profile"],
+        "classification": scope.CLASSIFICATION,
+        "entry_profile": ENTRY_PROFILES[identity],
+        "cost_profiles": ["1x", "2x"],
+        "fresh_oos": False,
+        "order_authority": "BLOCKED",
+    }
+
+
 def code_hashes(root: Path = ROOT) -> dict[str, str]:
     paths = (
         "ops/issue1361_history_v1.py",
@@ -226,30 +260,13 @@ def build_manifest(
             (CANDIDATE, "EMA21_BUY_LIMIT"),
             (PARENT, "SQUEEZE_PARENT"),
         ):
-            frozen = {
-                "schema": "zel.issue1361.history_instance.v1",
-                "issue": 1361,
-                "instance_id": row["id"] + ":" + model,
-                "fold_id": row["id"],
-                "identity": identity,
-                "model": model,
-                "fit_sha256": fit["sha256"],
-                "source_inventory_sha256": scope.SOURCE_INVENTORY_SHA256,
-                "protocol_sha256": scope.PROTOCOL_SHA256,
-                "rule_sha256": scope.RULE_SHA256,
-                "cost_sha256": scope.COST_SHA256,
-                "code_bundle_sha256": code_bundle_sha256,
-                "fit_start_ms": row["fit_start_ms"],
-                "fit_end_ms": row["fit_end_ms"],
-                "test_start_ms": row["test_start_ms"],
-                "test_end_ms": row["test_end_ms"],
-                "clock_profile": row["clock_profile"],
-                "classification": scope.CLASSIFICATION,
-                "entry_profile": ENTRY_PROFILES[identity],
-                "cost_profiles": ["1x", "2x"],
-                "fresh_oos": False,
-                "order_authority": "BLOCKED",
-            }
+            frozen = frozen_instance(
+                row,
+                identity=identity,
+                model=model,
+                fit_sha256=fit["sha256"],
+                code_bundle_sha256=code_bundle_sha256,
+            )
             instances.append({**frozen, "state_sha256": canonical_sha256(frozen)})
     manifest = {
         "schema": FIT_SCHEMA,
@@ -344,25 +361,20 @@ def validate_manifest(value: Mapping[str, Any]) -> None:
             "EMA21_BUY_LIMIT" if instance["identity"] == CANDIDATE else "SQUEEZE_PARENT"
         )
         if (
-            instance.get("instance_id") != instance["fold_id"] + ":" + expected_model
-            or instance.get("fit_sha256") != fit["sha256"]
-            or instance.get("fit_start_ms") != row["fit_start_ms"]
-            or instance.get("fit_end_ms") != row["fit_end_ms"]
-            or instance.get("test_start_ms") != row["test_start_ms"]
-            or instance.get("test_end_ms") != row["test_end_ms"]
-            or instance.get("clock_profile") != row["clock_profile"]
-        ):
-            raise HistoryPreparationError("INSTANCE_FOLD_BINDING_MISMATCH")
-        if (
             instance.get("cost_sha256") != scope.COST_SHA256
             or instance.get("cost_profiles") != ["1x", "2x"]
         ):
             raise HistoryPreparationError("INSTANCE_COST_BINDING_MISMATCH")
-        if instance.get("entry_profile") != ENTRY_PROFILES.get(instance.get("identity")):
-            raise HistoryPreparationError("IDENTITY_ENTRY_PROFILE_MISMATCH")
-        if instance.get("code_bundle_sha256") != code_bundle_sha256:
-            raise HistoryPreparationError("INSTANCE_CODE_BUNDLE_MISMATCH")
         frozen = {k: v for k, v in instance.items() if k != "state_sha256"}
+        expected = frozen_instance(
+            row,
+            identity=instance["identity"],
+            model=expected_model,
+            fit_sha256=fit["sha256"],
+            code_bundle_sha256=code_bundle_sha256,
+        )
+        if frozen != expected:
+            raise HistoryPreparationError("INSTANCE_FROZEN_PROFILE_MISMATCH")
         if canonical_sha256(frozen) != instance.get("state_sha256"):
             raise HistoryPreparationError("INSTANCE_STATE_HASH_MISMATCH")
     frozen_manifest = {k: v for k, v in value.items() if k != "manifest_sha256"}

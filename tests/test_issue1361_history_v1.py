@@ -96,7 +96,7 @@ def test_each_instance_state_hash_rejects_mutation(key):
         h.HistoryPreparationError,
         match=(
             "INSTANCE_STATE_HASH|FOLD_MODEL_INSTANCE_MATRIX|"
-            "INSTANCE_FOLD_BINDING|INSTANCE_COST_BINDING"
+            "INSTANCE_FROZEN_PROFILE|INSTANCE_COST_BINDING"
         ),
     ):
         h.validate_manifest(value)
@@ -127,7 +127,7 @@ def test_identity_entry_profile_swap_is_rejected_even_if_rehashed():
         instance["state_sha256"] = h.canonical_sha256(frozen)
     frozen_manifest = {k: v for k, v in value.items() if k != "manifest_sha256"}
     value["manifest_sha256"] = h.canonical_sha256(frozen_manifest)
-    with pytest.raises(h.HistoryPreparationError, match="IDENTITY_ENTRY_PROFILE_MISMATCH"):
+    with pytest.raises(h.HistoryPreparationError, match="INSTANCE_FROZEN_PROFILE"):
         h.validate_manifest(value)
 
 
@@ -159,7 +159,7 @@ def test_rehashed_instance_must_remain_bound_to_declared_fold(key):
     instance = value["instances"][0]
     instance[key] = "f" * 64 if key == "fit_sha256" else instance[key] + 1
     _rehash_manifest(value)
-    with pytest.raises(h.HistoryPreparationError, match="INSTANCE_FOLD_BINDING"):
+    with pytest.raises(h.HistoryPreparationError, match="INSTANCE_FROZEN_PROFILE"):
         h.validate_manifest(value)
 
 
@@ -168,8 +168,29 @@ def test_rehashed_top_level_code_map_must_match_each_instance_bundle():
     value["code_sha256"]["new_dependency.py"] = "c" * 64
     frozen = {k: v for k, v in value.items() if k != "manifest_sha256"}
     value["manifest_sha256"] = h.canonical_sha256(frozen)
-    with pytest.raises(h.HistoryPreparationError, match="INSTANCE_CODE_BUNDLE"):
+    with pytest.raises(h.HistoryPreparationError, match="INSTANCE_FROZEN_PROFILE"):
         h.validate_manifest(value)
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("schema", "forged"),
+        ("issue", 0),
+        ("source_inventory_sha256", "0" * 64),
+        ("protocol_sha256", "0" * 64),
+        ("rule_sha256", "0" * 64),
+        ("classification", "FRESH_OOS"),
+        ("fresh_oos", True),
+        ("order_authority", "GRANTED"),
+    ],
+)
+def test_every_frozen_instance_field_rejects_forged_rehash(key, value):
+    item = manifest()
+    item["instances"][0][key] = value
+    _rehash_manifest(item)
+    with pytest.raises(h.HistoryPreparationError, match="INSTANCE_FROZEN_PROFILE"):
+        h.validate_manifest(item)
 
 
 def test_fit_window_matches_existing_rolling_context_contract():

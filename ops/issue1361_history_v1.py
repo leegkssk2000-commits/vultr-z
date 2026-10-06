@@ -146,6 +146,7 @@ def build_manifest(
         raise HistoryPreparationError("EXACT_THREE_FITS_REQUIRED")
     fit_rows = []
     instances = []
+    code_bundle_sha256 = canonical_sha256(dict(sorted(hashes.items())))
     for row, supplied in zip(rows, fits, strict=True):
         fit = dict(supplied)
         if (
@@ -157,7 +158,10 @@ def build_manifest(
         ):
             raise HistoryPreparationError("FIT_CHRONOLOGY_OR_HASH:" + row["id"])
         fit_rows.append({"id": row["id"], "fit": fit})
-        for identity, model in ((CANDIDATE, "EMA21_BUY_LIMIT"), (PARENT, "SQUEEZE_PARENT")):
+        for identity, model, entry_profile in (
+            (CANDIDATE, "EMA21_BUY_LIMIT", "MODELED_MINUTE_TOUCH_ADVERSE_LIMIT_BOUND"),
+            (PARENT, "SQUEEZE_PARENT", "UTC_NEXT_30M_OPEN_MARKET_MODEL"),
+        ):
             frozen = {
                 "schema": "zel.issue1361.history_instance.v1",
                 "issue": 1361,
@@ -170,12 +174,14 @@ def build_manifest(
                 "protocol_sha256": scope.PROTOCOL_SHA256,
                 "rule_sha256": scope.RULE_SHA256,
                 "cost_sha256": scope.COST_SHA256,
+                "code_bundle_sha256": code_bundle_sha256,
                 "fit_start_ms": row["fit_start_ms"],
                 "fit_end_ms": row["fit_end_ms"],
                 "test_start_ms": row["test_start_ms"],
                 "test_end_ms": row["test_end_ms"],
                 "clock_profile": row["clock_profile"],
                 "classification": scope.CLASSIFICATION,
+                "entry_profile": entry_profile,
                 "cost_profiles": ["1x", "2x"],
                 "fresh_oos": False,
                 "order_authority": "BLOCKED",

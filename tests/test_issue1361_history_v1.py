@@ -62,6 +62,8 @@ def test_exact_three_past_only_fits_make_six_unclaimed_instances():
     assert value["test_period_signal_generation"] == 0
     assert value["test_period_model_replays"] == 0
     assert all(x["classification"] == scope.CLASSIFICATION for x in value["instances"])
+    assert len({x["entry_profile"] for x in value["instances"]}) == 2
+    assert all(len(x["code_bundle_sha256"]) == 64 for x in value["instances"])
 
 
 def test_final_fit_backapplication_is_rejected():

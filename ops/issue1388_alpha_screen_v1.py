@@ -52,6 +52,8 @@ BTC_FUNDING_RAW_SHA256 = "e939345a319eb5a9de77fddf7330d7b2e4db20f60b9298f5f3527e
 BTC_FUNDING_RECEIPT_SHA256 = "f7e889a0c03727baceadc5e0a3cd050100330cfaa397c4aac2336abbd1c8a15c"
 EMA800_ID = "E_FT_EMA800_PRICE_THRESHOLD_1H_V1"
 ETH_SESSION_ID = "R_ETH_SESSION_REVERSAL_1H_V1"
+ETH_FUNDING_RAW_SHA256 = "cd1b4dea78e2bdc62e985fe0a0c47cd9a301f41836cadc82c136355a056f0aac"
+ETH_FUNDING_RECEIPT_SHA256 = "3462c99458ef79bb06b6ca7c1ecac887cee0aa1accdc28da55d198b8004e3357"
 BTC_SHOCK_ID = "R_BTC_NEGATIVE_SHOCK_1H_V1"
 PROFILES: dict[str, dict[str, Any]] = {
     EMA800_ID: {
@@ -123,7 +125,11 @@ PROFILES: dict[str, dict[str, Any]] = {
         "source_sha256": "dd22882ce5e89f40c5e10ca7a9814180b1b525f5eed4f8a62a2189cb02c139dd",
         "timeframe_min": 60,
         "signal_rules": "SOURCE_EXACT_ETH_12H_SESSIONS_05_17_UTC_NIGHT_LONG_DAY_REVERSE_PRIOR_DAY_RETURN",
-        "order_adapter": "DENSITY_PREFLIGHT_ONLY",
+        "order_adapter": "INTERNAL_FIXED_UNIT_NEXT_AVAILABLE_OPEN_SESSION_TRANSITION_NO_END_EXIT",
+        "screen_symbols": ("ETH-USDT",),
+        "activation_token": "[issue1388-alpha-screen-5-eth-session-1h-v1]",
+        "execution_ref": "refs/heads/research-execution-consumptions/issue1388-cheap-eth-session-1h-v1",
+        "result_ref": "refs/heads/research-results/issue1388-cheap-eth-session-1h-v1",
     },
 }
 
@@ -252,6 +258,14 @@ def validate_activation(path: Path, head: str) -> dict[str, Any]:
     files = value.get("source_files_sha256")
     if not isinstance(files, dict):
         raise ScreenError("ACTIVATION_SOURCE_FILES")
+    if profile["candidate_id"] == ETH_SESSION_ID:
+        required_files = {"ops/issue1388_alpha_screen_v1.py", "ops/issue1388_eth_session_v1.py",
+                          "research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/PRE_SCREEN_THESES_003_PLUS.json",
+                          "research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/ETH_FUNDING_RAW.json",
+                          "research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/ETH_FUNDING_RECEIPT.json",
+                          "research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/ETH_EXECUTION_CONTRACT.json"}
+        if not required_files.issubset(files):
+            raise ScreenError("ETH_ACTIVATION_SOURCE_CLOSURE_REQUIRED")
     for relative, expected in files.items():
         if file_sha256(ROOT / relative) != expected:
             raise ScreenError("ACTIVATION_SOURCE_FILE_DRIFT:" + relative)
@@ -298,6 +312,8 @@ def load_market(source_root: Path, profile: Mapping[str, Any] | None = None) -> 
     market = {"frames": selected, "costs": costs}
     if profile["candidate_id"] == BTC_SHOCK_ID:
         market["btc_funding"] = load_btc_funding()
+    if profile["candidate_id"] == ETH_SESSION_ID:
+        market["eth_funding"] = load_eth_funding()
     return market
 
 
@@ -329,6 +345,41 @@ def load_btc_funding() -> list[dict[str, Any]]:
     if receipt.get("raw_sha256") != BTC_FUNDING_RAW_SHA256 or receipt.get("period_ms") != [START_MS, END_MS]:
         raise ScreenError("BTC_FUNDING_RECEIPT_BINDING")
     return validate_btc_funding(read_json(raw_path))
+
+
+def validate_eth_funding(value: Mapping[str, Any]) -> list[dict[str, Any]]:
+    if value.get("code") != 0 or not isinstance(value.get("data"), list):
+        raise ScreenError("ETH_FUNDING_RESPONSE_SCHEMA")
+    rows = value["data"]
+    if any(not isinstance(row, dict) for row in rows):
+        raise ScreenError("ETH_FUNDING_ROW_SCHEMA")
+    rows = sorted(rows, key=lambda row: row.get("fundingTime", 0))
+    if [row.get("fundingTime") for row in rows] != list(range(START_MS, END_MS, 8 * 3600000)):
+        raise ScreenError("ETH_FUNDING_FIXED_WINDOW_COVERAGE")
+    for row in rows:
+        if row.get("symbol") != "ETH-USDT" or type(row.get("fundingTime")) is not int:
+            raise ScreenError("ETH_FUNDING_SYMBOL_OR_CLOCK")
+        try:
+            rate, mark = float(row["fundingRate"]), float(row["markPrice"])
+        except (KeyError, TypeError, ValueError):
+            raise ScreenError("ETH_FUNDING_RATE_MARK_REQUIRED") from None
+        if isinstance(row["fundingRate"], bool) or isinstance(row["markPrice"], bool) or not math.isfinite(rate) or not math.isfinite(mark) or mark <= 0:
+            raise ScreenError("ETH_FUNDING_RATE_MARK_INVALID")
+    return rows
+
+
+def load_eth_funding() -> list[dict[str, Any]]:
+    raw = INTAKE_PATH.parent / "ETH_FUNDING_RAW.json"
+    receipt = INTAKE_PATH.parent / "ETH_FUNDING_RECEIPT.json"
+    if file_sha256(raw) != ETH_FUNDING_RAW_SHA256 or file_sha256(receipt) != ETH_FUNDING_RECEIPT_SHA256:
+        raise ScreenError("ETH_FUNDING_INPUT_HASH_DRIFT")
+    proof = read_json(receipt)
+    if (proof.get("symbol") != "ETH-USDT" or proof.get("raw_sha256") != ETH_FUNDING_RAW_SHA256
+            or proof.get("period_ms") != [START_MS, END_MS] or proof.get("rows") != 465
+            or proof.get("historical_receipt_times") is not False
+            or proof.get("account_actual_debit_certified") is not False):
+        raise ScreenError("ETH_FUNDING_RECEIPT_BINDING")
+    return validate_eth_funding(read_json(raw))
 
 
 def funding_for_btc_trade(trade: Mapping[str, Any], rows: list[dict[str, Any]]) -> tuple[float, int]:
@@ -1143,8 +1194,56 @@ def summarize(trades: list[dict[str, Any]], multiplier: int) -> dict[str, Any]:
     }
 
 
+def screen_eth_session(market: Mapping[str, Any], profile: Mapping[str, Any]) -> dict[str, Any]:
+    from ops.issue1388_eth_session_v1 import replay_eth_sessions, terminal_eth_report
+    if "eth_funding" not in market:
+        raise ScreenError("ETH_FUNDING_REQUIRED_BEFORE_MODEL")
+    # Certify archive coverage before any signal/order compute, even direct use.
+    funding = validate_eth_funding({"code": 0, "data": market["eth_funding"]})
+    rows = market["frames"]["ETH-USDT"].to_dict("records")
+    replay = replay_eth_sessions(rows, funding, start_ms=START_MS, end_ms=END_MS,
+                                 roundtrip_cost_bps=float(market["costs"]["ETH-USDT"]))
+    trades = sorted(replay["trades"], key=lambda row: row["exit_ts_ms"])
+    one, two = summarize(trades, 1), summarize(trades, 2)
+    terminal = terminal_eth_report(replay, rows, end_ms=END_MS)
+    if replay["gap_quarantine"] is not None:
+        disposition = "BLOCKED_INPUT_GAP_WITH_OPEN_STATE"
+    elif replay["unresolved_end"]:
+        disposition = "BLOCKED_TERMINAL_OUTCOME_UNRESOLVED"
+    else:
+        disposition = "SCREEN_SURVIVOR_PENDING_FULL" if one["T"] > 0 and one["Net_bps"] > 0 and two["Net_bps"] > 0 else "REJECT_ECONOMIC_EARLY"
+    value = {
+        "schema": "zel.issue1388.cheap_screen_result.v1", "issue": 1388,
+        "candidate_id": ETH_SESSION_ID, **source_binding(profile),
+        "period_ms": [START_MS, END_MS], "timeframe_min": 60,
+        "classification": "DEVELOPMENT_ONLY_NOT_FRESH_NOT_OOS",
+        "signal_rules": profile["signal_rules"], "order_adapter": profile["order_adapter"],
+        "source_replication": False, "donor_live_fill_equivalence": False,
+        "fixed_unit_not_source_nav_rebalance": True,
+        "trades": trades, "cost_1x": one, "cost_2x": two,
+        "census": {"signals_or_attempts": len(replay["orders"]) + len(replay["same_side_boundaries"]) + len(replay["expired_targets"]),
+                   "completed": len(trades), "occupied_rejections": 0,
+                   "gap_quarantined": int(replay["gap_quarantine"] is not None),
+                   "unresolved_end": replay["unresolved_end"],
+                   "missing_fill_evidence": int(replay["gap_quarantine"] is not None),
+                   "expired_targets": len(replay["expired_targets"])},
+        "session_accounting": replay, "terminal_report": terminal,
+        "funding_source_sha256": ETH_FUNDING_RAW_SHA256,
+        "funding_receipt_sha256": ETH_FUNDING_RECEIPT_SHA256,
+        "funding_model": "ARCHIVED_SIGNED_RATE_MARK_FIXED_QUANTITY_ADVERSE_TRANSITION_BOUNDARY",
+        "mark_account_NAV": None, "funding_actual_account_debit_certified": False,
+        "disposition": disposition, "full_consumed": 0,
+        "order_authority": "BLOCKED", "exchange_order_submitted": False, "promotion": False,
+    }
+    return {**value, "result_sha256": digest(value)}
+
+
 def screen(market: Mapping[str, Any], profile: Mapping[str, Any] | None = None) -> dict[str, Any]:
     profile = profile or PROFILES[CANDIDATE_ID]
+    if profile["candidate_id"] == ETH_SESSION_ID:
+        return screen_eth_session(market, profile)
+    if profile["candidate_id"] not in (CANDIDATE_ID, CENDERAWASIH_ID, RSI_W1_ID, BTC_SHOCK_ID):
+        raise ScreenError("ECONOMIC_ADAPTER_NOT_IMPLEMENTED")
     all_trades: list[dict[str, Any]] = []
     signals_total = occupied = unresolved = gap_quarantined = 0
     for symbol in profile.get("screen_symbols", SYMBOLS):
@@ -1234,6 +1333,111 @@ def validate_btc_preflight(activation: Mapping[str, Any], receipt: Mapping[str, 
         raise ScreenError("BTC_SHOCK_PREFLIGHT_INPUT_DRIFT")
 
 
+def audit_eth_result(result: Mapping[str, Any], rows: list[dict[str, Any]],
+                     funding_rows: list[dict[str, Any]], roundtrip_cost_bps: float) -> None:
+    from ops.issue1388_eth_session_v1 import terminal_eth_report
+    accounting = result.get("session_accounting", {})
+    if (result.get("trades") != accounting.get("trades")
+            or result.get("terminal_report") != terminal_eth_report(accounting, rows, end_ms=END_MS)):
+        raise ScreenError("ETH_SAVED_TERMINAL_OR_LEDGER_AUDIT_FAIL")
+    # Independent stored-order arithmetic, not another signal/market replay.
+    prices = {row["open_ts_ms"]: float(row["open"]) for row in rows}
+    trades = result["trades"]
+    position = None
+    trade_index = 0
+    paid_cost = 0.0
+    last_time = None
+    one_way = roundtrip_cost_bps / 2
+    def funding(entry: int, exit_: int, side: int, basis: float, closed: bool) -> tuple[float, int]:
+        total = 0.0
+        count = 0
+        for row in funding_rows:
+            stamp = row["fundingTime"]
+            if entry <= stamp <= exit_ and stamp < END_MS:
+                debit = side * float(row["fundingRate"]) * float(row["markPrice"]) / basis * 10000
+                if stamp != entry and (not closed or stamp != exit_) or debit > 0:
+                    total += debit
+                    count += 1
+        return total, count
+    for order in accounting["orders"]:
+        stamp, price = order["execution_ts_ms"], order["execution_price"]
+        current = 0 if position is None else position["signed_units"]
+        desired = order["desired_units"]
+        if (type(desired) is not int or desired not in (-1, 0, 1) or order["current_units"] != current
+                or order["quantity"] != abs(desired - current) or order["quantity"] == 0
+                or not START_MS <= stamp < END_MS or (last_time is not None and stamp <= last_time)
+                or not order["available_ts_ms"] <= stamp < order["expires_ts_ms"]
+                or prices.get(stamp) != price
+                or not math.isclose(order["cost_bps"], order["quantity"] * one_way, abs_tol=1e-9)):
+            raise ScreenError("ETH_SAVED_ORDER_ARITHMETIC_AUDIT_FAIL")
+        paid_cost += order["cost_bps"]
+        last_time = stamp
+        if position is not None:
+            if trade_index >= len(trades):
+                raise ScreenError("ETH_SAVED_CLOSED_LEDGER_COUNT")
+            trade = trades[trade_index]
+            basis, entry = position["entry_price"], position["entry_ts_ms"]
+            gross = current * (price / basis - 1) * 10000
+            signed_funding, settlements = funding(entry, stamp, current, basis, True)
+            if (any(trade.get(k) != position[k] for k in ("entry_ts_ms", "entry_price", "signed_units"))
+                    or trade["exit_ts_ms"] != stamp or trade["exit_price"] != price
+                    or not math.isclose(trade["gross_bps"], gross, abs_tol=1e-9)
+                    or not math.isclose(trade["cost_bps"], roundtrip_cost_bps, abs_tol=1e-9)
+                    or not math.isclose(trade["funding_bps"], signed_funding, abs_tol=1e-9)
+                    or trade["funding_settlements"] != settlements
+                    or not math.isclose(trade["net_bps"], gross - roundtrip_cost_bps - signed_funding, abs_tol=1e-9)):
+                raise ScreenError("ETH_SAVED_CLOSED_ARITHMETIC_AUDIT_FAIL")
+            trade_index += 1
+            position = None
+        if desired:
+            position = {"signed_units": desired, "entry_price": price, "entry_ts_ms": stamp}
+    if trade_index != len(trades) or not math.isclose(paid_cost, accounting["paid_trading_cost_bps"], abs_tol=1e-9):
+        raise ScreenError("ETH_SAVED_LEDGER_COUNT_COST_AUDIT_FAIL")
+    open_position = accounting["open_position"]
+    unresolved = int(open_position is not None or accounting["pending_target"] is not None or accounting["gap_quarantine"] is not None)
+    expected_disposition = ("BLOCKED_INPUT_GAP_WITH_OPEN_STATE" if accounting["gap_quarantine"] is not None else
+                            "BLOCKED_TERMINAL_OUTCOME_UNRESOLVED" if unresolved else
+                            "SCREEN_SURVIVOR_PENDING_FULL" if result["cost_1x"]["T"] > 0 and result["cost_1x"]["Net_bps"] > 0 and result["cost_2x"]["Net_bps"] > 0 else "REJECT_ECONOMIC_EARLY")
+    if (accounting["unresolved_end"] != unresolved or result["census"]["unresolved_end"] != unresolved
+            or result["disposition"] != expected_disposition):
+        raise ScreenError("ETH_SAVED_DISPOSITION_AUDIT_FAIL")
+    if ((position is None) != (open_position is None)
+            or position is not None and any(position[k] != open_position.get(k) for k in position)):
+        raise ScreenError("ETH_SAVED_OPEN_LEDGER_AUDIT_FAIL")
+    if open_position is not None and accounting["gap_quarantine"] is None:
+        expected, settlements = funding(position["entry_ts_ms"], END_MS, position["signed_units"], position["entry_price"], False)
+        if not math.isclose(open_position["funding_bps_to_end_exclusive"], expected, abs_tol=1e-9) or open_position["funding_settlements"] != settlements:
+            raise ScreenError("ETH_SAVED_OPEN_FUNDING_AUDIT_FAIL")
+
+
+def validate_eth_preflight(activation: Mapping[str, Any], receipt: Mapping[str, Any]) -> None:
+    proof = activation.get("density_preflight")
+    if not isinstance(proof, dict) or proof.get("result_sha256") != digest({k: v for k, v in proof.items() if k != "result_sha256"}):
+        raise ScreenError("ETH_PREFLIGHT_HASH_REQUIRED")
+    candidate = proof.get("candidates", {}).get(ETH_SESSION_ID, {})
+    if (proof.get("period_ms") != [START_MS, END_MS]
+            or proof.get("source_inventory_sha256") != SOURCE_INVENTORY_SHA256
+            or proof.get("economic_screen_consumed") != 0 or proof.get("order_authority") != "BLOCKED"
+            or any(candidate.get(k) != v for k, v in source_binding(PROFILES[ETH_SESSION_ID]).items())
+            or candidate.get("signal_rules") != PROFILES[ETH_SESSION_ID]["signal_rules"]
+            or candidate.get("timeframe_min") != 60):
+        raise ScreenError("ETH_PREFLIGHT_SOURCE_RULE_WINDOW")
+    count = candidate.get("source_native_eth", {}).get("source_exact_episodes")
+    if type(count) is not int or count <= 0:
+        raise ScreenError("ETH_ZERO_OR_UNCONFIRMED_DENSITY")
+    saved = dict(proof.get("receipts", {}).get("60", {}))
+    expected = dict(receipt)
+    # Density receipt certifies the same inputs; only execution adapter changed.
+    for value in (saved, expected):
+        value.pop("receipt_sha256", None)
+        value.pop("order_adapter", None)
+    if saved != expected:
+        raise ScreenError("ETH_PREFLIGHT_INPUT_DRIFT")
+    if (activation.get("funding_raw_sha256") != ETH_FUNDING_RAW_SHA256
+            or activation.get("funding_receipt_sha256") != ETH_FUNDING_RECEIPT_SHA256):
+        raise ScreenError("ETH_FUNDING_ACTIVATION_BINDING")
+
+
 def execute(source_root: Path, activation_path: Path, output_dir: Path) -> dict[str, Any]:
     head = current_head()
     activation = validate_activation(activation_path, head)
@@ -1246,6 +1450,8 @@ def execute(source_root: Path, activation_path: Path, output_dir: Path) -> dict[
         validate_btc_preflight(activation, receipt)
         if activation.get("funding_raw_sha256") != BTC_FUNDING_RAW_SHA256 or activation.get("funding_receipt_sha256") != BTC_FUNDING_RECEIPT_SHA256:
             raise ScreenError("BTC_FUNDING_ACTIVATION_BINDING")
+    if profile["candidate_id"] == ETH_SESSION_ID:
+        validate_eth_preflight(activation, receipt)
     start = {
         "schema": "zel.issue1388.alpha_screen_start.v1", "issue": 1388,
         "candidate_id": profile["candidate_id"], "state": "STARTED_AFTER_INPUT_VALIDATION_BEFORE_SIGNAL_COMPUTE",
@@ -1255,6 +1461,8 @@ def execute(source_root: Path, activation_path: Path, output_dir: Path) -> dict[
     }
     if profile["candidate_id"] == BTC_SHOCK_ID:
         start.update(funding_raw_sha256=BTC_FUNDING_RAW_SHA256, funding_receipt_sha256=BTC_FUNDING_RECEIPT_SHA256)
+    if profile["candidate_id"] == ETH_SESSION_ID:
+        start.update(funding_raw_sha256=ETH_FUNDING_RAW_SHA256, funding_receipt_sha256=ETH_FUNDING_RECEIPT_SHA256)
     start_commit = create_record(profile["execution_ref"], "STARTED.json", start, head)
     output_dir.mkdir(parents=True)
     write_once(output_dir / "SOURCE_RECEIPT.json", receipt)
@@ -1265,12 +1473,20 @@ def execute(source_root: Path, activation_path: Path, output_dir: Path) -> dict[
                 handle.write((INTAKE_PATH.parent / filename).read_bytes())
                 handle.flush()
                 os.fsync(handle.fileno())
+    if profile["candidate_id"] == ETH_SESSION_ID:
+        for filename in ("ETH_FUNDING_RAW.json", "ETH_FUNDING_RECEIPT.json"):
+            with (output_dir / filename).open("xb") as handle:
+                handle.write((INTAKE_PATH.parent / filename).read_bytes())
+                handle.flush()
+                os.fsync(handle.fileno())
     result = screen(market, profile)
     write_once(output_dir / "RESULT.json", result)
     audited = read_json(output_dir / "RESULT.json")
     supplied = audited.pop("result_sha256")
     if supplied != digest(audited) or audited.get("cost_1x") != summarize(audited["trades"], 1) or audited.get("cost_2x") != summarize(audited["trades"], 2):
         raise ScreenError("SAVED_RESULT_AUDIT_FAIL")
+    if profile["candidate_id"] == ETH_SESSION_ID:
+        audit_eth_result(audited, market["frames"]["ETH-USDT"].to_dict("records"), market["eth_funding"], float(market["costs"]["ETH-USDT"]))
     envelope = {"schema": "zel.issue1388.persisted_result.v1", "issue": 1388, "execution_commit_sha": start_commit, "result": result, "order_authority": "BLOCKED"}
     envelope = {**envelope, "envelope_sha256": digest(envelope)}
     result_commit = create_record(profile["result_ref"], "RESULT.json", envelope, start_commit)

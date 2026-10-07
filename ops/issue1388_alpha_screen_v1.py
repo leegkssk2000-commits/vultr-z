@@ -1544,6 +1544,36 @@ def audit_bband_result(result: Mapping[str, Any], market: Mapping[str, Any]) -> 
                     or eligible["segment_id"] != decision["segment_id"]):
                 raise ScreenError("BBAND_SAVED_EARLIEST_CAUSAL_OPEN")
             return decision
+        def first_flat_signal(previous: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+            return next((d for d in decisions if d["entry"] and START_MS <= d["signal_open_ts_ms"]
+                         and d["signal_close_ts_ms"] < END_MS and (previous is None or
+                         (d["signal_close_ts_ms"] >= previous["exit_ts_ms"] if previous["exit_reason"].startswith("INTRABAR")
+                          else d["signal_open_ts_ms"] >= previous["exit_ts_ms"]))), None)
+        def first_exit_certificate(position: Mapping[str, Any]) -> tuple[int, float, str] | None:
+            basis = Decimal(str(position["entry_price"]))
+            stop, roi = float(basis * Decimal("0.75")), float(basis * Decimal("1.10"))
+            pending_rsi = next((d for d in decisions if d["exit"] and d["signal_open_ts_ms"] >= position["entry_ts_ms"]), None)
+            prior = None
+            for bar in rows:
+                opened = bar["open_ts_ms"]
+                if opened < position["entry_ts_ms"] or opened >= END_MS:
+                    continue
+                if prior is not None and (opened != prior["close_ts_ms"] or bar["segment_id"] != prior["segment_id"]):
+                    return None  # Occupied gap cannot certify a later exit.
+                prior = bar
+                if opened > position["entry_ts_ms"]:
+                    if float(bar["open"]) <= stop:
+                        return opened, float(bar["open"]), "OPEN_STOP"
+                    if float(bar["open"]) >= roi:
+                        return opened, float(bar["open"]), "OPEN_ROI"
+                    if pending_rsi is not None and pending_rsi["signal_available_ts_ms"] <= opened:
+                        return opened, float(bar["open"]), "NEXT_AVAILABLE_OPEN_RSI_EXIT"
+                reason = "INTRABAR_STOP_FIRST" if float(bar["low"]) <= stop else "INTRABAR_ROI" if float(bar["high"]) >= roi else None
+                if reason:
+                    if bar["close_ts_ms"] == END_MS or bar["available_ts_ms"] != bar["close_ts_ms"]:
+                        return None  # Terminal or late protective receipt remains unresolved.
+                    return bar["close_ts_ms"], stop if reason == "INTRABAR_STOP_FIRST" else roi, reason
+            return None
         one_way = float(market["costs"][symbol]) / 2
         position, trade_index, paid, last_stamp = None, 0, 0.0, -1
         def funding(entry: int, exit_: int, basis: float, closed: bool) -> tuple[float, int]:
@@ -1568,7 +1598,10 @@ def audit_bband_result(result: Mapping[str, Any], market: Mapping[str, Any]) -> 
             if order["kind"] == "ENTRY":
                 if position is not None or stamp not in opens or price != float(opens[stamp]["open"]):
                     raise ScreenError("BBAND_SAVED_ENTRY_PRICE")
-                verify_signal(order, "entry", stamp)
+                decision = verify_signal(order, "entry", stamp)
+                previous = saved["trades"][trade_index - 1] if trade_index else None
+                if first_flat_signal(previous) != decision:
+                    raise ScreenError("BBAND_SAVED_FIRST_ADMISSIBLE_ENTRY")
                 identity = f"{symbol}:{stamp}:{order['signal_open_ts_ms']}"
                 if order["entry_identity"] != identity:
                     raise ScreenError("BBAND_SAVED_ENTRY_SIGNAL_IDENTITY")
@@ -1589,6 +1622,8 @@ def audit_bband_result(result: Mapping[str, Any], market: Mapping[str, Any]) -> 
                 basis = position["entry_price"]
                 stop, roi = float(Decimal(str(basis)) * Decimal("0.75")), float(Decimal(str(basis)) * Decimal("1.10"))
                 reason = order["reason"]
+                if first_exit_certificate(position) != (stamp, price, reason):
+                    raise ScreenError("BBAND_SAVED_FIRST_EXIT_OR_SOURCE_GAP")
                 if reason.startswith("INTRABAR"):
                     bar = closes.get(stamp)
                     valid = (bar is not None and bar["available_ts_ms"] == stamp and stop < float(bar["open"]) < roi
@@ -1614,6 +1649,16 @@ def audit_bband_result(result: Mapping[str, Any], market: Mapping[str, Any]) -> 
             else:
                 raise ScreenError("BBAND_SAVED_ORDER_KIND")
         open_position = saved["open_position"]
+        if position is None and saved["gap_quarantine"] is None and saved["protective_touch_quarantine"] is None:
+            next_signal = first_flat_signal(saved["trades"][-1] if saved["trades"] else None)
+            if next_signal is not None:
+                expected_open = next((r for r in rows if r["open_ts_ms"] >= next_signal["signal_available_ts_ms"]), None)
+                if expected_open is not None and expected_open["open_ts_ms"] < END_MS:
+                    raise ScreenError("BBAND_SAVED_MISSING_ADMISSIBLE_ENTRY")
+                if saved["pending_entry"] != next_signal:
+                    raise ScreenError("BBAND_SAVED_PENDING_ENTRY_BINDING")
+        if position is not None and first_exit_certificate(position) is not None:
+            raise ScreenError("BBAND_SAVED_OMITTED_FIRST_EXIT")
         if ((position is None) != (open_position is None) or trade_index != len(saved["trades"])
                 or position is not None and any(position[k] != open_position.get(k) for k in position)
                 or not math.isclose(paid, saved["paid_trading_cost_bps"], abs_tol=1e-9)

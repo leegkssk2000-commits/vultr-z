@@ -485,3 +485,107 @@ def test_coherent_clock_rewrite_with_outer_rehash_is_rejected(monkeypatch,tamper
     value['result_sha256']=common.digest({k:v for k,v in value.items() if k!='result_sha256'})
     with pytest.raises(common.ScreenError,match='BBAND_SAVED_(SOURCE_SIGNAL|EARLIEST_CAUSAL|EXECUTION_CHRONOLOGY)'):
         common.audit_bband_result(value,market)
+
+
+def _rewrite_saved_result(value):
+    value['trades'] = sorted(
+        [trade for saved in value['symbol_accounting'].values() for trade in saved['trades']],
+        key=lambda trade: (trade['exit_ts_ms'], trade['symbol']),
+    )
+    value['cost_1x'] = common.summarize(value['trades'], 1)
+    value['cost_2x'] = common.summarize(value['trades'], 2)
+    value['census']['completed'] = len(value['trades'])
+    value['result_sha256'] = common.digest({k: v for k, v in value.items() if k != 'result_sha256'})
+
+
+def _set_frame_prices(market, index, **prices):
+    for frame in market['frames'].values():
+        for field, value in prices.items():
+            frame.loc[index, field] = value
+
+
+def test_audit_rejects_trade_injected_from_entry_signal_discarded_while_occupied(monkeypatch):
+    market = common_market(monkeypatch)
+    _set_frame_prices(market, 2, open=110.0, high=111.0, low=109.0, close=110.0)
+    _set_frame_prices(market, 3, open=121.0, high=122.0, low=120.0, close=121.0)
+    monkeypatch.setattr(common, 'bband_rsi_entry_signals', lambda frame:
+                        pd.Series([True, True] + [False] * (len(frame) - 2), index=frame.index))
+    monkeypatch.setattr(common, '_rsi', lambda close, period: pd.Series(50.0, index=close.index))
+    value = common.screen(market, common.PROFILES[common.BBAND_RSI_ID])
+    assert len(value['trades']) == len(common.SYMBOLS)
+    for symbol, saved in value['symbol_accounting'].items():
+        clocks = {'signal_open_ts_ms': H, 'signal_close_ts_ms': 2 * H,
+                  'signal_available_ts_ms': 2 * H}
+        identity = f'{symbol}:{2 * H}:{H}'
+        saved['orders'].extend([
+            {'kind': 'ENTRY', 'execution_ts_ms': 2 * H, 'price': 110.0, 'quantity': 1,
+             'cost_bps': 7.0, 'entry_identity': identity, **clocks},
+            {'kind': 'EXIT', 'execution_ts_ms': 3 * H, 'price': 121.0, 'quantity': 1,
+             'cost_bps': 7.0, 'entry_identity': identity, 'reason': 'OPEN_ROI'},
+        ])
+        saved['trades'].append({
+            'identity': common.BBAND_RSI_ID, 'entry_identity': identity, 'symbol': symbol,
+            'side': 'LONG', 'entry_ts_ms': 2 * H, 'entry_price': 110.0,
+            'entry_cost_bps': 7.0, **clocks, 'exit_ts_ms': 3 * H, 'exit_price': 121.0,
+            'exit_reason': 'OPEN_ROI', 'exit_time_kind': 'OBSERVED_OPEN',
+            'gross_bps': 1000.0, 'cost_bps': 14.0, 'funding_bps': 0.0,
+            'funding_settlements': 0, 'net_bps': 986.0,
+        })
+        saved['paid_trading_cost_bps'] += 14.0
+        saved['closed_trading_cost_bps'] += 14.0
+    _rewrite_saved_result(value)
+    with pytest.raises(common.ScreenError, match='BBAND_SAVED_FIRST_ADMISSIBLE_ENTRY'):
+        common.audit_bband_result(value, market)
+
+
+def test_audit_rejects_skipped_early_stop_rewritten_as_later_roi(monkeypatch):
+    market = common_market(monkeypatch)
+    _set_frame_prices(market, 2, low=75.0)
+    _set_frame_prices(market, 4, high=110.0)
+    monkeypatch.setattr(common, '_rsi', lambda close, period: pd.Series(50.0, index=close.index))
+    value = common.screen(market, common.PROFILES[common.BBAND_RSI_ID])
+    assert value['cost_1x']['Gross_bps'] == -2500.0 * len(common.SYMBOLS)
+    for saved in value['symbol_accounting'].values():
+        order = saved['orders'][1]
+        trade = saved['trades'][0]
+        order.update(execution_ts_ms=5 * H, price=110.0, reason='INTRABAR_ROI')
+        trade.update(exit_ts_ms=5 * H, exit_price=110.0, exit_reason='INTRABAR_ROI',
+                     gross_bps=1000.0, funding_bps=0.0, funding_settlements=0,
+                     net_bps=986.0)
+    value['disposition'] = 'SCREEN_SURVIVOR_PENDING_FULL'
+    _rewrite_saved_result(value)
+    with pytest.raises(common.ScreenError, match='BBAND_SAVED_FIRST_EXIT_OR_SOURCE_GAP'):
+        common.audit_bband_result(value, market)
+
+
+def test_audit_rejects_later_flat_entry_when_earlier_admissible_trade_is_dropped(monkeypatch):
+    market = common_market(monkeypatch)
+    _set_frame_prices(market, 2, open=110.0, high=111.0, low=99.0, close=100.0)
+    _set_frame_prices(market, 6, open=110.0, high=111.0, low=109.0, close=110.0)
+    monkeypatch.setattr(common, 'bband_rsi_entry_signals', lambda frame:
+                        pd.Series([True, False, False, False, True] + [False] * (len(frame) - 5),
+                                  index=frame.index))
+    monkeypatch.setattr(common, '_rsi', lambda close, period: pd.Series(50.0, index=close.index))
+    value = common.screen(market, common.PROFILES[common.BBAND_RSI_ID])
+    assert all(len(saved['trades']) == 2 for saved in value['symbol_accounting'].values())
+    for saved in value['symbol_accounting'].values():
+        saved['orders'] = saved['orders'][2:]
+        saved['trades'] = saved['trades'][1:]
+        saved['paid_trading_cost_bps'] = 14.0
+        saved['closed_trading_cost_bps'] = 14.0
+    _rewrite_saved_result(value)
+    with pytest.raises(common.ScreenError, match='BBAND_SAVED_FIRST_ADMISSIBLE_ENTRY'):
+        common.audit_bband_result(value, market)
+
+
+def test_audit_rejects_closed_trade_crossing_occupied_source_segment_gap(monkeypatch):
+    market = common_market(monkeypatch)
+    _set_frame_prices(market, 4, open=110.0, high=111.0, low=109.0, close=110.0)
+    monkeypatch.setattr(common, '_rsi', lambda close, period: pd.Series(50.0, index=close.index))
+    value = common.screen(market, common.PROFILES[common.BBAND_RSI_ID])
+    assert all(saved['trades'][0]['exit_ts_ms'] == 4 * H
+               for saved in value['symbol_accounting'].values())
+    for frame in market['frames'].values():
+        frame.loc[2:, 'segment_id'] = 'B'
+    with pytest.raises(common.ScreenError, match='BBAND_SAVED_FIRST_EXIT_OR_SOURCE_GAP'):
+        common.audit_bband_result(value, market)

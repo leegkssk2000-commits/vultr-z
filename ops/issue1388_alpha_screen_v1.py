@@ -49,6 +49,7 @@ CENDERAWASIH_ID = "E_MULTIMA_CENDERAWASIH_30M_V1"
 RSI_W1_ID = "R_PAPER_RSI_W1_30M_V1"
 BBAND_RSI_ID = "E_FT_BBAND_RSI_1H_V1"
 ETH_SESSION_ID = "R_ETH_SESSION_REVERSAL_1H_V1"
+BTC_SHOCK_ID = "R_BTC_NEGATIVE_SHOCK_1H_V1"
 PROFILES: dict[str, dict[str, Any]] = {
     CANDIDATE_ID: {
         "candidate_id": CANDIDATE_ID,
@@ -83,6 +84,19 @@ PROFILES: dict[str, dict[str, Any]] = {
         "screen_symbols": ("BTC-USDT",),
         "signal_rules": "PUBLISHED_RSI_W1_30M_WILDER5_PRIOR_CLOSED_BAR_GT95_LONG_LT5_SHORT_FLIP",
         "order_adapter": "CONSERVATIVE_NEXT_OPEN_TAKER_FLIP_NO_END_FORCE_CLOSE",
+    },
+    BTC_SHOCK_ID: {
+        "candidate_id": BTC_SHOCK_ID,
+        "source_version": "DOI:10.1080/15140326.2022.2151253#PRIMARY_RULE_EVIDENCE_SNAPSHOT",
+        "source_sha256": "15877f50925f39c9161f8f90c6b2ca46ff1f807db3a3ef4502b8a26b8a7a2d0d",
+        "source_hash_kind": "RULE_EVIDENCE_SNAPSHOT_NOT_PDF",
+        "timeframe_min": 60,
+        "screen_symbols": ("BTC-USDT",),
+        "signal_rules": "SOURCE_EXACT_COMPLETED_1H_LOG_RETURN_STRICT_LT_MINUS_0_015",
+        "order_adapter": "INTERNAL_NEXT_OPEN_TAKER_EVENT_CLOSE_PLUS12H_SINGLE_POSITION",
+        "activation_token": "[issue1388-alpha-screen-4-btc-shock-1h-v1]",
+        "execution_ref": "refs/heads/research-execution-consumptions/issue1388-cheap-btc-shock-1h-v1",
+        "result_ref": "refs/heads/research-results/issue1388-cheap-btc-shock-1h-v1",
     },
     BBAND_RSI_ID: {
         "candidate_id": BBAND_RSI_ID,
@@ -239,6 +253,8 @@ def load_market(source_root: Path, profile: Mapping[str, Any] | None = None) -> 
     from backend.research.rebuild import scalp7_source_data_v2 as source
 
     profile = profile or PROFILES[CANDIDATE_ID]
+    if profile["candidate_id"] == BTC_SHOCK_ID and file_sha256(INTAKE_PATH.parent / "BTC_SHOCK_SOURCE_RECHECK.json") != profile["source_sha256"]:
+        raise ScreenError("SOURCE_RULE_EVIDENCE_SNAPSHOT_DRIFT")
     if file_sha256(COST_PATH) != COST_SHA256:
         raise ScreenError("FROZEN_COST_FILE_DRIFT")
     timeframe_min = int(profile["timeframe_min"])
@@ -485,6 +501,16 @@ def eth_session_decisions(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
     return available, transitions
 
 
+def btc_shock_signals(frame: pd.DataFrame) -> pd.Series:
+    """Only consecutive completed hourly closes, never across a source gap."""
+    prior = frame.close.shift()
+    contiguous = (frame.segment_id.eq(frame.segment_id.shift())
+                  & frame.open_ts_ms.eq(frame.close_ts_ms.shift()))
+    finite = np.isfinite(frame.close) & np.isfinite(prior) & frame.close.gt(0) & prior.gt(0)
+    log_return = np.log(frame.close.where(finite) / prior.where(finite))
+    return (contiguous & log_return.lt(-0.015)).fillna(False)
+
+
 def density_census(market: Mapping[str, Any], candidate_ids: list[str]) -> dict[str, Any]:
     """No-PnL preflight: signal/episode counts only; exits and future outcomes are forbidden."""
     days = (END_MS - START_MS) / 86_400_000
@@ -514,6 +540,11 @@ def density_census(market: Mapping[str, Any], candidate_ids: list[str]) -> dict[
                     if current and current != prior:
                         episodes.loc[idx] = True
                         prior = current
+            elif candidate_id == BTC_SHOCK_ID:
+                raw = btc_shock_signals(frame)
+                in_window &= frame.close_ts_ms.lt(END_MS) & frame.available_ts_ms.lt(END_MS)
+                # Each threshold exceedance is a source event, including consecutive shocks.
+                episodes = raw.copy()
             elif candidate_id == BBAND_RSI_ID:
                 raw = bband_rsi_entry_signals(frame)
                 episodes = _episode_starts(raw, frame)
@@ -541,9 +572,11 @@ def density_census(market: Mapping[str, Any], candidate_ids: list[str]) -> dict[
             "symbols_with_episodes": sum(1 for row in by_symbol.values() if row["source_exact_episodes"] > 0),
             "by_symbol": by_symbol,
         }
-        if candidate_id == RSI_W1_ID:
+        if candidate_id in (RSI_W1_ID, BTC_SHOCK_ID):
             candidate["source_native_btc"] = by_symbol["BTC-USDT"]
-            candidate["six_symbol_application"] = "EXPLICIT_OUT_OF_SOURCE_UNIVERSE_EXTENSION_NOT_SOURCE_ECONOMIC_CLAIM"
+            candidate["six_symbol_application"] = "DENSITY_COMPATIBILITY_ONLY; ECONOMIC_SCREEN_MUST_REMAIN_SOURCE_NATIVE_BTC"
+            if candidate_id == BTC_SHOCK_ID:
+                candidate["source_hash_kind"] = "RULE_EVIDENCE_SNAPSHOT_NOT_PDF"
         elif candidate_id == ETH_SESSION_ID:
             candidate["source_native_eth"] = by_symbol["ETH-USDT"]
             candidate["source_exact_episodes"] = by_symbol["ETH-USDT"]["source_exact_episodes"]
@@ -929,6 +962,55 @@ def replay_rsi_w1_symbol(
     return trades, transitions, rejected_same_side, unresolved, gap_quarantined
 
 
+def replay_btc_shock_symbol(
+    symbol: str, frame: pd.DataFrame, cost_bps: float,
+) -> tuple[list[dict[str, Any]], int, int, int, int]:
+    """Internal execution translation; never a reproduction of event-study ACR."""
+    events = btc_shock_signals(frame)
+    rows = frame.to_dict("records")
+    trades: list[dict[str, Any]] = []
+    position: dict[str, Any] | None = None
+    pending: dict[str, Any] | None = None
+    prior_segment: Any = None
+    attempts = rejected = quarantined = 0
+    for i, bar in enumerate(rows):
+        open_ms = int(bar["open_ts_ms"])
+        if open_ms >= END_MS:
+            break
+        segment = bar["segment_id"]
+        if prior_segment is not None and segment != prior_segment:
+            quarantined += int(position is not None or pending is not None)
+            position = pending = None
+        prior_segment = segment
+        if position is not None and open_ms >= position["exit_deadline_ts_ms"]:
+            if open_ms != position["exit_deadline_ts_ms"]:
+                raise ScreenError("SHOCK_EXIT_DEADLINE_MISSING_WITHOUT_GAP")
+            gross = (float(bar["open"]) / position["entry_price"] - 1) * 10000
+            trades.append({**position, "exit_ts_ms": open_ms, "exit_price": float(bar["open"]),
+                           "exit_reason": "FROZEN_EVENT_CLOSE_PLUS12H", "gross_bps": gross,
+                           "cost_bps": cost_bps, "net_bps": gross - cost_bps})
+            position = None
+        if pending is not None and open_ms >= pending["signal_available_ts_ms"]:
+            # Delayed availability cannot extend the frozen event deadline.
+            if open_ms < pending["exit_deadline_ts_ms"]:
+                position = {**pending, "entry_ts_ms": open_ms, "entry_price": float(bar["open"])}
+            else:
+                quarantined += 1
+            pending = None
+        close_ms = int(bar["close_ts_ms"])
+        if open_ms >= START_MS and close_ms < END_MS and bool(events.iloc[i]):
+            attempts += 1
+            # A shock immediately before scheduled exit was observed while occupied.
+            if position is not None or pending is not None:
+                rejected += 1
+            else:
+                pending = {"identity": BTC_SHOCK_ID, "symbol": symbol, "side": "LONG",
+                           "signal_open_ts_ms": open_ms,
+                           "signal_available_ts_ms": max(close_ms, int(bar["available_ts_ms"])),
+                           "exit_deadline_ts_ms": close_ms + 12 * 3600000}
+    return trades, attempts, rejected, int(position is not None or pending is not None) + quarantined, quarantined
+
+
 def summarize(trades: list[dict[str, Any]], multiplier: int) -> dict[str, Any]:
     days = (END_MS - START_MS) / 86_400_000
     nets = [float(t["gross_bps"]) - multiplier * float(t["cost_bps"]) for t in trades]
@@ -974,6 +1056,10 @@ def screen(market: Mapping[str, Any], profile: Mapping[str, Any] | None = None) 
             trades, signal_count, rejected, open_count, quarantined = replay_cenderawasih_symbol(
                 symbol, market["frames"][symbol], market["frames"]["BTC-USDT"], float(market["costs"][symbol]),
             )
+        elif profile["candidate_id"] == BTC_SHOCK_ID:
+            trades, signal_count, rejected, open_count, quarantined = replay_btc_shock_symbol(
+                symbol, market["frames"][symbol], float(market["costs"][symbol]),
+            )
         elif profile["candidate_id"] == RSI_W1_ID:
             trades, signal_count, rejected, open_count, quarantined = replay_rsi_w1_symbol(
                 symbol, market["frames"][symbol], float(market["costs"][symbol]),
@@ -991,6 +1077,8 @@ def screen(market: Mapping[str, Any], profile: Mapping[str, Any] | None = None) 
     one, two = summarize(all_trades, 1), summarize(all_trades, 2)
     if gap_quarantined:
         disposition = "BLOCKED_INPUT_GAP_WITH_OPEN_STATE"
+    elif profile["candidate_id"] == BTC_SHOCK_ID and unresolved:
+        disposition = "BLOCKED_TERMINAL_OUTCOME_UNRESOLVED"
     else:
         disposition = "SCREEN_SURVIVOR_PENDING_FULL" if one["T"] > 0 and one["Net_bps"] > 0 and two["Net_bps"] > 0 else "REJECT_ECONOMIC_EARLY"
     value = {
@@ -1006,7 +1094,40 @@ def screen(market: Mapping[str, Any], profile: Mapping[str, Any] | None = None) 
         "disposition": disposition, "full_consumed": 0,
         "order_authority": "BLOCKED", "exchange_order_submitted": False, "promotion": False,
     }
+    if profile["candidate_id"] == BTC_SHOCK_ID:
+        if value["disposition"] == "SCREEN_SURVIVOR_PENDING_FULL":
+            value["disposition"] = "BLOCKED_MISSING_FUNDING"
+        value.update(source_hash_kind="RULE_EVIDENCE_SNAPSHOT_NOT_PDF", source_replication=False,
+                     funding_bps=None, mark_account_NAV=None,
+                     economics_profile="EXPLICIT_TAKER_COST_SCENARIO_FUNDING_UNVERIFIED")
     return {**value, "result_sha256": digest(value)}
+
+
+def validate_btc_preflight(activation: Mapping[str, Any], receipt: Mapping[str, Any]) -> None:
+    """Bind a saved no-PnL result to this exact source, period and input receipt."""
+    proof = activation.get("density_preflight")
+    if not isinstance(proof, dict):
+        raise ScreenError("BTC_SHOCK_PREFLIGHT_REQUIRED")
+    payload = {k: v for k, v in proof.items() if k != "result_sha256"}
+    if proof.get("result_sha256") != digest(payload):
+        raise ScreenError("BTC_SHOCK_PREFLIGHT_HASH")
+    if (proof.get("period_ms") != [START_MS, END_MS]
+            or proof.get("source_inventory_sha256") != SOURCE_INVENTORY_SHA256
+            or proof.get("economic_screen_consumed") != 0
+            or proof.get("order_authority") != "BLOCKED"):
+        raise ScreenError("BTC_SHOCK_PREFLIGHT_BINDING")
+    candidate = proof.get("candidates", {}).get(BTC_SHOCK_ID, {})
+    profile = PROFILES[BTC_SHOCK_ID]
+    if any(candidate.get(k) != v for k, v in source_binding(profile).items()):
+        raise ScreenError("BTC_SHOCK_PREFLIGHT_SOURCE")
+    if candidate.get("signal_rules") != profile["signal_rules"] or candidate.get("timeframe_min") != 60:
+        raise ScreenError("BTC_SHOCK_PREFLIGHT_RULE")
+    count = candidate.get("source_native_btc", {}).get("raw_signal_bars")
+    if type(count) is not int or count <= 0:
+        raise ScreenError("BTC_SHOCK_ZERO_OR_UNCONFIRMED_DENSITY")
+    saved_receipt = proof.get("receipts", {}).get("60", {})
+    if saved_receipt != receipt:
+        raise ScreenError("BTC_SHOCK_PREFLIGHT_INPUT_DRIFT")
 
 
 def execute(source_root: Path, activation_path: Path, output_dir: Path) -> dict[str, Any]:
@@ -1017,6 +1138,8 @@ def execute(source_root: Path, activation_path: Path, output_dir: Path) -> dict[
         raise ScreenError("OUTPUT_DIRECTORY_ALREADY_EXISTS_NO_RETRY")
     market = load_market(source_root, profile)
     receipt = source_receipt(market, profile)
+    if profile["candidate_id"] == BTC_SHOCK_ID:
+        validate_btc_preflight(activation, receipt)
     start = {
         "schema": "zel.issue1388.alpha_screen_start.v1", "issue": 1388,
         "candidate_id": profile["candidate_id"], "state": "STARTED_AFTER_INPUT_VALIDATION_BEFORE_SIGNAL_COMPUTE",

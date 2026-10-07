@@ -13,7 +13,9 @@ on:
       - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/ACTIVATION_001.json'
       - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/ACTIVATION_002.json'
       - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/PREFLIGHT_003.json'
+      - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/PREFLIGHT_004.json'
       - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/ACTIVATION_003.json'
+      - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/ACTIVATION_004.json'
 
 permissions:
   contents: read
@@ -252,7 +254,8 @@ jobs:
     if: >-
       github.event_name == 'push' && github.ref == 'refs/heads/master' &&
       github.run_attempt == 1 &&
-      contains(github.event.head_commit.message, '[issue1388-density-preflight-3-v1]')
+      (contains(github.event.head_commit.message, '[issue1388-density-preflight-3-v1]') ||
+       contains(github.event.head_commit.message, '[issue1388-density-preflight-4-v1]'))
     needs: contract-tests
     runs-on: ubuntu-latest
     steps:
@@ -266,7 +269,10 @@ jobs:
           python - <<'PY'
           import json, os, subprocess
           from pathlib import Path
-          path = Path('research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/PREFLIGHT_003.json')
+          message = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_bytes())['head_commit']['message']
+          number = '004' if '[issue1388-density-preflight-4-v1]' in message else '003'
+          candidates = ['R_BTC_NEGATIVE_SHOCK_1H_V1', 'E_FT_BBAND_RSI_1H_V1'] if number == '004' else ['R_PAPER_RSI_W1_30M_V1', 'R_ETH_SESSION_REVERSAL_1H_V1']
+          path = Path('research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/PREFLIGHT_' + number + '.json')
           value = json.loads(path.read_bytes())
           head = subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
           parent = subprocess.check_output(['git','rev-parse','HEAD^'], text=True).strip()
@@ -276,8 +282,8 @@ jobs:
           required = {
               'schema': 'zel.issue1388.signal_density_activation.v1',
               'issue': 1388,
-              'token': '[issue1388-density-preflight-3-v1]',
-              'candidate_ids': ['R_PAPER_RSI_W1_30M_V1', 'R_ETH_SESSION_REVERSAL_1H_V1'],
+              'token': '[issue1388-density-preflight-' + str(int(number)) + '-v1]',
+              'candidate_ids': candidates,
               'source_inventory_sha256': '53c64616fa98ddd446533cbc7b8e90eb2866ce9b1b0b3243df4211d59f155ba2',
               'period_ms': [1768262400000, 1781654400000],
               'economic_screen_consumed': 0,
@@ -291,6 +297,8 @@ jobs:
               raise SystemExit('REVIEWED_SOURCE_NOT_ANCESTOR')
           with Path(os.environ['GITHUB_OUTPUT']).open('a') as handle:
               handle.write('reviewed_source_sha=' + source + '\n')
+              handle.write('candidate_ids=' + ','.join(candidates) + '\n')
+              handle.write('number=' + number + '\n')
           PY
       - run: git checkout --detach '${{ steps.activation.outputs.reviewed_source_sha }}'
       - uses: actions/setup-python@v5
@@ -343,7 +351,7 @@ jobs:
         run: >-
           python ops/issue1388_alpha_screen_v1.py
           --source-root /home/z/z/runtime/economic7_campaign_20260915
-          --density-candidates R_PAPER_RSI_W1_30M_V1,R_ETH_SESSION_REVERSAL_1H_V1
+          --density-candidates '${{ steps.activation.outputs.candidate_ids }}'
           --output-dir "$RUNNER_TEMP/issue1388-density"
       - name: Remove transferred source and credential
         if: always()
@@ -354,7 +362,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: issue1388-density-preflight-003
+          name: issue1388-density-preflight-${{ steps.activation.outputs.number }}
           path: ${{ runner.temp }}/issue1388-density
           if-no-files-found: error
 
@@ -362,7 +370,8 @@ jobs:
     if: >-
       github.event_name == 'push' && github.ref == 'refs/heads/master' &&
       github.run_attempt == 1 &&
-      contains(github.event.head_commit.message, '[issue1388-alpha-screen-3-rsi-w1-30m-v1]')
+      (contains(github.event.head_commit.message, '[issue1388-alpha-screen-3-rsi-w1-30m-v1]') ||
+       contains(github.event.head_commit.message, '[issue1388-alpha-screen-4-btc-shock-1h-v1]'))
     needs: contract-tests
     runs-on: ubuntu-latest
     permissions:
@@ -381,7 +390,9 @@ jobs:
           python - <<'PY'
           import json, os, subprocess
           from pathlib import Path
-          path = Path('research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/ACTIVATION_003.json')
+          message = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_bytes())['head_commit']['message']
+          number = '004' if '[issue1388-alpha-screen-4-btc-shock-1h-v1]' in message else '003'
+          path = Path('research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/ACTIVATION_' + number + '.json')
           value = json.loads(path.read_bytes())
           head = subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
           parent = subprocess.check_output(['git','rev-parse','HEAD^'], text=True).strip()
@@ -391,10 +402,11 @@ jobs:
           source = value.get('reviewed_source_sha')
           if subprocess.run(['git','merge-base','--is-ancestor',source,parent]).returncode:
               raise SystemExit('REVIEWED_SOURCE_NOT_ANCESTOR')
-          dest = Path(os.environ['RUNNER_TEMP']) / 'ACTIVATION_003.json'
+          dest = Path(os.environ['RUNNER_TEMP']) / 'ACTIVATION.json'
           dest.write_bytes(path.read_bytes())
           with Path(os.environ['GITHUB_OUTPUT']).open('a') as handle:
               handle.write('reviewed_source_sha=' + source + '\n')
+              handle.write('number=' + number + '\n')
           PY
       - run: git checkout --detach '${{ steps.activation.outputs.reviewed_source_sha }}'
       - uses: actions/setup-python@v5
@@ -450,7 +462,7 @@ jobs:
         run: >-
           python ops/issue1388_alpha_screen_v1.py
           --source-root /home/z/z/runtime/economic7_campaign_20260915
-          --activation "$RUNNER_TEMP/ACTIVATION_003.json"
+          --activation "$RUNNER_TEMP/ACTIVATION.json"
           --output-dir "$RUNNER_TEMP/issue1388-results"
       - name: Remove transferred source and credential
         if: always()
@@ -461,6 +473,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: issue1388-cheap-screen-003
+          name: issue1388-cheap-screen-${{ steps.activation.outputs.number }}
           path: ${{ runner.temp }}/issue1388-results
           if-no-files-found: error

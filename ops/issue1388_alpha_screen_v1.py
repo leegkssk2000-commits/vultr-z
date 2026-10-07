@@ -50,9 +50,18 @@ RSI_W1_ID = "R_PAPER_RSI_W1_30M_V1"
 BBAND_RSI_ID = "E_FT_BBAND_RSI_1H_V1"
 BTC_FUNDING_RAW_SHA256 = "e939345a319eb5a9de77fddf7330d7b2e4db20f60b9298f5f3527e99173239ff"
 BTC_FUNDING_RECEIPT_SHA256 = "f7e889a0c03727baceadc5e0a3cd050100330cfaa397c4aac2336abbd1c8a15c"
+EMA800_ID = "E_FT_EMA800_PRICE_THRESHOLD_1H_V1"
 ETH_SESSION_ID = "R_ETH_SESSION_REVERSAL_1H_V1"
 BTC_SHOCK_ID = "R_BTC_NEGATIVE_SHOCK_1H_V1"
 PROFILES: dict[str, dict[str, Any]] = {
+    EMA800_ID: {
+        "candidate_id": EMA800_ID,
+        "source_commit": "1e154a2f6b9aeecbaacb7db5ed6b866603daee2c",
+        "source_blob": "f3e7d7dbf6789787d799430be74a05f67c671345",
+        "timeframe_min": 60,
+        "signal_rules": "SOURCE_EXACT_EMA800_COMPLETED_CLOSE_CROSSED_ABOVE_WITH_VOLUME_GT0",
+        "order_adapter": "DENSITY_PREFLIGHT_ONLY",
+    },
     CANDIDATE_ID: {
         "candidate_id": CANDIDATE_ID,
         "source_commit": SOURCE_COMMIT,
@@ -217,6 +226,8 @@ def profile_for(candidate_id: str) -> dict[str, Any]:
 def validate_activation(path: Path, head: str) -> dict[str, Any]:
     value = read_json(path)
     profile = profile_for(str(value.get("candidate_id", "")))
+    if "activation_token" not in profile:
+        raise ScreenError("DENSITY_ONLY_PROFILE_NO_ECONOMIC_ACTIVATION")
     required = {
         "schema": "zel.issue1388.alpha_screen_activation.v1",
         "issue": 1388,
@@ -257,6 +268,10 @@ def load_market(source_root: Path, profile: Mapping[str, Any] | None = None) -> 
     profile = profile or PROFILES[CANDIDATE_ID]
     if profile["candidate_id"] == BTC_SHOCK_ID and file_sha256(INTAKE_PATH.parent / "BTC_SHOCK_SOURCE_RECHECK.json") != profile["source_sha256"]:
         raise ScreenError("SOURCE_RULE_EVIDENCE_SNAPSHOT_DRIFT")
+    if profile["candidate_id"] == EMA800_ID:
+        if (file_sha256(INTAKE_PATH.parent / "EMA800_SOURCE.py") != "4bdf1cc26bb32bcae7b745c8d23482f39b73bcb0b1192a1b899f3362b0847df2"
+                or file_sha256(INTAKE_PATH.parent / "EMA800_LICENSE.txt") != "876b0759d6085f07dac04471968d31c3bab4f8d278845d2c0e4c3dc581e790c6"):
+            raise ScreenError("EMA800_LICENSED_SOURCE_DRIFT")
     if file_sha256(COST_PATH) != COST_SHA256:
         raise ScreenError("FROZEN_COST_FILE_DRIFT")
     timeframe_min = int(profile["timeframe_min"])
@@ -562,6 +577,22 @@ def btc_shock_signals(frame: pd.DataFrame) -> pd.Series:
     return (contiguous & log_return.lt(-0.015)).fillna(False)
 
 
+def ema800_entry_signals(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """Licensed exact entry census only; no exit, return or trailing simulation."""
+    if not {"close", "volume", "segment_id", "open_ts_ms"}.issubset(frame.columns):
+        raise ScreenError("EMA800_CENSUS_FIELDS_REQUIRED")
+    raw = pd.Series(False, index=frame.index)
+    ready = pd.Series(False, index=frame.index)
+    for _, part in frame.groupby("segment_id", sort=False, dropna=False):
+        if part.segment_id.isna().any() or (len(part) > 1 and not part.open_ts_ms.diff().iloc[1:].eq(3600000).all()):
+            raise ScreenError("EMA800_CENSUS_SEGMENT_GAP")
+        close = part["close"].astype(float)
+        ema = _ema_talib(close, 800)
+        ready.loc[part.index] = ema.notna()
+        raw.loc[part.index] = ((close > ema) & (close.shift(1) <= ema.shift(1)) & (part.volume > 0)).fillna(False)
+    return raw, ready
+
+
 def density_census(market: Mapping[str, Any], candidate_ids: list[str]) -> dict[str, Any]:
     """No-PnL preflight: signal/episode counts only; exits and future outcomes are forbidden."""
     days = (END_MS - START_MS) / 86_400_000
@@ -570,6 +601,7 @@ def density_census(market: Mapping[str, Any], candidate_ids: list[str]) -> dict[
         profile = profile_for(candidate_id)
         by_symbol: dict[str, Any] = {}
         raw_total = episode_total = 0
+        warmup_ready_by_symbol: dict[str, int] = {}
         for symbol in SYMBOLS:
             frame = market["frames"][symbol]
             in_window = (frame.open_ts_ms >= START_MS) & (frame.open_ts_ms < END_MS)
@@ -601,6 +633,11 @@ def density_census(market: Mapping[str, Any], candidate_ids: list[str]) -> dict[
                 episodes = _episode_starts(raw, frame)
             elif candidate_id == ETH_SESSION_ID:
                 raw, episodes = eth_session_decisions(frame)
+            elif candidate_id == EMA800_ID:
+                raw, ready = ema800_entry_signals(frame)
+                in_window &= frame.close_ts_ms.lt(END_MS) & frame.available_ts_ms.lt(END_MS)
+                episodes = raw.copy()
+                warmup_ready_by_symbol[symbol] = int((ready & in_window).sum())
             else:
                 raise ScreenError("DENSITY_CANDIDATE_UNSUPPORTED:" + candidate_id)
             raw_count = int((raw & in_window).sum())
@@ -634,6 +671,10 @@ def density_census(market: Mapping[str, Any], candidate_ids: list[str]) -> dict[
             candidate["episodes_per_day"] = by_symbol["ETH-USDT"]["episodes_per_day"]
             candidate["six_symbol_compatibility_transition_total"] = episode_total
             candidate["six_symbol_application"] = "DENSITY_COMPATIBILITY_ONLY; ECONOMIC_SCREEN_MUST_REMAIN_SOURCE_NATIVE_ETH"
+        if candidate_id == EMA800_ID:
+            candidate["source_native_overlap"] = {symbol: by_symbol[symbol] for symbol in ("BTC-USDT", "ETH-USDT", "XRP-USDT")}
+            candidate["six_symbol_application"] = "NATIVE_OVERLAP_BTC_ETH_XRP; SOL_DOGE_LINK_COMPATIBILITY_ONLY; NO_ECONOMIC_ADAPTER_READY"
+            candidate["warmup_ready_bars_by_symbol"] = warmup_ready_by_symbol
         candidates[candidate_id] = candidate
     value = {
         "schema": "zel.issue1388.signal_density_preflight.v1",

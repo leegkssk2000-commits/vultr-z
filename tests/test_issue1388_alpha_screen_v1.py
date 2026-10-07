@@ -601,3 +601,47 @@ def test_shock_missing_funding_blocks_both_economic_verdicts(monkeypatch, gross)
     assert result['disposition'] == 'BLOCKED_MISSING_FUNDING'
     assert result['funding_bps'] is None
     assert result['cost_1x']['Net_bps'] == gross - 14.0  # explicit scenario diagnostic only
+
+
+def test_btc_funding_archive_is_complete_and_hash_bound() -> None:
+    rows = screen.load_btc_funding()
+    assert len(rows) == 465
+    assert rows[0]['fundingTime'] == screen.START_MS
+    assert rows[-1]['fundingTime'] == screen.END_MS - 8 * 3600000
+    raw = screen.read_json(screen.INTAKE_PATH.parent / 'BTC_FUNDING_RAW.json')
+    raw['data'].pop()
+    with pytest.raises(screen.ScreenError, match='FIXED_WINDOW_COVERAGE'):
+        screen.validate_btc_funding(raw)
+
+
+def test_btc_funding_signed_mark_notional_and_adverse_boundary() -> None:
+    trade = {'entry_ts_ms':100, 'exit_ts_ms':300, 'entry_price':100.0}
+    rows = [{'fundingTime':100,'fundingRate':'0.001','markPrice':'100'},
+            {'fundingTime':200,'fundingRate':'-0.001','markPrice':'110'},
+            {'fundingTime':300,'fundingRate':'-0.002','markPrice':'120'}]
+    value, count = screen.funding_for_btc_trade(trade, rows)
+    assert value == pytest.approx(-1.0)  # boundary debit10 + interior credit-11; boundary credit omitted
+    assert count == 2
+    rows[-1]['fundingRate'] = '0.002'
+    value, count = screen.funding_for_btc_trade(trade, rows)
+    assert value == pytest.approx(23.0) and count == 3
+
+
+def test_btc_funding_remains_signed_when_taker_costs_are_stressed() -> None:
+    trades = [{'symbol':'BTC-USDT','exit_ts_ms':200,'gross_bps':100.0,'cost_bps':14.0,'funding_bps':-5.0}]
+    assert screen.summarize(trades,1)['Net_bps'] == 91.0
+    assert screen.summarize(trades,2)['Net_bps'] == 77.0
+    assert screen.summarize(trades,2)['Cost_bps'] == 23.0
+    assert screen.summarize(trades,2)['Funding_bps'] == -5.0
+
+
+def test_btc_bound_funding_resolves_only_cost_block_not_terminal(monkeypatch) -> None:
+    data = shock_frame()
+    trade = {'identity':screen.BTC_SHOCK_ID,'symbol':'BTC-USDT','entry_ts_ms':screen.START_MS+2*3600000,'exit_ts_ms':screen.START_MS+14*3600000,'entry_price':100.0,'gross_bps':-100.0,'cost_bps':14.0,'net_bps':-114.0}
+    monkeypatch.setattr(screen,'replay_btc_shock_symbol',lambda *args:([trade.copy()],1,0,0,0))
+    market = {'frames':{'BTC-USDT':data},'costs':{'BTC-USDT':14.0},'btc_funding':screen.load_btc_funding()}
+    result = screen.screen(market,screen.PROFILES[screen.BTC_SHOCK_ID])
+    assert result['disposition'] == 'REJECT_ECONOMIC_EARLY'
+    assert result['funding_bps'] is not None
+    monkeypatch.setattr(screen,'replay_btc_shock_symbol',lambda *args:([trade.copy()],2,0,1,0))
+    assert screen.screen(market,screen.PROFILES[screen.BTC_SHOCK_ID])['disposition'] == 'BLOCKED_TERMINAL_OUTCOME_UNRESOLVED'

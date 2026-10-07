@@ -48,6 +48,8 @@ SYMBOLS = ("BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "DOGE-USDT", "LINK-US
 CENDERAWASIH_ID = "E_MULTIMA_CENDERAWASIH_30M_V1"
 RSI_W1_ID = "R_PAPER_RSI_W1_30M_V1"
 BBAND_RSI_ID = "E_FT_BBAND_RSI_1H_V1"
+BTC_FUNDING_RAW_SHA256 = "e939345a319eb5a9de77fddf7330d7b2e4db20f60b9298f5f3527e99173239ff"
+BTC_FUNDING_RECEIPT_SHA256 = "f7e889a0c03727baceadc5e0a3cd050100330cfaa397c4aac2336abbd1c8a15c"
 ETH_SESSION_ID = "R_ETH_SESSION_REVERSAL_1H_V1"
 BTC_SHOCK_ID = "R_BTC_NEGATIVE_SHOCK_1H_V1"
 PROFILES: dict[str, dict[str, Any]] = {
@@ -278,7 +280,56 @@ def load_market(source_root: Path, profile: Mapping[str, Any] | None = None) -> 
     costs = read_json(COST_PATH)["costs_bps"]
     if set(costs) != set(SYMBOLS) or any(float(x) <= 0 for x in costs.values()):
         raise ScreenError("COST_PROFILE")
-    return {"frames": selected, "costs": costs}
+    market = {"frames": selected, "costs": costs}
+    if profile["candidate_id"] == BTC_SHOCK_ID:
+        market["btc_funding"] = load_btc_funding()
+    return market
+
+
+def validate_btc_funding(value: Mapping[str, Any]) -> list[dict[str, Any]]:
+    if value.get("code") != 0 or not isinstance(value.get("data"), list):
+        raise ScreenError("BTC_FUNDING_RESPONSE_SCHEMA")
+    rows = sorted(value["data"], key=lambda row: row.get("fundingTime", 0))
+    expected_times = list(range(START_MS, END_MS, 8 * 3600000))
+    if [row.get("fundingTime") for row in rows] != expected_times:
+        raise ScreenError("BTC_FUNDING_FIXED_WINDOW_COVERAGE")
+    for row in rows:
+        if row.get("symbol") != "BTC-USDT":
+            raise ScreenError("BTC_FUNDING_SYMBOL")
+        try:
+            rate, mark = float(row["fundingRate"]), float(row["markPrice"])
+        except (KeyError, TypeError, ValueError):
+            raise ScreenError("BTC_FUNDING_RATE_MARK_REQUIRED") from None
+        if not math.isfinite(rate) or not math.isfinite(mark) or mark <= 0:
+            raise ScreenError("BTC_FUNDING_RATE_MARK_INVALID")
+    return rows
+
+
+def load_btc_funding() -> list[dict[str, Any]]:
+    raw_path = INTAKE_PATH.parent / "BTC_FUNDING_RAW.json"
+    receipt_path = INTAKE_PATH.parent / "BTC_FUNDING_RECEIPT.json"
+    if file_sha256(raw_path) != BTC_FUNDING_RAW_SHA256 or file_sha256(receipt_path) != BTC_FUNDING_RECEIPT_SHA256:
+        raise ScreenError("BTC_FUNDING_INPUT_HASH_DRIFT")
+    receipt = read_json(receipt_path)
+    if receipt.get("raw_sha256") != BTC_FUNDING_RAW_SHA256 or receipt.get("period_ms") != [START_MS, END_MS]:
+        raise ScreenError("BTC_FUNDING_RECEIPT_BINDING")
+    return validate_btc_funding(read_json(raw_path))
+
+
+def funding_for_btc_trade(trade: Mapping[str, Any], rows: list[dict[str, Any]]) -> tuple[float, int]:
+    entry, exit_ = int(trade["entry_ts_ms"]), int(trade["exit_ts_ms"])
+    entry_price = float(trade["entry_price"])
+    funding = 0.0
+    count = 0
+    for row in rows:
+        timestamp = int(row["fundingTime"])
+        if entry <= timestamp <= exit_:
+            rate = float(row["fundingRate"])
+            # Receipt timing at exact funding boundary is unavailable: take the adverse bound.
+            if entry < timestamp < exit_ or rate > 0:
+                funding += rate * float(row["markPrice"]) / entry_price * 10000
+                count += 1
+    return funding, count
 
 
 def aggregate_30m_to_1h(frame: pd.DataFrame) -> pd.DataFrame:
@@ -1013,9 +1064,11 @@ def replay_btc_shock_symbol(
 
 def summarize(trades: list[dict[str, Any]], multiplier: int) -> dict[str, Any]:
     days = (END_MS - START_MS) / 86_400_000
-    nets = [float(t["gross_bps"]) - multiplier * float(t["cost_bps"]) for t in trades]
+    nets = [float(t["gross_bps"]) - multiplier * float(t["cost_bps"]) - float(t.get("funding_bps", 0.0)) for t in trades]
     gross = sum(float(t["gross_bps"]) for t in trades)
-    cost = multiplier * sum(float(t["cost_bps"]) for t in trades)
+    trading_cost = multiplier * sum(float(t["cost_bps"]) for t in trades)
+    funding = sum(float(t.get("funding_bps", 0.0)) for t in trades)
+    cost = trading_cost + funding
     wins = [x for x in nets if x > 0]
     losses = [x for x in nets if x < 0]
     equity = 0.0
@@ -1035,6 +1088,8 @@ def summarize(trades: list[dict[str, Any]], multiplier: int) -> dict[str, Any]:
         "T": len(trades), "T_per_day": len(trades) / days,
         "WR_pct": 100 * len(wins) / len(trades) if trades else 0.0,
         "Gross_bps": gross, "Cost_bps": cost, "Net_bps": gross - cost,
+        "ExplicitTradingCost_bps": trading_cost,
+        "Funding_bps": funding if trades and all("funding_bps" in t for t in trades) else None,
         "GrossExp_bps_T": gross / len(trades) if trades else None,
         "CostExp_bps_T": cost / len(trades) if trades else None,
         "NetExp_bps_T": (gross - cost) / len(trades) if trades else None,
@@ -1073,6 +1128,11 @@ def screen(market: Mapping[str, Any], profile: Mapping[str, Any] | None = None) 
         occupied += rejected
         unresolved += open_count
         gap_quarantined += quarantined
+    if profile["candidate_id"] == BTC_SHOCK_ID and "btc_funding" in market:
+        for trade in all_trades:
+            signed_funding, settlements = funding_for_btc_trade(trade, market["btc_funding"])
+            trade.update(funding_bps=signed_funding, funding_settlements=settlements,
+                         net_bps=trade["gross_bps"] - trade["cost_bps"] - signed_funding)
     all_trades.sort(key=lambda row: (row["exit_ts_ms"], row["symbol"]))
     one, two = summarize(all_trades, 1), summarize(all_trades, 2)
     if gap_quarantined:
@@ -1095,12 +1155,14 @@ def screen(market: Mapping[str, Any], profile: Mapping[str, Any] | None = None) 
         "order_authority": "BLOCKED", "exchange_order_submitted": False, "promotion": False,
     }
     if profile["candidate_id"] == BTC_SHOCK_ID:
-        if value["disposition"] in ("SCREEN_SURVIVOR_PENDING_FULL", "REJECT_ECONOMIC_EARLY"):
+        if "btc_funding" not in market and value["disposition"] in ("SCREEN_SURVIVOR_PENDING_FULL", "REJECT_ECONOMIC_EARLY"):
             # Funding credits as well as debits can change the costed verdict.
             value["disposition"] = "BLOCKED_MISSING_FUNDING"
         value.update(source_hash_kind="RULE_EVIDENCE_SNAPSHOT_NOT_PDF", source_replication=False,
-                     funding_bps=None, mark_account_NAV=None,
-                     economics_profile="EXPLICIT_TAKER_COST_SCENARIO_FUNDING_UNVERIFIED")
+                     funding_bps=one["Funding_bps"] if "btc_funding" in market else None, mark_account_NAV=None,
+                     funding_source_sha256=BTC_FUNDING_RAW_SHA256 if "btc_funding" in market else None,
+                     funding_model="OBSERVED_RATE_MARK_FIXED_QUANTITY_ADVERSE_BOUNDARY" if "btc_funding" in market else "UNKNOWN",
+                     economics_profile="EXPLICIT_TAKER_COST_SCENARIO_WITH_SIGNED_OBSERVED_FUNDING" if "btc_funding" in market else "EXPLICIT_TAKER_COST_SCENARIO_FUNDING_UNVERIFIED")
     return {**value, "result_sha256": digest(value)}
 
 
@@ -1141,6 +1203,8 @@ def execute(source_root: Path, activation_path: Path, output_dir: Path) -> dict[
     receipt = source_receipt(market, profile)
     if profile["candidate_id"] == BTC_SHOCK_ID:
         validate_btc_preflight(activation, receipt)
+        if activation.get("funding_raw_sha256") != BTC_FUNDING_RAW_SHA256 or activation.get("funding_receipt_sha256") != BTC_FUNDING_RECEIPT_SHA256:
+            raise ScreenError("BTC_FUNDING_ACTIVATION_BINDING")
     start = {
         "schema": "zel.issue1388.alpha_screen_start.v1", "issue": 1388,
         "candidate_id": profile["candidate_id"], "state": "STARTED_AFTER_INPUT_VALIDATION_BEFORE_SIGNAL_COMPUTE",
@@ -1148,10 +1212,18 @@ def execute(source_root: Path, activation_path: Path, output_dir: Path) -> dict[
         "activation_sha256": digest(activation), "period_ms": [START_MS, END_MS],
         "global_heavy_group": GLOBAL_HEAVY_GROUP, "order_authority": "BLOCKED",
     }
+    if profile["candidate_id"] == BTC_SHOCK_ID:
+        start.update(funding_raw_sha256=BTC_FUNDING_RAW_SHA256, funding_receipt_sha256=BTC_FUNDING_RECEIPT_SHA256)
     start_commit = create_record(profile["execution_ref"], "STARTED.json", start, head)
     output_dir.mkdir(parents=True)
     write_once(output_dir / "SOURCE_RECEIPT.json", receipt)
     write_once(output_dir / "STARTED.json", {**start, "execution_commit_sha": start_commit})
+    if profile["candidate_id"] == BTC_SHOCK_ID:
+        for filename in ("BTC_FUNDING_RAW.json", "BTC_FUNDING_RECEIPT.json"):
+            with (output_dir / filename).open("xb") as handle:
+                handle.write((INTAKE_PATH.parent / filename).read_bytes())
+                handle.flush()
+                os.fsync(handle.fileno())
     result = screen(market, profile)
     write_once(output_dir / "RESULT.json", result)
     audited = read_json(output_dir / "RESULT.json")

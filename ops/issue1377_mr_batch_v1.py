@@ -1,16 +1,20 @@
 """Bounded parent/child development comparison for Issue 1377.
 
-The module has no order, promotion, or retry authority.  It will not generate
-an opportunity until an immutable approval and a non-retryable two-instance
-claim bind the reviewed source, protocol, input inventory, rule, cost and
-calendar.  Historical bars are modeled bar-close research evidence only.
+The module has no order, promotion, or retry authority.  V8 replaces the old
+approval -> claim -> consumption administration for this *one* development
+comparison with a single permanent start record.  The record is created only
+after the real source, cost, calendar and reviewed source have been verified,
+and before either model is evaluated.  Historical bars are modeled bar-close
+research evidence only.
 """
 
 from __future__ import annotations
 
+import argparse
 import base64
 import hashlib
 import json
+import math
 import os
 import subprocess
 from pathlib import Path
@@ -43,6 +47,21 @@ CLAIM_REF = "refs/heads/research-execution-claims/issue1377-mr-20261007-v1"
 CONSUMPTION_REF = (
     "refs/heads/research-execution-consumptions/issue1377-mr-20261007-v1"
 )
+V8_COMMENT_ID = 6_029_066_402
+V8_TOKEN = "[issue1377-mr-v8-once-20261007T0210Z-7631c9a]"
+V8_ACTIVATION_PATH = ROOT / (
+    "research/campaigns/scalp7_20261006/issue1377_keltner_orthogonal_v1/"
+    "V8_EXECUTION_ACTIVATION.json"
+)
+V8_EXECUTION_REF = (
+    "refs/heads/research-execution-consumptions/issue1377-mr-v8-20261007-v1"
+)
+V8_RESULT_REFS = {
+    "N_PARENT": "refs/heads/research-results/issue1377-mr-v8-parent-20261007-v1",
+    "N_CANDIDATE": "refs/heads/research-results/issue1377-mr-v8-candidate-20261007-v1",
+    "COMPARISON": "refs/heads/research-results/issue1377-mr-v8-comparison-20261007-v1",
+}
+GLOBAL_HEAVY_GROUP = "a1-global-heavy-economic-evaluator-v1"
 CLASSIFICATION = "DEVELOPMENT_ONLY_ALREADY_INSPECTED_NOT_FRESH_NOT_OOS"
 
 
@@ -126,7 +145,7 @@ def github_create(
             value = json.load(response)
     except HTTPError as exc:
         if route == "/git/refs" and exc.code == 422:
-            raise Issue1377Error("CLAIM_ALREADY_CONSUMED_NO_RETRY") from None
+            raise Issue1377Error("PERMANENT_REF_ALREADY_EXISTS_NO_RETRY") from None
         raise Issue1377Error("GITHUB_CREATE_HTTP_" + str(exc.code)) from None
     if not isinstance(value, dict):
         raise Issue1377Error("GITHUB_OBJECT_REQUIRED")
@@ -224,6 +243,228 @@ def current_head() -> str:
     if not _commit(head):
         raise Issue1377Error("EXECUTING_CHECKOUT_COMMIT")
     return head
+
+
+def _workflow_activation() -> dict[str, str]:
+    activation = {
+        "github_run_id": os.environ.get("GITHUB_RUN_ID", ""),
+        "github_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+        "github_job": os.environ.get("GITHUB_JOB", ""),
+        "github_sha": os.environ.get("GITHUB_SHA", ""),
+    }
+    if (
+        not all(activation.values())
+        or activation["github_run_attempt"] != "1"
+        or not _commit(activation["github_sha"])
+        or os.environ.get("GITHUB_EVENT_NAME") != "push"
+        or os.environ.get("ISSUE1377_GLOBAL_HEAVY_GROUP") != GLOBAL_HEAVY_GROUP
+    ):
+        raise Issue1377Error("V8_WORKFLOW_ACTIVATION_PROFILE")
+    return activation
+
+
+def validate_v8_activation(
+    value: Mapping[str, Any], manifest: Mapping[str, Any]
+) -> dict[str, Any]:
+    required = {
+        "schema": "zel.issue1377.mr_v8_activation.v1",
+        "issue": 1377,
+        "v8_comment_id": V8_COMMENT_ID,
+        "token": V8_TOKEN,
+        "reviewed_source_sha": manifest.get("reviewed_source_sha"),
+        "protocol_sha256": manifest.get("protocol_sha256"),
+        "source_inventory_sha256": SOURCE_INVENTORY_SHA256,
+        "rule_sha256": RULE_SHA256,
+        "cost_sha256": COST_SHA256,
+        "period_ms": [START_MS, END_MS],
+        "instance_ids": list(INSTANCE_IDS),
+        "economic_instances": 2,
+        "global_heavy_group": GLOBAL_HEAVY_GROUP,
+        "order_authority": "BLOCKED",
+        "promotion": False,
+    }
+    for key, expected in required.items():
+        if value.get(key) != expected:
+            raise Issue1377Error("V8_ACTIVATION_BINDING:" + key)
+    source_files = value.get("source_files_sha256")
+    expected_files = {
+        "ops/issue1377_mr_batch_v1.py",
+        ".github/workflows/issue1377-keltner-orthogonal-v1.yml",
+        "tests/test_issue1377_mr_batch_v1.py",
+    }
+    if not isinstance(source_files, Mapping) or set(source_files) != expected_files:
+        raise Issue1377Error("V8_ACTIVATION_SOURCE_FILE_SET")
+    for relative, expected in source_files.items():
+        if not isinstance(expected, str) or len(expected) != 64:
+            raise Issue1377Error("V8_ACTIVATION_SOURCE_FILE_HASH_PROFILE")
+        if file_sha256(ROOT / relative) != expected:
+            raise Issue1377Error("V8_ACTIVATION_SOURCE_FILE_DRIFT:" + relative)
+    return dict(value)
+
+
+def source_receipt(market: Mapping[str, Any]) -> dict[str, Any]:
+    frames = market["frames"]
+    costs = market["costs"]
+    rows: dict[str, Any] = {}
+    inventory_hashes = set()
+    for symbol in rules.PARENT_SYMBOLS:
+        frame = frames[symbol]
+        inventory_hashes.add(frame.attrs.get("source_inventory_sha256"))
+        rows[symbol] = {
+            "rows_30m": len(frame),
+            "first_open_ts_ms": int(frame.iloc[0].open_ts_ms),
+            "last_open_ts_ms": int(frame.iloc[-1].open_ts_ms),
+            "last_close_ts_ms": int(frame.iloc[-1].close_ts_ms),
+            "first_available_ts_ms": int(frame.iloc[0].available_ts_ms),
+            "last_available_ts_ms": int(frame.iloc[-1].available_ts_ms),
+            "minute_gap_count": len(frame.attrs.get("minute_gaps", [])),
+            "incomplete_bucket_count": len(frame.attrs.get("incomplete_buckets", [])),
+        }
+    if inventory_hashes != {SOURCE_INVENTORY_SHA256}:
+        raise Issue1377Error("SOURCE_RECEIPT_INVENTORY_DRIFT")
+    if set(costs) != set(rules.PARENT_SYMBOLS) or any(
+        not math.isfinite(float(value)) or float(value) <= 0 for value in costs.values()
+    ):
+        raise Issue1377Error("SOURCE_RECEIPT_COST_PROFILE")
+    value = {
+        "schema": "zel.issue1377.mr_source_receipt.v1",
+        "source_inventory_sha256": SOURCE_INVENTORY_SHA256,
+        "cost_sha256": COST_SHA256,
+        "timeframe_min": 30,
+        "period_ms": [START_MS, END_MS],
+        "warmup_start_ms": START_MS - WARMUP_MS,
+        "symbols": list(rules.PARENT_SYMBOLS),
+        "frames": rows,
+        "costs_bps": {symbol: float(costs[symbol]) for symbol in rules.PARENT_SYMBOLS},
+        "clock_profile": "MODELED_BAR_CLOSE_NOT_OBSERVED_HISTORICAL_DELIVERY",
+        "actual_historical_receipt_time": "UNAVAILABLE_NOT_INFERRED",
+        "order_authority": "BLOCKED",
+    }
+    return {**value, "receipt_sha256": digest(value)}
+
+
+def _create_single_file_ref(
+    *,
+    ref_name: str,
+    filename: str,
+    value: Mapping[str, Any],
+    parent_sha: str,
+    message: str,
+    api: Callable[[str, str, Mapping[str, Any]], Mapping[str, Any]],
+) -> str:
+    if not _commit(parent_sha):
+        raise Issue1377Error("PERMANENT_REF_PARENT_PROFILE")
+    raw = canonical_bytes(value)
+    expected_blob = _git_blob_sha(raw)
+    blob = api(
+        "POST",
+        "/git/blobs",
+        {"content": base64.b64encode(raw).decode(), "encoding": "base64"},
+    )
+    if blob.get("sha") != expected_blob:
+        raise Issue1377Error("PERMANENT_REF_BLOB_CREATE_MISMATCH")
+    tree = api(
+        "POST",
+        "/git/trees",
+        {
+            "tree": [
+                {
+                    "path": filename,
+                    "mode": "100644",
+                    "type": "blob",
+                    "sha": expected_blob,
+                }
+            ]
+        },
+    )
+    if not _commit(tree.get("sha")):
+        raise Issue1377Error("PERMANENT_REF_TREE_CREATE")
+    commit = api(
+        "POST",
+        "/git/commits",
+        {"message": message, "tree": tree["sha"], "parents": [parent_sha]},
+    )
+    if not _commit(commit.get("sha")):
+        raise Issue1377Error("PERMANENT_REF_COMMIT_CREATE")
+    created = api("POST", "/git/refs", {"ref": ref_name, "sha": commit["sha"]})
+    if created.get("ref") != ref_name or created.get("object", {}).get("sha") != commit["sha"]:
+        raise Issue1377Error("PERMANENT_REF_CREATE_READBACK")
+    return str(commit["sha"])
+
+
+def atomic_start_v8(
+    manifest: Mapping[str, Any],
+    receipt: Mapping[str, Any],
+    activation_document: Mapping[str, Any],
+    api: Callable[[str, str, Mapping[str, Any]], Mapping[str, Any]] = github_create,
+) -> dict[str, Any]:
+    activation = _workflow_activation()
+    value = {
+        "schema": "zel.issue1377.mr_v8_execution.v1",
+        "issue": 1377,
+        "state": "STARTED_NONRETRYABLE_AFTER_INPUT_VALIDATION_BEFORE_COMPUTE",
+        "v8_comment_id": V8_COMMENT_ID,
+        "execution_ref": V8_EXECUTION_REF,
+        "reviewed_source_sha": manifest["reviewed_source_sha"],
+        "manifest_sha256": manifest["manifest_sha256"],
+        "source_receipt_sha256": receipt["receipt_sha256"],
+        "protocol_sha256": manifest["protocol_sha256"],
+        "source_inventory_sha256": SOURCE_INVENTORY_SHA256,
+        "rule_sha256": RULE_SHA256,
+        "cost_sha256": COST_SHA256,
+        "period_ms": [START_MS, END_MS],
+        "instance_ids": list(INSTANCE_IDS),
+        "economic_instances": 2,
+        "activation_commit_sha": activation["github_sha"],
+        "activation": activation,
+        "activation_document_sha256": digest(dict(activation_document)),
+        "global_heavy_group": GLOBAL_HEAVY_GROUP,
+        "global_heavy_exclusive": True,
+        "order_authority": "BLOCKED",
+        "promotion": False,
+    }
+    commit_sha = _create_single_file_ref(
+        ref_name=V8_EXECUTION_REF,
+        filename="STARTED.json",
+        value=value,
+        parent_sha=manifest["reviewed_source_sha"],
+        message="Issue1377 record V8 MR comparison start",
+        api=api,
+    )
+    return {**value, "execution_commit_sha": commit_sha}
+
+
+def persist_v8_result(
+    result_id: str,
+    value: Mapping[str, Any],
+    start: Mapping[str, Any],
+    api: Callable[[str, str, Mapping[str, Any]], Mapping[str, Any]] = github_create,
+) -> dict[str, Any]:
+    if result_id not in V8_RESULT_REFS:
+        raise Issue1377Error("V8_RESULT_ID")
+    envelope = {
+        "schema": "zel.issue1377.mr_v8_persisted_result.v1",
+        "issue": 1377,
+        "result_id": result_id,
+        "execution_ref": V8_EXECUTION_REF,
+        "execution_commit_sha": start["execution_commit_sha"],
+        "reviewed_source_sha": start["reviewed_source_sha"],
+        "manifest_sha256": start["manifest_sha256"],
+        "activation": start["activation"],
+        "result": dict(value),
+        "order_authority": "BLOCKED",
+        "promotion": False,
+    }
+    envelope = {**envelope, "envelope_sha256": digest(envelope)}
+    commit_sha = _create_single_file_ref(
+        ref_name=V8_RESULT_REFS[result_id],
+        filename=result_id + ".json",
+        value=envelope,
+        parent_sha=start["execution_commit_sha"],
+        message="Issue1377 persist V8 " + result_id,
+        api=api,
+    )
+    return {**envelope, "result_commit_sha": commit_sha}
 
 
 def _activation(claim: Mapping[str, Any]) -> dict[str, str]:
@@ -503,9 +744,35 @@ def _paired(parent: Mapping[str, Any], child: Mapping[str, Any]) -> dict[str, An
     }
 
 
-def compare(market: Mapping[str, Any], manifest: Mapping[str, Any]) -> dict[str, Any]:
-    parent = _run_identity(PARENT, market)
-    child = _run_identity(CANDIDATE, market)
+def _paired_at_cost(
+    parent: Mapping[str, Any], child: Mapping[str, Any], multiplier: int
+) -> dict[str, Any]:
+    parent_rows = {_key(row): row for row in parent["trades"]}
+    child_rows = {_key(row): row for row in child["trades"]}
+    parent_winners = {
+        key
+        for key, row in parent_rows.items()
+        if float(row["gross_bps"]) - multiplier * float(row["cost_bps"]) > 0
+    }
+    child_winners = {
+        key
+        for key, row in child_rows.items()
+        if float(row["gross_bps"]) - multiplier * float(row["cost_bps"]) > 0
+    }
+    common = set(parent_rows) & set(child_rows)
+    return {
+        "cost_multiplier": multiplier,
+        "parent_winners": len(parent_winners),
+        "parent_winners_preserved_positive": len(parent_winners & child_winners),
+        "parent_winners_harmed_nonpositive": len((parent_winners & common) - child_winners),
+        "parent_winners_missed": len(parent_winners - set(child_rows)),
+        "candidate_only_winners": len(child_winners - set(parent_rows)),
+    }
+
+
+def comparison_from_instances(
+    parent: Mapping[str, Any], child: Mapping[str, Any], manifest: Mapping[str, Any]
+) -> dict[str, Any]:
     value = {
         "schema": "zel.issue1377.mr_comparison_result.v1",
         "issue": 1377,
@@ -515,11 +782,24 @@ def compare(market: Mapping[str, Any], manifest: Mapping[str, Any]) -> dict[str,
         "period_ms": [START_MS, END_MS],
         "instances": {"N_PARENT": parent, "N_CANDIDATE": child},
         "paired": _paired(parent, child),
+        "paired_by_cost": {
+            "1x": _paired_at_cost(parent, child, 1),
+            "2x": _paired_at_cost(parent, child, 2),
+        },
         "fresh_oos": False,
         "order_authority": "BLOCKED",
         "promotion": False,
     }
     return {**value, "result_sha256": digest(value)}
+
+
+def compare(market: Mapping[str, Any], manifest: Mapping[str, Any]) -> dict[str, Any]:
+    """Fixture convenience only; production V8 calls each model separately once."""
+    return comparison_from_instances(
+        _run_identity(PARENT, market),
+        _run_identity(CANDIDATE, market),
+        manifest,
+    )
 
 
 def audit_result(path: Path, manifest: Mapping[str, Any]) -> dict[str, Any]:
@@ -585,27 +865,231 @@ def audit_result(path: Path, manifest: Mapping[str, Any]) -> dict[str, Any]:
     )
     if value.get("paired") != expected_paired:
         raise Issue1377Error("SAVED_PAIRED_MISMATCH")
+    expected_by_cost = {
+        "1x": _paired_at_cost(
+            value["instances"]["N_PARENT"], value["instances"]["N_CANDIDATE"], 1
+        ),
+        "2x": _paired_at_cost(
+            value["instances"]["N_PARENT"], value["instances"]["N_CANDIDATE"], 2
+        ),
+    }
+    if value.get("paired_by_cost") != expected_by_cost:
+        raise Issue1377Error("SAVED_PAIRED_COST_MISMATCH")
     return {"state": "PASS_SAVED_CENSUS_AND_ACCOUNTING", "result_sha256": supplied}
 
 
-def execute(
-    output: Path,
+def instance_result(
+    instance_id: str, identity: str, market: Mapping[str, Any], manifest: Mapping[str, Any]
+) -> dict[str, Any]:
+    instance = _run_identity(identity, market)
+    value = {
+        "schema": "zel.issue1377.mr_instance_result.v1",
+        "issue": 1377,
+        "instance_id": instance_id,
+        "manifest_sha256": manifest["manifest_sha256"],
+        "classification": CLASSIFICATION,
+        "clock_profile": "MODELED_BAR_CLOSE_NOT_OBSERVED_HISTORICAL_DELIVERY",
+        "period_ms": [START_MS, END_MS],
+        "instance": instance,
+        "fresh_oos": False,
+        "order_authority": "BLOCKED",
+        "promotion": False,
+    }
+    return {**value, "result_sha256": digest(value)}
+
+
+def audit_instance_result(
+    path: Path, instance_id: str, identity: str, manifest: Mapping[str, Any]
+) -> dict[str, Any]:
+    value = read_json(path)
+    supplied = value.pop("result_sha256", None)
+    if supplied != digest(value):
+        raise Issue1377Error("SAVED_INSTANCE_RESULT_HASH_MISMATCH")
+    expected = {
+        "schema": "zel.issue1377.mr_instance_result.v1",
+        "issue": 1377,
+        "instance_id": instance_id,
+        "manifest_sha256": manifest["manifest_sha256"],
+        "classification": CLASSIFICATION,
+        "clock_profile": "MODELED_BAR_CLOSE_NOT_OBSERVED_HISTORICAL_DELIVERY",
+        "period_ms": [START_MS, END_MS],
+        "fresh_oos": False,
+        "order_authority": "BLOCKED",
+        "promotion": False,
+    }
+    for key, expected_value in expected.items():
+        if value.get(key) != expected_value:
+            raise Issue1377Error("SAVED_INSTANCE_PROFILE_MISMATCH:" + key)
+    instance = value.get("instance")
+    if not isinstance(instance, Mapping) or instance.get("identity") != identity:
+        raise Issue1377Error("SAVED_INSTANCE_IDENTITY_MISMATCH:" + instance_id)
+    for multiplier, name in ((1, "cost_1x"), (2, "cost_2x")):
+        if metrics.summarize(instance["trades"], START_MS, END_MS, multiplier) != instance[name]:
+            raise Issue1377Error("SAVED_INSTANCE_ACCOUNTING_MISMATCH:" + name)
+    expected_census = {
+        "signals": len(instance["signals"]),
+        "completed": len(instance["trades"]),
+        "unresolved": len(instance["unresolved"]),
+        "rejected": sum(instance["rejections"].values()),
+        "rejection_reasons": instance["rejections"],
+    }
+    if instance.get("census") != expected_census:
+        raise Issue1377Error("SAVED_INSTANCE_CENSUS_MISMATCH")
+    return {"state": "PASS_SAVED_INSTANCE", "result_sha256": supplied}
+
+
+def economic_table(comparison: Mapping[str, Any]) -> dict[str, Any]:
+    parent = comparison["instances"]["N_PARENT"]
+    child = comparison["instances"]["N_CANDIDATE"]
+
+    def row(instance: Mapping[str, Any]) -> dict[str, Any]:
+        one, two = instance["cost_1x"], instance["cost_2x"]
+        return {
+            "identity": instance["identity"],
+            "T": one["T"],
+            "T_per_day": one["T_per_day"],
+            "WR_1x_pct": one["WR_pct"],
+            "WR_2x_pct": two["WR_pct"],
+            "Gross_bps": one["Gross_bps"],
+            "Cost_1x_bps": one["Cost_bps"],
+            "Cost_2x_bps": two["Cost_bps"],
+            "Net_1x_bps": one["Net_bps"],
+            "Net_2x_bps": two["Net_bps"],
+            "Net_1x_bps_per_trade": one["NetExp_bps_T"],
+            "Net_2x_bps_per_trade": two["NetExp_bps_T"],
+            "Net_1x_bps_per_day": one["Net_bps"] / one["calendar_days"],
+            "Net_2x_bps_per_day": two["Net_bps"] / two["calendar_days"],
+            "PF_1x": one["PF"],
+            "PF_2x": two["PF"],
+            "DD_1x_bps": one["DD_bps"],
+            "DD_2x_bps": two["DD_bps"],
+            "DD_kind": one["DD_kind"],
+            "MaxLossStreak_1x": one["MaxLossStreak"],
+            "MaxLossStreak_2x": two["MaxLossStreak"],
+            "concentration_1x": one["concentration"],
+            "concentration_2x": two["concentration"],
+            "signals": instance["census"]["signals"],
+            "rejected_or_unfilled": instance["census"]["rejected"],
+            "unresolved": instance["census"]["unresolved"],
+        }
+
+    parent_1, parent_2 = parent["cost_1x"], parent["cost_2x"]
+    child_1, child_2 = child["cost_1x"], child["cost_2x"]
+    keep = bool(
+        child_1["T"] > 0
+        and child_1["Net_bps"] > 0
+        and child_2["Net_bps"] > 0
+        and child_1["PF"] is not None
+        and child_2["PF"] is not None
+        and child_1["PF"] > 1
+        and child_2["PF"] > 1
+        and child_1["Net_bps"] > parent_1["Net_bps"]
+        and child_2["Net_bps"] > parent_2["Net_bps"]
+        and child_2["DD_bps"] <= parent_2["DD_bps"]
+    )
+    value = {
+        "schema": "zel.issue1377.mr_economic_table.v1",
+        "issue": 1377,
+        "classification": CLASSIFICATION,
+        "manifest_sha256": comparison["manifest_sha256"],
+        "models": {"N_PARENT": row(parent), "N_CANDIDATE": row(child)},
+        "paired": comparison["paired"],
+        "paired_by_cost": comparison["paired_by_cost"],
+        "fixed_disposition_rule": (
+            "KEEP only if candidate has T>0, Net1x>0, Net2x>0, PF1x>1, PF2x>1, "
+            "both Net views improve parent, and 2x realized DD does not worsen; otherwise REJECT"
+        ),
+        "disposition": (
+            "KEEP_DEVELOPMENT_ONLY_NOT_G5_NOT_OOS"
+            if keep
+            else "REJECT_FROZEN_CANDIDATE"
+        ),
+        "order_authority": "BLOCKED",
+        "promotion": False,
+    }
+    return {**value, "table_sha256": digest(value)}
+
+
+def execute_v8(
+    output_dir: Path,
+    activation_path: Path,
     source_root: Path = SOURCE_ROOT,
     *,
-    api: Callable[[str, str], Mapping[str, Any]] = github,
+    create_api: Callable[
+        [str, str, Mapping[str, Any]], Mapping[str, Any]
+    ] = github_create,
 ) -> dict[str, Any]:
     head = current_head()
     manifest = build_manifest(head, SOURCE_INVENTORY_SHA256)
-    approval = verified_approval(api)
-    claim = verified_claim(api)
-    if approval.get("reviewed_source_sha") != head:
-        raise Issue1377Error("EXECUTING_CHECKOUT_NOT_REVIEWED_SOURCE")
-    validate_authority(manifest, approval, claim)
-    if output.exists():
-        raise Issue1377Error("RESULT_ALREADY_EXISTS_NO_RETRY")
-    atomic_consume_claim(claim, manifest)
+    activation_document = validate_v8_activation(read_json(activation_path), manifest)
+    if output_dir.exists():
+        raise Issue1377Error("OUTPUT_DIRECTORY_ALREADY_EXISTS_NO_RETRY")
+
+    # V8 requires full real-source validation before consuming the one allowed
+    # comparison.  load_market forms no signal and invokes neither model.
     market = load_market(source_root)
-    result = compare(market, manifest)
-    write_once(output, result)
-    audit_result(output, manifest)
-    return result
+    receipt = source_receipt(market)
+    start = atomic_start_v8(
+        manifest, receipt, activation_document, api=create_api
+    )
+
+    output_dir.mkdir(parents=True, exist_ok=False)
+    write_once(output_dir / "MANIFEST.json", manifest)
+    write_once(output_dir / "SOURCE_RECEIPT.json", receipt)
+    write_once(output_dir / "EXECUTION_STARTED.json", start)
+
+    parent_result = instance_result("N_PARENT", PARENT, market, manifest)
+    parent_path = output_dir / "N_PARENT.json"
+    write_once(parent_path, parent_result)
+    audit_instance_result(parent_path, "N_PARENT", PARENT, manifest)
+    parent_persisted = persist_v8_result(
+        "N_PARENT", parent_result, start, api=create_api
+    )
+    write_once(output_dir / "N_PARENT_PERSISTED.json", parent_persisted)
+
+    candidate_result = instance_result("N_CANDIDATE", CANDIDATE, market, manifest)
+    candidate_path = output_dir / "N_CANDIDATE.json"
+    write_once(candidate_path, candidate_result)
+    audit_instance_result(candidate_path, "N_CANDIDATE", CANDIDATE, manifest)
+    candidate_persisted = persist_v8_result(
+        "N_CANDIDATE", candidate_result, start, api=create_api
+    )
+    write_once(output_dir / "N_CANDIDATE_PERSISTED.json", candidate_persisted)
+
+    comparison = comparison_from_instances(
+        parent_result["instance"], candidate_result["instance"], manifest
+    )
+    comparison_path = output_dir / "COMPARISON.json"
+    write_once(comparison_path, comparison)
+    audit_result(comparison_path, manifest)
+    comparison_persisted = persist_v8_result(
+        "COMPARISON", comparison, start, api=create_api
+    )
+    write_once(output_dir / "COMPARISON_PERSISTED.json", comparison_persisted)
+
+    table = economic_table(comparison)
+    write_once(output_dir / "ECONOMIC_TABLE.json", table)
+    return {
+        "state": "COMPLETE_TWO_INSTANCES_PERSISTED_AND_AUDITED",
+        "execution_commit_sha": start["execution_commit_sha"],
+        "parent_result_sha256": parent_result["result_sha256"],
+        "candidate_result_sha256": candidate_result["result_sha256"],
+        "comparison_result_sha256": comparison["result_sha256"],
+        "economic_table_sha256": table["table_sha256"],
+        "disposition": table["disposition"],
+        "economic_table": table,
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--source-root", type=Path, default=SOURCE_ROOT)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--activation", type=Path, required=True)
+    args = parser.parse_args()
+    result = execute_v8(args.output_dir, args.activation, args.source_root)
+    print(json.dumps(result, sort_keys=True, allow_nan=False))
+
+
+if __name__ == "__main__":
+    main()

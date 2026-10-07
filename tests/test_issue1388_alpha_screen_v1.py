@@ -24,6 +24,7 @@ def frame(rows: int = 500) -> pd.DataFrame:
             "open_ts_ms": start + i * 900_000,
             "close_ts_ms": start + (i + 1) * 900_000,
             "available_ts_ms": start + (i + 1) * 900_000,
+            "segment_id": "A",
             "open": open_, "high": open_ * 1.004, "low": open_ * 0.996,
             "close": open_, "volume": 1.0,
         })
@@ -35,7 +36,7 @@ def test_signals_are_past_only_and_entry_is_next_open() -> None:
     entry, _ = screen.signals(data)
     indexes = list(data.index[entry])
     assert indexes
-    trades, _, _ = screen.replay_symbol("BTC-USDT", data, 10.0)
+    trades, _, _, _ = screen.replay_symbol("BTC-USDT", data, 10.0)
     if trades:
         first = trades[0]
         assert first["entry_ts_ms"] >= first["signal_available_ts_ms"]
@@ -54,7 +55,7 @@ def test_same_bar_stop_precedes_roi() -> None:
             candidate.loc[211, "high"] = 1000.0
             return entry, exit_
         screen.signals = fixed
-        trades, _, _ = screen.replay_symbol("BTC-USDT", data, 10.0)
+        trades, _, _, _ = screen.replay_symbol("BTC-USDT", data, 10.0)
         assert trades[0]["exit_reason"] == "STOP_FIRST"
     finally:
         screen.signals = original
@@ -72,11 +73,32 @@ def test_end_position_is_unresolved_not_forced_closed() -> None:
             entry.iloc[-2] = True
             return entry, exit_
         screen.signals = last
-        trades, _, unresolved = screen.replay_symbol("BTC-USDT", data, 10.0)
+        trades, _, unresolved, _ = screen.replay_symbol("BTC-USDT", data, 10.0)
         assert not trades and unresolved == 1
     finally:
         screen.END_MS = original_end
         screen.signals = original
+
+
+def test_gap_resets_indicators_and_quarantines_open_position() -> None:
+    data = frame(320)
+    data.loc[212:, "segment_id"] = "B"
+    original = screen.signals
+    try:
+        def fixed(candidate):
+            entry = pd.Series(False, index=candidate.index)
+            exit_ = pd.Series(False, index=candidate.index)
+            entry.iloc[210] = True
+            return entry, exit_
+        screen.signals = fixed
+        trades, _, unresolved, quarantined = screen.replay_symbol("BTC-USDT", data, 10.0)
+        assert not trades and unresolved == 0 and quarantined == 1
+    finally:
+        screen.signals = original
+
+    actual_entry, _ = screen.signals(data)
+    isolated_entry, _ = screen.signals(data.loc[212:].copy())
+    assert actual_entry.loc[212:].tolist() == isolated_entry.tolist()
 
 
 def test_saved_result_rehash_cannot_hide_accounting_tamper(tmp_path: Path) -> None:

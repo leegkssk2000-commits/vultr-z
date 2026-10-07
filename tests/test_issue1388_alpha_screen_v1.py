@@ -645,3 +645,48 @@ def test_btc_bound_funding_resolves_only_cost_block_not_terminal(monkeypatch) ->
     assert result['funding_bps'] is not None
     monkeypatch.setattr(screen,'replay_btc_shock_symbol',lambda *args:([trade.copy()],2,0,1,0))
     assert screen.screen(market,screen.PROFILES[screen.BTC_SHOCK_ID])['disposition'] == 'BLOCKED_TERMINAL_OUTCOME_UNRESOLVED'
+
+
+def ema800_fixture():
+    stamps = [screen.START_MS - 801 * 3600000 + i * 3600000 for i in range(805)]
+    values = [100.] * 800 + [101., 102., 98., 101., 102.]
+    return pd.DataFrame({'open_ts_ms':stamps,'close_ts_ms':[t+3600000 for t in stamps],
+                         'available_ts_ms':[t+3600000 for t in stamps],
+                         'segment_id':['one']*805,'close':values,'volume':[1.]*805})
+
+
+def test_ema800_exact_sma_seed_cross_and_prefix_causality():
+    f=ema800_fixture(); raw,ready=screen.ema800_entry_signals(f)
+    assert not ready.iloc[:799].any() and ready.iloc[799:].all()
+    assert raw[raw].index.tolist()==[800,803]
+    prefix,_=screen.ema800_entry_signals(f.iloc[:802])
+    assert prefix.equals(raw.iloc[:802])
+    f.loc[804,'close']=1e8
+    assert screen.ema800_entry_signals(f)[0].iloc[:804].equals(raw.iloc[:804])
+
+
+def test_ema800_volume_guard_and_gap_warmup_reset():
+    f=ema800_fixture();f.loc[800,'volume']=0
+    assert screen.ema800_entry_signals(f)[0][lambda x:x].index.tolist()==[803]
+    f.loc[802:,'segment_id']='two'
+    raw,ready=screen.ema800_entry_signals(f)
+    assert not raw.iloc[802:].any() and not ready.iloc[802:].any()
+    f=ema800_fixture();f.loc[802,'open_ts_ms']+=3600000
+    with pytest.raises(screen.ScreenError,match='SEGMENT_GAP'):screen.ema800_entry_signals(f)
+
+
+def test_ema800_density_never_calls_economic_model_and_separates_universe(monkeypatch):
+    f=ema800_fixture()
+    monkeypatch.setattr(screen,'summarize',lambda *a:pytest.fail('PNL forbidden in density'))
+    monkeypatch.setattr(screen,'replay_symbol',lambda *a:pytest.fail('model forbidden in density'))
+    result=screen.density_census({'frames':{s:f.copy() for s in screen.SYMBOLS}},[screen.EMA800_ID])
+    c=result['candidates'][screen.EMA800_ID]
+    assert c['raw_signal_bars']==6 and c['source_exact_episodes']==6
+    assert set(c['source_native_overlap'])=={'BTC-USDT','ETH-USDT','XRP-USDT'}
+    assert set(c['warmup_ready_bars_by_symbol'])==set(screen.SYMBOLS)
+    assert result['economic_screen_consumed']==0 and 'trades' not in c
+
+
+def test_density_only_profile_cannot_activate_economic_replay(tmp_path):
+    p=tmp_path/'activation.json';p.write_text(json.dumps({'candidate_id':screen.EMA800_ID}))
+    with pytest.raises(screen.ScreenError,match='DENSITY_ONLY_PROFILE'):screen.validate_activation(p,'a'*40)

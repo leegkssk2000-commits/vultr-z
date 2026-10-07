@@ -43,7 +43,7 @@ GLOBAL_HEAVY_GROUP = "a1-global-heavy-economic-evaluator-v1"
 ACTIVATION_TOKEN = "[issue1388-alpha-screen-1-20261007T1420Z-8d31b7a]"
 EXECUTION_REF = "refs/heads/research-execution-consumptions/issue1388-cheap-swinghigh-v1"
 RESULT_REF = "refs/heads/research-results/issue1388-cheap-swinghigh-v1"
-SYMBOLS = ("BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "DOGE-USDT", "BNB-USDT")
+SYMBOLS = ("BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "DOGE-USDT", "LINK-USDT")
 
 
 class ScreenError(RuntimeError):
@@ -235,9 +235,19 @@ def _cci(frame: pd.DataFrame, period: int) -> pd.Series:
 
 
 def signals(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
-    entry = (_cci(frame, 72) < -175) & (_rsi(frame.close, 36) < 90)
-    exit_ = (_cci(frame, 66) > -106) & (_rsi(frame.close, 45) > 88)
-    return entry.fillna(False), exit_.fillna(False)
+    if "segment_id" not in frame:
+        raise ScreenError("SEGMENT_ID_REQUIRED")
+    entry = pd.Series(False, index=frame.index)
+    exit_ = pd.Series(False, index=frame.index)
+    interval = 15 * 60_000
+    for _, part in frame.groupby("segment_id", sort=False, dropna=False):
+        if part["segment_id"].isna().any():
+            raise ScreenError("SEGMENT_ID_REQUIRED")
+        if len(part) > 1 and not part["open_ts_ms"].diff().iloc[1:].eq(interval).all():
+            raise ScreenError("INTRA_SEGMENT_TIME_GAP")
+        entry.loc[part.index] = ((_cci(part, 72) < -175) & (_rsi(part.close, 36) < 90)).fillna(False)
+        exit_.loc[part.index] = ((_cci(part, 66) > -106) & (_rsi(part.close, 45) > 88)).fillna(False)
+    return entry, exit_
 
 
 def _roi(duration_minutes: int) -> float:
@@ -250,19 +260,30 @@ def _roi(duration_minutes: int) -> float:
     return 0.27058
 
 
-def replay_symbol(symbol: str, frame: pd.DataFrame, cost_bps: float) -> tuple[list[dict[str, Any]], int, int]:
+def replay_symbol(symbol: str, frame: pd.DataFrame, cost_bps: float) -> tuple[list[dict[str, Any]], int, int, int]:
     entry_signal, exit_signal = signals(frame)
     rows = frame.to_dict("records")
     trades: list[dict[str, Any]] = []
     position: dict[str, Any] | None = None
     pending_entry: dict[str, int] | None = None
     pending_exit = False
+    prior_segment: Any = None
+    gap_quarantined = 0
     signal_count = int(entry_signal[(frame.open_ts_ms >= START_MS) & (frame.open_ts_ms < END_MS)].sum())
     rejected_occupied = 0
     for i, bar in enumerate(rows):
         open_ms = int(bar["open_ts_ms"])
         if open_ms >= END_MS:
             break
+        segment = bar.get("segment_id")
+        if segment is None or (isinstance(segment, float) and math.isnan(segment)):
+            raise ScreenError("SEGMENT_ID_REQUIRED")
+        if prior_segment is not None and segment != prior_segment:
+            gap_quarantined += int(position is not None or pending_entry is not None)
+            position = None
+            pending_entry = None
+            pending_exit = False
+        prior_segment = segment
         if pending_exit and position is not None:
             exit_price = float(bar["open"])
             gross = (exit_price / position["entry_price"] - 1) * 10_000
@@ -307,7 +328,7 @@ def replay_symbol(symbol: str, frame: pd.DataFrame, cost_bps: float) -> tuple[li
         if position is not None and bool(exit_signal.iloc[i]):
             pending_exit = True
     unresolved = int(position is not None or pending_entry is not None)
-    return trades, rejected_occupied, unresolved
+    return trades, rejected_occupied, unresolved, gap_quarantined
 
 
 def summarize(trades: list[dict[str, Any]], multiplier: int) -> dict[str, Any]:
@@ -348,13 +369,14 @@ def summarize(trades: list[dict[str, Any]], multiplier: int) -> dict[str, Any]:
 
 def screen(market: Mapping[str, Any]) -> dict[str, Any]:
     all_trades: list[dict[str, Any]] = []
-    signals_total = occupied = unresolved = 0
+    signals_total = occupied = unresolved = gap_quarantined = 0
     for symbol in SYMBOLS:
-        trades, rejected, open_count = replay_symbol(symbol, market["frames"][symbol], float(market["costs"][symbol]))
+        trades, rejected, open_count, quarantined = replay_symbol(symbol, market["frames"][symbol], float(market["costs"][symbol]))
         all_trades.extend(trades)
         signals_total += len(trades) + rejected + open_count
         occupied += rejected
         unresolved += open_count
+        gap_quarantined += quarantined
     all_trades.sort(key=lambda row: (row["exit_ts_ms"], row["symbol"]))
     one, two = summarize(all_trades, 1), summarize(all_trades, 2)
     disposition = "SCREEN_SURVIVOR_PENDING_FULL" if one["T"] > 0 and one["Net_bps"] > 0 and two["Net_bps"] > 0 else "REJECT_ECONOMIC_EARLY"
@@ -366,7 +388,7 @@ def screen(market: Mapping[str, Any]) -> dict[str, Any]:
         "signal_rules": "SOURCE_EXACT_SWING_HIGH_TO_SKY_DEFAULT_PARAMETERS",
         "order_adapter": "CONSERVATIVE_NEXT_OPEN_TAKER_STOP_FIRST",
         "donor_live_fill_equivalence": False,
-        "census": {"signals_or_attempts": signals_total, "completed": len(all_trades), "occupied_rejections": occupied, "unresolved_end": unresolved, "missing_fill_evidence": 0},
+        "census": {"signals_or_attempts": signals_total, "completed": len(all_trades), "occupied_rejections": occupied, "gap_quarantined": gap_quarantined, "unresolved_end": unresolved, "missing_fill_evidence": 0},
         "trades": all_trades, "cost_1x": one, "cost_2x": two,
         "disposition": disposition, "full_consumed": 0,
         "order_authority": "BLOCKED", "exchange_order_submitted": False, "promotion": False,

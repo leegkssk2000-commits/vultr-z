@@ -388,7 +388,7 @@ def test_eth_common_dispatch_retains_open_and_separate_mark(monkeypatch):
 
 def test_unimplemented_economic_adapter_cannot_fall_through():
     with pytest.raises(common.ScreenError, match='ECONOMIC_ADAPTER_NOT_IMPLEMENTED'):
-        common.screen({}, common.PROFILES[common.BBAND_RSI_ID])
+        common.screen({}, common.PROFILES[common.EMA800_ID])
 
 
 def test_eth_funding_archive_hash_receipt_and_coverage():

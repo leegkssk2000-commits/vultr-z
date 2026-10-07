@@ -48,6 +48,43 @@ def manifest() -> dict:
     return batch.build_manifest("a" * 40, batch.SOURCE_INVENTORY_SHA256)
 
 
+def v8_activation(m: dict) -> dict:
+    return {
+        "schema": "zel.issue1377.mr_v8_activation.v1",
+        "issue": 1377,
+        "v8_comment_id": batch.V8_COMMENT_ID,
+        "token": batch.V8_TOKEN,
+        "reviewed_source_sha": m["reviewed_source_sha"],
+        "protocol_sha256": m["protocol_sha256"],
+        "source_inventory_sha256": batch.SOURCE_INVENTORY_SHA256,
+        "rule_sha256": batch.RULE_SHA256,
+        "cost_sha256": batch.COST_SHA256,
+        "period_ms": [batch.START_MS, batch.END_MS],
+        "instance_ids": list(batch.INSTANCE_IDS),
+        "economic_instances": 2,
+        "global_heavy_group": batch.GLOBAL_HEAVY_GROUP,
+        "source_files_sha256": {
+            name: batch.file_sha256(batch.ROOT / name)
+            for name in (
+                "ops/issue1377_mr_batch_v1.py",
+                ".github/workflows/issue1377-keltner-orthogonal-v1.yml",
+                "tests/test_issue1377_mr_batch_v1.py",
+            )
+        },
+        "order_authority": "BLOCKED",
+        "promotion": False,
+    }
+
+
+def v8_env(monkeypatch) -> None:
+    monkeypatch.setenv("GITHUB_RUN_ID", "101")
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
+    monkeypatch.setenv("GITHUB_JOB", "economic-v8")
+    monkeypatch.setenv("GITHUB_SHA", "f" * 40)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+    monkeypatch.setenv("ISSUE1377_GLOBAL_HEAVY_GROUP", batch.GLOBAL_HEAVY_GROUP)
+
+
 def authority(m: dict) -> tuple[dict, dict]:
     common = {
         "issue": 1377,
@@ -151,43 +188,60 @@ def test_authority_rejects_rehashed_manifest_cost_period_or_instance_tamper() ->
             batch.validate_authority(m, approval, bad)
 
 
-def test_end_to_end_input_authority_model_save_audit_and_no_retry(
+def test_end_to_end_input_start_parent_candidate_save_audit_and_no_retry(
     tmp_path: Path, monkeypatch
 ) -> None:
     m = manifest()
-    api, _ = authority_api(m)
     monkeypatch.setattr(batch, "current_head", lambda: m["reviewed_source_sha"])
     calls = []
     monkeypatch.setattr(
         batch,
-        "atomic_consume_claim",
-        lambda claim, supplied: calls.append(("consume", supplied["manifest_sha256"])),
+        "load_market",
+        lambda source_root: calls.append(("market", source_root)) or market(),
     )
-    def loader(source_root):
-        assert calls == [("consume", m["manifest_sha256"])]
-        calls.append(("market", source_root))
-        return market()
-    monkeypatch.setattr(batch, "load_market", loader)
-    output = tmp_path / "RESULT.json"
-    result = batch.execute(output, tmp_path, api=api)
-    assert result["instances"]["N_PARENT"]["census"]["signals"] >= 1
-    assert result["instances"]["N_CANDIDATE"]["census"]["signals"] >= 1
-    assert calls[0][0] == "consume" and calls[1][0] == "market"
-    assert batch.audit_result(output, m)["state"] == "PASS_SAVED_CENSUS_AND_ACCOUNTING"
-    with pytest.raises(batch.Issue1377Error, match="RESULT_ALREADY_EXISTS_NO_RETRY"):
-        batch.execute(output, tmp_path, api=api)
+    def start(supplied, receipt, activation_document, api):
+        assert calls == [("market", tmp_path)]
+        calls.append(("start", receipt["receipt_sha256"]))
+        return {
+            "execution_commit_sha": "e" * 40,
+            "reviewed_source_sha": supplied["reviewed_source_sha"],
+            "manifest_sha256": supplied["manifest_sha256"],
+            "activation": {
+                "github_run_id": "101",
+                "github_run_attempt": "1",
+                "github_job": "economic-v8",
+                "github_sha": "f" * 40,
+            },
+        }
+    monkeypatch.setattr(batch, "atomic_start_v8", start)
+    monkeypatch.setattr(
+        batch,
+        "persist_v8_result",
+        lambda result_id, value, start, api: calls.append(("persist", result_id))
+        or {"result_id": result_id},
+    )
+    activation_path = tmp_path / "ACTIVATION.json"
+    activation_path.write_text(json.dumps(v8_activation(m)))
+    output = tmp_path / "RESULTS"
+    result = batch.execute_v8(output, activation_path, tmp_path)
+    assert result["state"] == "COMPLETE_TWO_INSTANCES_PERSISTED_AND_AUDITED"
+    assert [row[1] for row in calls if row[0] == "persist"] == [
+        "N_PARENT",
+        "N_CANDIDATE",
+        "COMPARISON",
+    ]
+    assert calls[0][0] == "market" and calls[1][0] == "start"
+    assert batch.audit_result(output / "COMPARISON.json", m)["state"] == "PASS_SAVED_CENSUS_AND_ACCOUNTING"
+    with pytest.raises(batch.Issue1377Error, match="OUTPUT_DIRECTORY_ALREADY_EXISTS_NO_RETRY"):
+        batch.execute_v8(output, activation_path, tmp_path)
 
 
 def test_saved_result_and_accounting_tamper_are_rejected(
     tmp_path: Path, monkeypatch
 ) -> None:
     m = manifest()
-    api, _ = authority_api(m)
-    monkeypatch.setattr(batch, "current_head", lambda: m["reviewed_source_sha"])
-    monkeypatch.setattr(batch, "atomic_consume_claim", lambda claim, supplied: None)
-    monkeypatch.setattr(batch, "load_market", lambda source_root: market())
     output = tmp_path / "RESULT.json"
-    batch.execute(output, tmp_path, api=api)
+    batch.write_once(output, batch.compare(market(), m))
     value = json.loads(output.read_text())
     value["instances"]["N_PARENT"]["cost_1x"]["T"] += 1
     value["result_sha256"] = batch.digest({k: v for k, v in value.items() if k != "result_sha256"})
@@ -200,12 +254,8 @@ def test_rehashed_saved_result_missing_instance_is_rejected(
     tmp_path: Path, monkeypatch
 ) -> None:
     m = manifest()
-    api, _ = authority_api(m)
-    monkeypatch.setattr(batch, "current_head", lambda: m["reviewed_source_sha"])
-    monkeypatch.setattr(batch, "atomic_consume_claim", lambda claim, supplied: None)
-    monkeypatch.setattr(batch, "load_market", lambda source_root: market())
     output = tmp_path / "RESULT.json"
-    batch.execute(output, tmp_path, api=api)
+    batch.write_once(output, batch.compare(market(), m))
     value = json.loads(output.read_text())
     value["instances"].pop("N_PARENT")
     value["result_sha256"] = batch.digest(
@@ -220,12 +270,8 @@ def test_rehashed_saved_paired_and_full_census_tamper_are_rejected(
     tmp_path: Path, monkeypatch
 ) -> None:
     m = manifest()
-    api, _ = authority_api(m)
-    monkeypatch.setattr(batch, "current_head", lambda: m["reviewed_source_sha"])
-    monkeypatch.setattr(batch, "atomic_consume_claim", lambda claim, supplied: None)
-    monkeypatch.setattr(batch, "load_market", lambda source_root: market())
     output = tmp_path / "RESULT.json"
-    batch.execute(output, tmp_path, api=api)
+    batch.write_once(output, batch.compare(market(), m))
     original = json.loads(output.read_text())
     paired = copy.deepcopy(original)
     paired["paired"]["parent_winners_harmed"] += 1
@@ -294,10 +340,10 @@ def test_authority_refs_are_git_verified_and_checkout_is_exact(
     with pytest.raises(batch.Issue1377Error, match="AUTHORITY_BLOB_HASH"):
         batch.verified_claim(api)
     routes["/git/blobs/" + claim_blob]["content"] = original_content
-    monkeypatch.setattr(batch, "current_head", lambda: "f" * 40)
-    monkeypatch.setattr(batch, "load_market", lambda source_root: market())
-    with pytest.raises(batch.Issue1377Error, match="EXECUTING_CHECKOUT"):
-        batch.execute(tmp_path / "RESULT.json", tmp_path, api=api)
+    activation = v8_activation(m)
+    activation["reviewed_source_sha"] = "f" * 40
+    with pytest.raises(batch.Issue1377Error, match="V8_ACTIVATION_BINDING"):
+        batch.validate_v8_activation(activation, m)
 
 
 def test_current_head_rejects_dirty_checkout(monkeypatch) -> None:
@@ -353,7 +399,7 @@ def test_claim_is_consumed_once_before_compute(monkeypatch) -> None:
             assert payload["parents"] == [claim["claim_commit_sha"]]
             return {"sha": "e" * 40}
         if created["ref"]:
-            raise batch.Issue1377Error("CLAIM_ALREADY_CONSUMED_NO_RETRY")
+            raise batch.Issue1377Error("PERMANENT_REF_ALREADY_EXISTS_NO_RETRY")
         created["ref"] = True
         return {
             "ref": batch.CONSUMPTION_REF,
@@ -362,8 +408,97 @@ def test_claim_is_consumed_once_before_compute(monkeypatch) -> None:
 
     receipt = batch.atomic_consume_claim(claim, m, api)
     assert receipt["state"] == "CONSUMED_NONRETRYABLE_BEFORE_COMPUTE"
-    with pytest.raises(batch.Issue1377Error, match="CLAIM_ALREADY_CONSUMED"):
+    with pytest.raises(batch.Issue1377Error, match="PERMANENT_REF_ALREADY_EXISTS"):
         batch.atomic_consume_claim(claim, m, api)
+
+
+def test_v8_activation_rejects_reviewed_source_file_hash_tamper() -> None:
+    m = manifest()
+    activation = v8_activation(m)
+    activation["source_files_sha256"]["ops/issue1377_mr_batch_v1.py"] = "0" * 64
+    with pytest.raises(batch.Issue1377Error, match="V8_ACTIVATION_SOURCE_FILE_DRIFT"):
+        batch.validate_v8_activation(activation, m)
+
+
+def test_v8_atomic_start_is_one_permanent_record_without_approval_chain(
+    monkeypatch,
+) -> None:
+    m = manifest()
+    receipt = batch.source_receipt(market())
+    activation_document = v8_activation(m)
+    v8_env(monkeypatch)
+    calls = []
+    created = {"ref": False}
+
+    def api(method, route, payload):
+        calls.append((route, copy.deepcopy(payload)))
+        if route == "/git/blobs":
+            raw = base64.b64decode(payload["content"])
+            decoded = json.loads(raw)
+            assert "approval_ref" not in decoded and "claim_ref" not in decoded
+            assert decoded["source_receipt_sha256"] == receipt["receipt_sha256"]
+            return {"sha": batch._git_blob_sha(raw)}
+        if route == "/git/trees":
+            return {"sha": "b" * 40}
+        if route == "/git/commits":
+            assert payload["parents"] == [m["reviewed_source_sha"]]
+            return {"sha": "c" * 40}
+        if created["ref"]:
+            raise batch.Issue1377Error("PERMANENT_REF_ALREADY_EXISTS_NO_RETRY")
+        created["ref"] = True
+        return {"ref": batch.V8_EXECUTION_REF, "object": {"sha": "c" * 40}}
+
+    start = batch.atomic_start_v8(m, receipt, activation_document, api)
+    assert start["state"] == "STARTED_NONRETRYABLE_AFTER_INPUT_VALIDATION_BEFORE_COMPUTE"
+    assert [route for route, _ in calls] == [
+        "/git/blobs",
+        "/git/trees",
+        "/git/commits",
+        "/git/refs",
+    ]
+    with pytest.raises(batch.Issue1377Error, match="PERMANENT_REF_ALREADY_EXISTS"):
+        batch.atomic_start_v8(m, receipt, activation_document, api)
+
+
+def test_v8_batch_runs_each_model_once_and_persists_parent_before_candidate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    m = manifest()
+    monkeypatch.setattr(batch, "current_head", lambda: m["reviewed_source_sha"])
+    monkeypatch.setattr(batch, "load_market", lambda source_root: market())
+    monkeypatch.setattr(
+        batch,
+        "atomic_start_v8",
+        lambda manifest, receipt, activation_document, api: {
+            "execution_commit_sha": "e" * 40,
+            "reviewed_source_sha": manifest["reviewed_source_sha"],
+            "manifest_sha256": manifest["manifest_sha256"],
+            "activation": {"github_run_id": "1"},
+        },
+    )
+    order = []
+    original = batch._run_identity
+
+    def run(identity, supplied_market):
+        order.append(("run", identity))
+        return original(identity, supplied_market)
+
+    def persist(result_id, value, start, api):
+        order.append(("persist", result_id))
+        return {"result_id": result_id}
+
+    monkeypatch.setattr(batch, "_run_identity", run)
+    monkeypatch.setattr(batch, "persist_v8_result", persist)
+    activation_path = tmp_path / "ACTIVATION.json"
+    activation_path.write_text(json.dumps(v8_activation(m)))
+    batch.execute_v8(tmp_path / "out", activation_path, tmp_path)
+    assert order == [
+        ("run", batch.PARENT),
+        ("persist", "N_PARENT"),
+        ("run", batch.CANDIDATE),
+        ("persist", "N_CANDIDATE"),
+        ("persist", "COMPARISON"),
+    ]
 
 
 def test_end_boundary_has_no_later_h_bar_and_unresolved_is_not_forced_closed() -> None:
@@ -387,3 +522,8 @@ def test_workflow_tracks_all_execution_dependencies() -> None:
         "scalp7_metrics_v2.py",
     ):
         assert dependency in workflow
+    assert "group: a1-global-heavy-economic-evaluator-v1" in workflow
+    assert "cancel-in-progress: false" in workflow
+    assert batch.V8_TOKEN in workflow
+    assert "python ops/issue1377_mr_batch_v1.py" in workflow
+    assert "issue1377-mr-v8-economic-results" in workflow

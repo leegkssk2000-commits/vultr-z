@@ -4,6 +4,8 @@ import base64
 import copy
 import hashlib
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -83,6 +85,19 @@ def v8_env(monkeypatch) -> None:
     monkeypatch.setenv("GITHUB_SHA", "f" * 40)
     monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
     monkeypatch.setenv("ISSUE1377_GLOBAL_HEAVY_GROUP", batch.GLOBAL_HEAVY_GROUP)
+
+
+def test_direct_script_invocation_bootstraps_repository_imports(tmp_path: Path) -> None:
+    script = batch.ROOT / "ops/issue1377_mr_batch_v1.py"
+    completed = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "usage:" in completed.stdout
 
 
 def authority(m: dict) -> tuple[dict, dict]:

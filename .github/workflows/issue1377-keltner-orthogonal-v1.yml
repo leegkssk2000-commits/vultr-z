@@ -24,6 +24,7 @@ on:
       - 'tests/test_issue1377_mr_batch_v1.py'
       - 'research/campaigns/scalp7_20261006/issue1377_keltner_orthogonal_v1/V8_EXECUTION_ACTIVATION.json'
       - 'research/campaigns/scalp7_20261006/issue1377_keltner_orthogonal_v1/V8_EXECUTION_RECOVERY.json'
+      - 'research/campaigns/scalp7_20261006/issue1377_keltner_orthogonal_v1/V8_EXECUTION_IMPLEMENTATION_REPAIR.json'
 
 permissions:
   contents: read
@@ -70,6 +71,10 @@ jobs:
         contains(
           github.event.head_commit.message,
           '[issue1377-mr-v8-prestart-recovery-1-20261007T0220Z-542be1c]'
+        ) ||
+        contains(
+          github.event.head_commit.message,
+          '[issue1377-mr-v8-import-repair-1-20261007T0350Z-4c8bd20]'
         )
       )
     needs: exact-source-contract-tests
@@ -99,16 +104,19 @@ jobs:
 
           token = '[issue1377-mr-v8-once-20261007T0210Z-7631c9a]'
           recovery_token = '[issue1377-mr-v8-prestart-recovery-1-20261007T0220Z-542be1c]'
+          repair_token = '[issue1377-mr-v8-import-repair-1-20261007T0350Z-4c8bd20]'
           primary_path = Path('research/campaigns/scalp7_20261006/issue1377_keltner_orthogonal_v1/V8_EXECUTION_ACTIVATION.json')
           recovery_path = Path('research/campaigns/scalp7_20261006/issue1377_keltner_orthogonal_v1/V8_EXECUTION_RECOVERY.json')
+          repair_path = Path('research/campaigns/scalp7_20261006/issue1377_keltner_orthogonal_v1/V8_EXECUTION_IMPLEMENTATION_REPAIR.json')
           head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
           parent = subprocess.check_output(['git', 'rev-parse', 'HEAD^'], text=True).strip()
           message = subprocess.check_output(['git', 'log', '-1', '--pretty=%B'], text=True)
           primary = token in message
           recovery = recovery_token in message
-          if primary == recovery:
+          repair = repair_token in message
+          if sum((primary, recovery, repair)) != 1:
               raise SystemExit('ISSUE1377_V8_ACTIVATION_TOKEN_PROFILE')
-          path = recovery_path if recovery else primary_path
+          path = repair_path if repair else (recovery_path if recovery else primary_path)
           value = json.loads(path.read_bytes())
           changed = subprocess.check_output(
               ['git', 'diff', '--name-status', '--no-renames', parent, head], text=True
@@ -181,6 +189,52 @@ jobs:
                           raise
                   else:
                       raise SystemExit('ISSUE1377_V8_RECOVERY_REF_ALREADY_PRESENT:' + ref)
+          elif repair:
+              expected_repair = {
+                  'state': 'AUTHORIZED_IMPLEMENTATION_REPAIR_PRESTART_ONLY',
+                  'repair_token': repair_token,
+                  'prior_run_id': 37568346931,
+                  'prior_job_id': 112621255828,
+                  'prior_job_conclusion': 'failure',
+                  'prior_failed_step': 'Execute parent and frozen candidate exactly once',
+                  'prior_execution_ref_state': 'ABSENT_404',
+                  'repair_index': 1,
+                  'max_repairs': 1,
+              }
+              if value.get('implementation_repair') != expected_repair:
+                  raise SystemExit('ISSUE1377_V8_IMPLEMENTATION_REPAIR_PROFILE_MISMATCH')
+              headers = {
+                  'Accept': 'application/vnd.github+json',
+                  'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                  'X-GitHub-Api-Version': '2022-11-28',
+              }
+              base = 'https://api.github.com/repos/' + os.environ['GH_REPOSITORY']
+              with urlopen(Request(base + '/actions/jobs/112621255828', headers=headers), timeout=20) as response:
+                  prior_job = json.load(response)
+              failed_steps = [
+                  step.get('name') for step in prior_job.get('steps', [])
+                  if step.get('conclusion') == 'failure'
+              ]
+              if (
+                  prior_job.get('status') != 'completed'
+                  or prior_job.get('conclusion') != 'failure'
+                  or failed_steps != ['Execute parent and frozen candidate exactly once']
+              ):
+                  raise SystemExit('ISSUE1377_V8_PRIOR_IMPLEMENTATION_FAILURE_MISMATCH')
+              absent_refs = (
+                  'research-execution-consumptions/issue1377-mr-v8-20261007-v1',
+                  'research-results/issue1377-mr-v8-parent-20261007-v1',
+                  'research-results/issue1377-mr-v8-candidate-20261007-v1',
+                  'research-results/issue1377-mr-v8-comparison-20261007-v1',
+              )
+              for ref in absent_refs:
+                  try:
+                      urlopen(Request(base + '/git/ref/heads/' + ref, headers=headers), timeout=20)
+                  except HTTPError as exc:
+                      if exc.code != 404:
+                          raise
+                  else:
+                      raise SystemExit('ISSUE1377_V8_IMPLEMENTATION_REPAIR_REF_ALREADY_PRESENT:' + ref)
           files = value.get('source_files_sha256')
           expected_files = {
               'ops/issue1377_mr_batch_v1.py',

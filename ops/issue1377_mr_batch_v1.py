@@ -17,16 +17,21 @@ import json
 import math
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+# Direct execution as `python ops/issue1377_mr_batch_v1.py` otherwise places
+# only ops/ on sys.path.  Bootstrap the repository root before package imports.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from backend.research.rebuild import scalp7_metrics_v2 as metrics
 from backend.research.rebuild import scalp7_mr_formation_v2 as rules
 from backend.research.rebuild import scalp7_source_binding_repair_v2 as binding
-
-ROOT = Path(__file__).resolve().parents[1]
 PROTOCOL_PATH = ROOT / "research/campaigns/scalp7_20261006/issue1377_keltner_orthogonal_v1/PROTOCOL.json"
 COST_PATH = ROOT / (
     "research/campaigns/scalp7_20260915/cost_snapshot_v2/"

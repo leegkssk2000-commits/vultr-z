@@ -121,3 +121,25 @@ def test_second_admission_requires_first_add_commit_and_zero_step_prior(tmp_path
     monkeypatch.setattr(r.subprocess,'check_output',lambda args,**kwargs:'' if 'log' in args else raw)
     with pytest.raises(r.screen.ScreenError):r.recover(tmp_path,activation,'c'*40,'b'*40,['A\t'+str(second)])
     assert len(writes)==1
+
+
+def test_common_workflow_keeps_max_queue_at_workflow_and_heavy_job_levels():
+    from pathlib import Path
+    text=(Path(r.__file__).resolve().parents[1]/'.github/workflows/issue1388-internet-alpha-v1.yml').read_text()
+    assert '  group: issue1388-contract-${{ github.event.pull_request.number || github.ref }}\n  cancel-in-progress: false\n  queue: max' in text
+    assert text.count('      group: a1-global-heavy-economic-evaluator-v1\n      cancel-in-progress: false\n      queue: max')==3
+    assert 'actions: write' not in text and 'actions: read' not in text
+
+
+def test_public_read_proof_does_not_expand_token_permissions(monkeypatch):
+    import io,json
+    seen=[]
+    class Response(io.BytesIO):
+        def __enter__(self):return self
+        def __exit__(self,*args):self.close()
+    def urlopen(request,timeout):
+        seen.append(request);return Response(json.dumps({'id':1}).encode())
+    monkeypatch.setattr(r,'urlopen',urlopen)
+    monkeypatch.setenv('GH_TOKEN','not-to-be-transmitted-in-public-proof-read')
+    assert r.get('/actions/runs/1')=={'id':1}
+    assert not seen[0].has_header('Authorization')

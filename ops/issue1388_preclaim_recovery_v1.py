@@ -20,7 +20,7 @@ RESULT_REF = 'refs/heads/research-results/issue1388-cheap-btc-shock-1h-v1'
 
 def get(route: str, *, absent: bool = False):
     request = Request('https://api.github.com/repos/leegkssk2000-commits/vultr-z' + route,
-                      headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json'})
+                      headers={'Accept': 'application/vnd.github+json', 'User-Agent': 'ZEL-readonly-admission-proof'})
     try:
         with urlopen(request, timeout=30) as response:
             value = json.load(response)

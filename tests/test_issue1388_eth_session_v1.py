@@ -509,3 +509,13 @@ def test_consistent_trade_terminal_outer_rehash_tamper_still_rejected(monkeypatc
     result['result_sha256'] = common.digest({k: v for k, v in result.items() if k != 'result_sha256'})
     with pytest.raises(common.ScreenError, match='ETH_SAVED_CLOSED_ARITHMETIC'):
         common.audit_eth_result(result, market['frames']['ETH-USDT'].to_dict('records'), market['eth_funding'], 14.0)
+
+
+@pytest.mark.parametrize('field', ['net_bps', 'funding_settlements'])
+def test_stored_trade_net_and_settlement_count_are_independently_audited(monkeypatch, field):
+    market = fixture_market(monkeypatch)
+    result = common.screen(market, common.PROFILES[common.ETH_SESSION_ID])
+    result['trades'][0][field] += 1
+    result['result_sha256'] = common.digest({k: v for k, v in result.items() if k != 'result_sha256'})
+    with pytest.raises(common.ScreenError, match='ETH_SAVED_CLOSED_ARITHMETIC'):
+        common.audit_eth_result(result, market['frames']['ETH-USDT'].to_dict('records'), market['eth_funding'], 14.0)

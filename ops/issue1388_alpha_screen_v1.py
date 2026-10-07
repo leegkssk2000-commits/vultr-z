@@ -1348,15 +1348,17 @@ def audit_eth_result(result: Mapping[str, Any], rows: list[dict[str, Any]],
     paid_cost = 0.0
     last_time = None
     one_way = roundtrip_cost_bps / 2
-    def funding(entry: int, exit_: int, side: int, basis: float, closed: bool) -> float:
+    def funding(entry: int, exit_: int, side: int, basis: float, closed: bool) -> tuple[float, int]:
         total = 0.0
+        count = 0
         for row in funding_rows:
             stamp = row["fundingTime"]
             if entry <= stamp <= exit_ and stamp < END_MS:
                 debit = side * float(row["fundingRate"]) * float(row["markPrice"]) / basis * 10000
                 if stamp != entry and (not closed or stamp != exit_) or debit > 0:
                     total += debit
-        return total
+                    count += 1
+        return total, count
     for order in accounting["orders"]:
         stamp, price = order["execution_ts_ms"], order["execution_price"]
         current = 0 if position is None else position["signed_units"]
@@ -1376,12 +1378,14 @@ def audit_eth_result(result: Mapping[str, Any], rows: list[dict[str, Any]],
             trade = trades[trade_index]
             basis, entry = position["entry_price"], position["entry_ts_ms"]
             gross = current * (price / basis - 1) * 10000
-            signed_funding = funding(entry, stamp, current, basis, True)
+            signed_funding, settlements = funding(entry, stamp, current, basis, True)
             if (any(trade.get(k) != position[k] for k in ("entry_ts_ms", "entry_price", "signed_units"))
                     or trade["exit_ts_ms"] != stamp or trade["exit_price"] != price
                     or not math.isclose(trade["gross_bps"], gross, abs_tol=1e-9)
                     or not math.isclose(trade["cost_bps"], roundtrip_cost_bps, abs_tol=1e-9)
-                    or not math.isclose(trade["funding_bps"], signed_funding, abs_tol=1e-9)):
+                    or not math.isclose(trade["funding_bps"], signed_funding, abs_tol=1e-9)
+                    or trade["funding_settlements"] != settlements
+                    or not math.isclose(trade["net_bps"], gross - roundtrip_cost_bps - signed_funding, abs_tol=1e-9)):
                 raise ScreenError("ETH_SAVED_CLOSED_ARITHMETIC_AUDIT_FAIL")
             trade_index += 1
             position = None
@@ -1401,8 +1405,8 @@ def audit_eth_result(result: Mapping[str, Any], rows: list[dict[str, Any]],
             or position is not None and any(position[k] != open_position.get(k) for k in position)):
         raise ScreenError("ETH_SAVED_OPEN_LEDGER_AUDIT_FAIL")
     if open_position is not None and accounting["gap_quarantine"] is None:
-        expected = funding(position["entry_ts_ms"], END_MS, position["signed_units"], position["entry_price"], False)
-        if not math.isclose(open_position["funding_bps_to_end_exclusive"], expected, abs_tol=1e-9):
+        expected, settlements = funding(position["entry_ts_ms"], END_MS, position["signed_units"], position["entry_price"], False)
+        if not math.isclose(open_position["funding_bps_to_end_exclusive"], expected, abs_tol=1e-9) or open_position["funding_settlements"] != settlements:
             raise ScreenError("ETH_SAVED_OPEN_FUNDING_AUDIT_FAIL")
 
 

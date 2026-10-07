@@ -55,6 +55,7 @@ ETH_SESSION_ID = "R_ETH_SESSION_REVERSAL_1H_V1"
 ETH_FUNDING_RAW_SHA256 = "cd1b4dea78e2bdc62e985fe0a0c47cd9a301f41836cadc82c136355a056f0aac"
 ETH_FUNDING_RECEIPT_SHA256 = "3462c99458ef79bb06b6ca7c1ecac887cee0aa1accdc28da55d198b8004e3357"
 BTC_SHOCK_ID = "R_BTC_NEGATIVE_SHOCK_1H_V1"
+OTHER_FUNDING_HASHES = {'XRP-USDT': {'raw': 'ef7aedb09e5d1e86cca81ecb04363aec55c493407ba3103cff246fbc841968dd', 'receipt': 'e1fe53fdad89cd423e541837050cd5d3d30c1558332149534fe2fad276a38072'}, 'SOL-USDT': {'raw': '5e1f1e5fd1a2b75dda96e44dd0bfa22b1ce8a3c47de55f6f22bebffbc5097c3e', 'receipt': '2faa33c4ad610580231d629b86704e2530e03cbdd73b1c1564a7a78a07a537b1'}, 'LINK-USDT': {'raw': '893b570d39b3cff5e278331672688b911ae4dba8bddb5e199258b16965c1a3df', 'receipt': '042e3ecc3a27b8049e20a1328f03e80003200778a94ff5d3e288afb42d87ee84'}, 'DOGE-USDT': {'raw': '07a52994272f35a062799623ebe94d26bfe4b6868512212a9114eebb6cb4b32b', 'receipt': '6d3f77019aadef8553768fcfa957102c82e9605d0807e553155394773924b75f'}}
 PROFILES: dict[str, dict[str, Any]] = {
     EMA800_ID: {
         "candidate_id": EMA800_ID,
@@ -117,7 +118,10 @@ PROFILES: dict[str, dict[str, Any]] = {
         "source_blob": "addc87268affc2f3b1b00549f1ca8b119e41e655",
         "timeframe_min": 60,
         "signal_rules": "SOURCE_EXACT_BBAND_RSI_1H_RSI14_LT30_CLOSE_LT_TYPICAL_BB20_2SIGMA",
-        "order_adapter": "DENSITY_PREFLIGHT_ONLY",
+        "order_adapter": "INTERNAL_CONSERVATIVE_CLASS_DEFAULT_GROSS_ROI10_SL25_NEXT_OPEN_STOP_FIRST",
+        "activation_token": "[issue1388-alpha-screen-6-bband-rsi-1h-v1]",
+        "execution_ref": "refs/heads/research-execution-consumptions/issue1388-cheap-bband-rsi-1h-v1",
+        "result_ref": "refs/heads/research-results/issue1388-cheap-bband-rsi-1h-v1",
     },
     ETH_SESSION_ID: {
         "candidate_id": ETH_SESSION_ID,
@@ -266,6 +270,12 @@ def validate_activation(path: Path, head: str) -> dict[str, Any]:
                           "research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/ETH_EXECUTION_CONTRACT.json"}
         if not required_files.issubset(files):
             raise ScreenError("ETH_ACTIVATION_SOURCE_CLOSURE_REQUIRED")
+    if profile["candidate_id"] == BBAND_RSI_ID:
+        base = "research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/"
+        required_files = {"ops/issue1388_alpha_screen_v1.py", "ops/issue1388_bband_rsi_v1.py", base + "BBAND_EXECUTION_CONTRACT.json"}
+        required_files.update(base + symbol.split("-")[0] + "_FUNDING_" + kind + ".json" for symbol in SYMBOLS for kind in ("RAW", "RECEIPT"))
+        if not required_files.issubset(files):
+            raise ScreenError("BBAND_ACTIVATION_SOURCE_CLOSURE_REQUIRED")
     for relative, expected in files.items():
         if file_sha256(ROOT / relative) != expected:
             raise ScreenError("ACTIVATION_SOURCE_FILE_DRIFT:" + relative)
@@ -314,6 +324,8 @@ def load_market(source_root: Path, profile: Mapping[str, Any] | None = None) -> 
         market["btc_funding"] = load_btc_funding()
     if profile["candidate_id"] == ETH_SESSION_ID:
         market["eth_funding"] = load_eth_funding()
+    if profile["candidate_id"] == BBAND_RSI_ID:
+        market["six_funding"] = load_six_funding()
     return market
 
 
@@ -380,6 +392,51 @@ def load_eth_funding() -> list[dict[str, Any]]:
             or proof.get("account_actual_debit_certified") is not False):
         raise ScreenError("ETH_FUNDING_RECEIPT_BINDING")
     return validate_eth_funding(read_json(raw))
+
+
+def validate_symbol_funding(value: Mapping[str, Any], symbol: str) -> list[dict[str, Any]]:
+    if value.get("code") != 0 or not isinstance(value.get("data"), list) or any(not isinstance(r, dict) for r in value["data"]):
+        raise ScreenError("FUNDING_RESPONSE_SCHEMA:" + symbol)
+    rows = value["data"]
+    if any(type(r.get("fundingTime")) is not int for r in rows):
+        raise ScreenError("FUNDING_CLOCK:" + symbol)
+    rows = sorted(rows, key=lambda r: r["fundingTime"])
+    if [r["fundingTime"] for r in rows] != list(range(START_MS, END_MS, 8 * 3600000)):
+        raise ScreenError("FUNDING_FIXED_WINDOW_COVERAGE:" + symbol)
+    for row in rows:
+        if row.get("symbol") != symbol:
+            raise ScreenError("FUNDING_SYMBOL:" + symbol)
+        try:
+            rate, mark = float(row["fundingRate"]), float(row["markPrice"])
+        except (KeyError, TypeError, ValueError):
+            raise ScreenError("FUNDING_RATE_MARK_REQUIRED:" + symbol) from None
+        if (isinstance(row["fundingRate"], bool) or isinstance(row["markPrice"], bool)
+                or not math.isfinite(rate) or not math.isfinite(mark) or mark <= 0):
+            raise ScreenError("FUNDING_RATE_MARK_INVALID:" + symbol)
+    return rows
+
+
+def six_funding_hashes() -> dict[str, dict[str, str]]:
+    return {"BTC-USDT": {"raw": BTC_FUNDING_RAW_SHA256, "receipt": BTC_FUNDING_RECEIPT_SHA256},
+            "ETH-USDT": {"raw": ETH_FUNDING_RAW_SHA256, "receipt": ETH_FUNDING_RECEIPT_SHA256},
+            **{symbol: dict(hashes) for symbol, hashes in OTHER_FUNDING_HASHES.items()}}
+
+
+def load_six_funding() -> dict[str, list[dict[str, Any]]]:
+    output = {"BTC-USDT": load_btc_funding(), "ETH-USDT": load_eth_funding()}
+    for symbol, hashes in OTHER_FUNDING_HASHES.items():
+        prefix = symbol.split("-")[0]
+        raw, receipt_path = (INTAKE_PATH.parent / (prefix + "_FUNDING_" + kind + ".json") for kind in ("RAW", "RECEIPT"))
+        if file_sha256(raw) != hashes["raw"] or file_sha256(receipt_path) != hashes["receipt"]:
+            raise ScreenError("FUNDING_INPUT_HASH_DRIFT:" + symbol)
+        receipt = read_json(receipt_path)
+        if (receipt.get("symbol") != symbol or receipt.get("raw_sha256") != hashes["raw"]
+                or receipt.get("period_ms") != [START_MS, END_MS] or receipt.get("rows") != 465
+                or receipt.get("historical_receipt_times") is not False
+                or receipt.get("account_actual_debit_certified") is not False):
+            raise ScreenError("FUNDING_RECEIPT_BINDING:" + symbol)
+        output[symbol] = validate_symbol_funding(read_json(raw), symbol)
+    return output
 
 
 def funding_for_btc_trade(trade: Mapping[str, Any], rows: list[dict[str, Any]]) -> tuple[float, int]:
@@ -1194,6 +1251,49 @@ def summarize(trades: list[dict[str, Any]], multiplier: int) -> dict[str, Any]:
     }
 
 
+def screen_bband_rsi(market: Mapping[str, Any], profile: Mapping[str, Any]) -> dict[str, Any]:
+    from ops.issue1388_bband_rsi_v1 import bind_bband_decisions, exit_flags_from_rsi14, replay_bband_rsi
+    if set(market.get("six_funding", {})) != set(SYMBOLS):
+        raise ScreenError("BBAND_SIX_FUNDING_REQUIRED_BEFORE_MODEL")
+    funding = {symbol: validate_symbol_funding({"code": 0, "data": market["six_funding"][symbol]}, symbol) for symbol in SYMBOLS}
+    accounting, all_trades = {}, []
+    for symbol in SYMBOLS:
+        frame = market["frames"][symbol]
+        rows = frame.to_dict("records")
+        entry = bband_rsi_entry_signals(frame).tolist()
+        exits = {}
+        for _, part in frame.groupby("segment_id", sort=False, dropna=False):
+            exits.update(zip(part.open_ts_ms.astype("int64"), exit_flags_from_rsi14(_rsi(part.close, 14).tolist())))
+        decisions = bind_bband_decisions(rows, entry, [exits[row["open_ts_ms"]] for row in rows])
+        value = replay_bband_rsi(symbol, rows, decisions, funding[symbol], start_ms=START_MS, end_ms=END_MS,
+                                 roundtrip_cost_bps=float(market["costs"][symbol]))
+        accounting[symbol] = value
+        all_trades.extend(value["trades"])
+    all_trades.sort(key=lambda row: (row["exit_ts_ms"], row["symbol"]))
+    one, two = summarize(all_trades, 1), summarize(all_trades, 2)
+    census = {"signals_or_attempts": sum(x["signals"] for x in accounting.values()), "completed": len(all_trades),
+              "occupied_rejections": sum(x["occupied_rejections"] for x in accounting.values()),
+              "pending_rejections": sum(x["pending_entry_rejections"] for x in accounting.values()),
+              "gap_quarantined": sum(int(x["gap_quarantine"] is not None or x["protective_touch_quarantine"] is not None) for x in accounting.values()),
+              "unresolved_end": sum(x["unresolved_end"] for x in accounting.values())}
+    census["missing_fill_evidence"] = census["gap_quarantined"]
+    disposition = ("BLOCKED_INPUT_GAP_OR_PROTECTIVE_CLOCK" if census["gap_quarantined"] else
+                   "BLOCKED_TERMINAL_OUTCOME_UNRESOLVED" if census["unresolved_end"] else
+                   "SCREEN_SURVIVOR_PENDING_FULL" if one["T"] > 0 and one["Net_bps"] > 0 and two["Net_bps"] > 0 else "REJECT_ECONOMIC_EARLY")
+    value = {"schema": "zel.issue1388.cheap_screen_result.v1", "issue": 1388,
+             "candidate_id": BBAND_RSI_ID, **source_binding(profile), "period_ms": [START_MS, END_MS],
+             "timeframe_min": 60, "classification": "DEVELOPMENT_ONLY_NOT_FRESH_NOT_OOS",
+             "signal_rules": profile["signal_rules"], "order_adapter": profile["order_adapter"],
+             "source_replication": False, "donor_live_fill_equivalence": False,
+             "donor_config_and_net_roi_engine_reproduced": False,
+             "trades": all_trades, "cost_1x": one, "cost_2x": two, "census": census,
+             "symbol_accounting": accounting, "funding_hashes": six_funding_hashes(),
+             "mark_account_NAV": None, "funding_actual_account_debit_certified": False,
+             "disposition": disposition, "full_consumed": 0,
+             "order_authority": "BLOCKED", "exchange_order_submitted": False, "promotion": False}
+    return {**value, "result_sha256": digest(value)}
+
+
 def screen_eth_session(market: Mapping[str, Any], profile: Mapping[str, Any]) -> dict[str, Any]:
     from ops.issue1388_eth_session_v1 import replay_eth_sessions, terminal_eth_report
     if "eth_funding" not in market:
@@ -1242,6 +1342,8 @@ def screen(market: Mapping[str, Any], profile: Mapping[str, Any] | None = None) 
     profile = profile or PROFILES[CANDIDATE_ID]
     if profile["candidate_id"] == ETH_SESSION_ID:
         return screen_eth_session(market, profile)
+    if profile["candidate_id"] == BBAND_RSI_ID:
+        return screen_bband_rsi(market, profile)
     if profile["candidate_id"] not in (CANDIDATE_ID, CENDERAWASIH_ID, RSI_W1_ID, BTC_SHOCK_ID):
         raise ScreenError("ECONOMIC_ADAPTER_NOT_IMPLEMENTED")
     all_trades: list[dict[str, Any]] = []
@@ -1410,6 +1512,144 @@ def audit_eth_result(result: Mapping[str, Any], rows: list[dict[str, Any]],
             raise ScreenError("ETH_SAVED_OPEN_FUNDING_AUDIT_FAIL")
 
 
+def audit_bband_result(result: Mapping[str, Any], market: Mapping[str, Any]) -> None:
+    from decimal import Decimal
+    from ops.issue1388_bband_rsi_v1 import bind_bband_decisions, exit_flags_from_rsi14
+    accounting = result["symbol_accounting"]
+    trades = sorted([t for x in accounting.values() for t in x["trades"]], key=lambda t: (t["exit_ts_ms"], t["symbol"]))
+    if result["trades"] != trades:
+        raise ScreenError("BBAND_SAVED_TRADE_BINDING")
+    for symbol in SYMBOLS:
+        saved = accounting[symbol]
+        rows = market["frames"][symbol].to_dict("records")
+        opens = {r["open_ts_ms"]: r for r in rows}
+        closes = {r["close_ts_ms"]: r for r in rows}
+        frame = market["frames"][symbol]
+        exits = {}
+        for _, part in frame.groupby("segment_id", sort=False, dropna=False):
+            exits.update(zip(part.open_ts_ms.astype("int64"), exit_flags_from_rsi14(_rsi(part.close, 14).tolist())))
+        # No order/model replay: independently certify source decisions and clocks.
+        decisions = bind_bband_decisions(rows, bband_rsi_entry_signals(frame).tolist(),
+                                         [exits[r["open_ts_ms"]] for r in rows])
+        by_signal = {d["signal_open_ts_ms"]: d for d in decisions}
+        clock_keys = ("signal_open_ts_ms", "signal_close_ts_ms", "signal_available_ts_ms")
+        def verify_signal(order: Mapping[str, Any], flag: str, execution: int) -> Mapping[str, Any]:
+            decision = by_signal.get(order.get("signal_open_ts_ms"))
+            if (decision is None or not decision[flag]
+                    or any(order.get(k) != decision[k] for k in clock_keys)
+                    or not START_MS <= decision["signal_open_ts_ms"] < decision["signal_close_ts_ms"] < END_MS):
+                raise ScreenError("BBAND_SAVED_SOURCE_SIGNAL_BINDING")
+            eligible = next((r for r in rows if r["open_ts_ms"] >= decision["signal_available_ts_ms"]), None)
+            if (eligible is None or eligible["open_ts_ms"] != execution
+                    or eligible["segment_id"] != decision["segment_id"]):
+                raise ScreenError("BBAND_SAVED_EARLIEST_CAUSAL_OPEN")
+            return decision
+        one_way = float(market["costs"][symbol]) / 2
+        position, trade_index, paid, last_stamp = None, 0, 0.0, -1
+        def funding(entry: int, exit_: int, basis: float, closed: bool) -> tuple[float, int]:
+            debit, count = 0.0, 0
+            for row in market["six_funding"][symbol]:
+                stamp = row["fundingTime"]
+                if entry <= stamp <= exit_ and stamp < END_MS:
+                    value = float(row["fundingRate"]) * float(row["markPrice"]) / basis * 10000
+                    if stamp != entry and (not closed or stamp != exit_) or value > 0:
+                        debit += value
+                        count += 1
+            return debit, count
+        for order in saved["orders"]:
+            stamp, price = order["execution_ts_ms"], order["price"]
+            if (order["quantity"] != 1 or not START_MS <= stamp < END_MS
+                    or not math.isclose(order["cost_bps"], one_way, abs_tol=1e-9)):
+                raise ScreenError("BBAND_SAVED_ORDER_COST_CLOCK")
+            if stamp < last_stamp:
+                raise ScreenError("BBAND_SAVED_EXECUTION_CHRONOLOGY")
+            last_stamp = stamp
+            paid += one_way
+            if order["kind"] == "ENTRY":
+                if position is not None or stamp not in opens or price != float(opens[stamp]["open"]):
+                    raise ScreenError("BBAND_SAVED_ENTRY_PRICE")
+                verify_signal(order, "entry", stamp)
+                identity = f"{symbol}:{stamp}:{order['signal_open_ts_ms']}"
+                if order["entry_identity"] != identity:
+                    raise ScreenError("BBAND_SAVED_ENTRY_SIGNAL_IDENTITY")
+                position = {"entry_ts_ms": stamp, "entry_price": price, "entry_identity": identity,
+                            **{k: order[k] for k in clock_keys}}
+            elif order["kind"] == "EXIT":
+                if position is None or order["entry_identity"] != position["entry_identity"] or trade_index >= len(saved["trades"]):
+                    raise ScreenError("BBAND_SAVED_EXIT_BINDING")
+                if stamp <= position["entry_ts_ms"]:
+                    raise ScreenError("BBAND_SAVED_EXECUTION_CHRONOLOGY")
+                trade = saved["trades"][trade_index]
+                if order["reason"] == "NEXT_AVAILABLE_OPEN_RSI_EXIT":
+                    decision = verify_signal(order, "exit", stamp)
+                    first = next((d for d in decisions if d["exit"] and
+                                  d["signal_open_ts_ms"] >= position["entry_ts_ms"]), None)
+                    if (first != decision or any(trade.get("exit_" + k) != decision[k] for k in clock_keys)):
+                        raise ScreenError("BBAND_SAVED_EXIT_FIRST_SIGNAL_BINDING")
+                basis = position["entry_price"]
+                stop, roi = float(Decimal(str(basis)) * Decimal("0.75")), float(Decimal(str(basis)) * Decimal("1.10"))
+                reason = order["reason"]
+                if reason.startswith("INTRABAR"):
+                    bar = closes.get(stamp)
+                    valid = (bar is not None and bar["available_ts_ms"] == stamp and stop < float(bar["open"]) < roi
+                             and (reason == "INTRABAR_STOP_FIRST" and float(bar["low"]) <= stop and price == stop
+                                  or reason == "INTRABAR_ROI" and float(bar["low"]) > stop and float(bar["high"]) >= roi and price == roi))
+                else:
+                    bar = opens.get(stamp)
+                    valid = bar is not None and price == float(bar["open"]) and (
+                        reason == "OPEN_STOP" and price <= stop or reason == "OPEN_ROI" and price >= roi
+                        or reason == "NEXT_AVAILABLE_OPEN_RSI_EXIT" and stop < price < roi)
+                gross = (price / basis - 1) * 10000
+                debit, count = funding(position["entry_ts_ms"], stamp, basis, True)
+                if (not valid or any(trade.get(k) != position[k] for k in position)
+                        or trade["symbol"] != symbol or trade["exit_ts_ms"] != stamp or trade["exit_price"] != price
+                        or trade["exit_reason"] != reason or not math.isclose(trade["gross_bps"], gross, abs_tol=1e-9)
+                        or not math.isclose(trade["cost_bps"], 2 * one_way, abs_tol=1e-9)
+                        or not math.isclose(trade["funding_bps"], debit, abs_tol=1e-9)
+                        or trade["funding_settlements"] != count
+                        or not math.isclose(trade["net_bps"], gross - 2 * one_way - debit, abs_tol=1e-9)):
+                    raise ScreenError("BBAND_SAVED_EXIT_GROSS_FUNDING_AUDIT")
+                trade_index += 1
+                position = None
+            else:
+                raise ScreenError("BBAND_SAVED_ORDER_KIND")
+        open_position = saved["open_position"]
+        if ((position is None) != (open_position is None) or trade_index != len(saved["trades"])
+                or position is not None and any(position[k] != open_position.get(k) for k in position)
+                or not math.isclose(paid, saved["paid_trading_cost_bps"], abs_tol=1e-9)
+                or not math.isclose(paid, sum(t["cost_bps"] for t in saved["trades"]) + (one_way if position else 0), abs_tol=1e-9)):
+            raise ScreenError("BBAND_SAVED_OPEN_COUNT_PAID_COST_AUDIT")
+        if position is not None and open_position["funding_bps_to_end_exclusive"] is not None:
+            debit, count = funding(position["entry_ts_ms"], END_MS, position["entry_price"], False)
+            if not math.isclose(open_position["funding_bps_to_end_exclusive"], debit, abs_tol=1e-9) or open_position["funding_settlements"] != count:
+                raise ScreenError("BBAND_SAVED_OPEN_FUNDING_AUDIT")
+    gaps = sum(int(x["gap_quarantine"] is not None or x["protective_touch_quarantine"] is not None) for x in accounting.values())
+    unresolved = sum(int(x["open_position"] is not None or x["pending_entry"] is not None or x["pending_exit"] is not None or x["gap_quarantine"] is not None or x["protective_touch_quarantine"] is not None) for x in accounting.values())
+    disposition = ("BLOCKED_INPUT_GAP_OR_PROTECTIVE_CLOCK" if gaps else "BLOCKED_TERMINAL_OUTCOME_UNRESOLVED" if unresolved else
+                   "SCREEN_SURVIVOR_PENDING_FULL" if result["cost_1x"]["T"] > 0 and result["cost_1x"]["Net_bps"] > 0 and result["cost_2x"]["Net_bps"] > 0 else "REJECT_ECONOMIC_EARLY")
+    if result["census"]["gap_quarantined"] != gaps or result["census"]["unresolved_end"] != unresolved or result["disposition"] != disposition:
+        raise ScreenError("BBAND_SAVED_DISPOSITION_AUDIT")
+
+
+def validate_bband_preflight(activation: Mapping[str, Any], receipt: Mapping[str, Any]) -> None:
+    proof = activation.get("density_preflight")
+    if not isinstance(proof, dict) or proof.get("result_sha256") != digest({k: v for k, v in proof.items() if k != "result_sha256"}):
+        raise ScreenError("BBAND_PREFLIGHT_HASH_REQUIRED")
+    candidate = proof.get("candidates", {}).get(BBAND_RSI_ID, {})
+    if (proof.get("period_ms") != [START_MS, END_MS] or proof.get("source_inventory_sha256") != SOURCE_INVENTORY_SHA256
+            or proof.get("economic_screen_consumed") != 0 or proof.get("order_authority") != "BLOCKED"
+            or any(candidate.get(k) != v for k, v in source_binding(PROFILES[BBAND_RSI_ID]).items())
+            or candidate.get("signal_rules") != PROFILES[BBAND_RSI_ID]["signal_rules"] or candidate.get("timeframe_min") != 60
+            or type(candidate.get("source_exact_episodes")) is not int or candidate["source_exact_episodes"] <= 0):
+        raise ScreenError("BBAND_PREFLIGHT_SOURCE_RULE_WINDOW_DENSITY")
+    saved, expected = dict(proof.get("receipts", {}).get("60", {})), dict(receipt)
+    for value in (saved, expected):
+        value.pop("receipt_sha256", None)
+        value.pop("order_adapter", None)
+    if saved != expected or activation.get("funding_hashes") != six_funding_hashes():
+        raise ScreenError("BBAND_PREFLIGHT_INPUT_FUNDING_BINDING")
+
+
 def validate_eth_preflight(activation: Mapping[str, Any], receipt: Mapping[str, Any]) -> None:
     proof = activation.get("density_preflight")
     if not isinstance(proof, dict) or proof.get("result_sha256") != digest({k: v for k, v in proof.items() if k != "result_sha256"}):
@@ -1452,6 +1692,8 @@ def execute(source_root: Path, activation_path: Path, output_dir: Path) -> dict[
             raise ScreenError("BTC_FUNDING_ACTIVATION_BINDING")
     if profile["candidate_id"] == ETH_SESSION_ID:
         validate_eth_preflight(activation, receipt)
+    if profile["candidate_id"] == BBAND_RSI_ID:
+        validate_bband_preflight(activation, receipt)
     start = {
         "schema": "zel.issue1388.alpha_screen_start.v1", "issue": 1388,
         "candidate_id": profile["candidate_id"], "state": "STARTED_AFTER_INPUT_VALIDATION_BEFORE_SIGNAL_COMPUTE",
@@ -1463,6 +1705,8 @@ def execute(source_root: Path, activation_path: Path, output_dir: Path) -> dict[
         start.update(funding_raw_sha256=BTC_FUNDING_RAW_SHA256, funding_receipt_sha256=BTC_FUNDING_RECEIPT_SHA256)
     if profile["candidate_id"] == ETH_SESSION_ID:
         start.update(funding_raw_sha256=ETH_FUNDING_RAW_SHA256, funding_receipt_sha256=ETH_FUNDING_RECEIPT_SHA256)
+    if profile["candidate_id"] == BBAND_RSI_ID:
+        start.update(funding_hashes=six_funding_hashes())
     start_commit = create_record(profile["execution_ref"], "STARTED.json", start, head)
     output_dir.mkdir(parents=True)
     write_once(output_dir / "SOURCE_RECEIPT.json", receipt)
@@ -1479,6 +1723,14 @@ def execute(source_root: Path, activation_path: Path, output_dir: Path) -> dict[
                 handle.write((INTAKE_PATH.parent / filename).read_bytes())
                 handle.flush()
                 os.fsync(handle.fileno())
+    if profile["candidate_id"] == BBAND_RSI_ID:
+        for symbol in SYMBOLS:
+            for kind in ("RAW", "RECEIPT"):
+                filename = symbol.split("-")[0] + "_FUNDING_" + kind + ".json"
+                with (output_dir / filename).open("xb") as handle:
+                    handle.write((INTAKE_PATH.parent / filename).read_bytes())
+                    handle.flush()
+                    os.fsync(handle.fileno())
     result = screen(market, profile)
     write_once(output_dir / "RESULT.json", result)
     audited = read_json(output_dir / "RESULT.json")
@@ -1487,6 +1739,8 @@ def execute(source_root: Path, activation_path: Path, output_dir: Path) -> dict[
         raise ScreenError("SAVED_RESULT_AUDIT_FAIL")
     if profile["candidate_id"] == ETH_SESSION_ID:
         audit_eth_result(audited, market["frames"]["ETH-USDT"].to_dict("records"), market["eth_funding"], float(market["costs"]["ETH-USDT"]))
+    if profile["candidate_id"] == BBAND_RSI_ID:
+        audit_bband_result(audited, market)
     envelope = {"schema": "zel.issue1388.persisted_result.v1", "issue": 1388, "execution_commit_sha": start_commit, "result": result, "order_authority": "BLOCKED"}
     envelope = {**envelope, "envelope_sha256": digest(envelope)}
     result_commit = create_record(profile["result_ref"], "RESULT.json", envelope, start_commit)

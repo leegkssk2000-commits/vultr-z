@@ -5,6 +5,8 @@ on:
     paths:
       - '.github/workflows/issue1388-internet-alpha-v1.yml'
       - 'ops/issue1388_alpha_screen_v1.py'
+      - 'ops/issue1388_preclaim_recovery_v1.py'
+      - 'tests/test_issue1388_preclaim_recovery_v1.py'
       - 'tests/test_issue1388_alpha_screen_v1.py'
       - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/**'
   push:
@@ -16,6 +18,8 @@ on:
       - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/PREFLIGHT_004.json'
       - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/ACTIVATION_003.json'
       - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/ACTIVATION_004.json'
+      - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/RECOVERY_004_1.json'
+      - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/RECOVERY_004_2.json'
 
 permissions:
   contents: read
@@ -23,6 +27,7 @@ permissions:
 concurrency:
   group: issue1388-contract-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   contract-tests:
@@ -33,7 +38,7 @@ jobs:
         with:
           python-version: '3.12.14'
       - run: python -m pip install --disable-pip-version-check numpy==2.4.3 pandas==3.0.1 pytest==9.0.2
-      - run: python -m pytest -q tests/test_issue1388_alpha_screen_v1.py
+      - run: python -m pytest -q tests/test_issue1388_alpha_screen_v1.py tests/test_issue1388_preclaim_recovery_v1.py
       - run: python -m py_compile ops/issue1388_alpha_screen_v1.py && git diff --check
 
   cheap-screen-001:
@@ -48,6 +53,7 @@ jobs:
     concurrency:
       group: a1-global-heavy-economic-evaluator-v1
       cancel-in-progress: false
+      queue: max
     steps:
       - uses: actions/checkout@v4
         with:
@@ -155,6 +161,7 @@ jobs:
     concurrency:
       group: a1-global-heavy-economic-evaluator-v1
       cancel-in-progress: false
+      queue: max
     steps:
       - uses: actions/checkout@v4
         with:
@@ -379,13 +386,20 @@ jobs:
     concurrency:
       group: a1-global-heavy-economic-evaluator-v1
       cancel-in-progress: false
+      queue: max
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.14'
+      - run: python -m pip install --disable-pip-version-check numpy==2.4.3 pandas==3.0.1
       - name: Verify one-shot activation commit
         id: activation
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           python - <<'PY'
           import json, os, subprocess
@@ -398,7 +412,8 @@ jobs:
           parent = subprocess.check_output(['git','rev-parse','HEAD^'], text=True).strip()
           changed = subprocess.check_output(['git','diff','--name-status','--no-renames',parent,head], text=True).splitlines()
           if changed != ['A\t' + str(path)]:
-              raise SystemExit('ACTIVATION_CHANGED_PATH_PROFILE')
+              from ops.issue1388_preclaim_recovery_v1 import recover
+              recover(Path.cwd(), path, head, parent, changed)
           source = value.get('reviewed_source_sha')
           if subprocess.run(['git','merge-base','--is-ancestor',source,parent]).returncode:
               raise SystemExit('REVIEWED_SOURCE_NOT_ANCESTOR')
@@ -409,10 +424,6 @@ jobs:
               handle.write('number=' + number + '\n')
           PY
       - run: git checkout --detach '${{ steps.activation.outputs.reviewed_source_sha }}'
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12.14'
-      - run: python -m pip install --disable-pip-version-check numpy==2.4.3 pandas==3.0.1
       - name: Require configured existing read-only connection
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}

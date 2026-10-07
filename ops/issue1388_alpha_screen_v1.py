@@ -220,11 +220,26 @@ def source_receipt(market: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _rsi(close: pd.Series, period: int) -> pd.Series:
-    change = close.diff()
-    gain = change.clip(lower=0).ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
-    loss = (-change.clip(upper=0)).ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
-    rs = gain / loss.replace(0, np.nan)
-    return 100 - 100 / (1 + rs)
+    values = close.to_numpy(dtype=float)
+    output = np.full(len(values), np.nan, dtype=float)
+    if len(values) <= period:
+        return pd.Series(output, index=close.index)
+    delta = np.diff(values)
+    gain = np.maximum(delta, 0.0)
+    loss = np.maximum(-delta, 0.0)
+    average_gain = float(gain[:period].mean())
+    average_loss = float(loss[:period].mean())
+
+    def value() -> float:
+        denominator = average_gain + average_loss
+        return 100.0 * average_gain / denominator if denominator else 0.0
+
+    output[period] = value()
+    for i in range(period + 1, len(values)):
+        average_gain = (average_gain * (period - 1) + gain[i - 1]) / period
+        average_loss = (average_loss * (period - 1) + loss[i - 1]) / period
+        output[i] = value()
+    return pd.Series(output, index=close.index)
 
 
 def _cci(frame: pd.DataFrame, period: int) -> pd.Series:
@@ -260,7 +275,7 @@ def _roi(duration_minutes: int) -> float:
     return 0.27058
 
 
-def replay_symbol(symbol: str, frame: pd.DataFrame, cost_bps: float) -> tuple[list[dict[str, Any]], int, int, int]:
+def replay_symbol(symbol: str, frame: pd.DataFrame, cost_bps: float) -> tuple[list[dict[str, Any]], int, int, int, int]:
     entry_signal, exit_signal = signals(frame)
     rows = frame.to_dict("records")
     trades: list[dict[str, Any]] = []
@@ -328,7 +343,7 @@ def replay_symbol(symbol: str, frame: pd.DataFrame, cost_bps: float) -> tuple[li
         if position is not None and bool(exit_signal.iloc[i]):
             pending_exit = True
     unresolved = int(position is not None or pending_entry is not None)
-    return trades, rejected_occupied, unresolved, gap_quarantined
+    return trades, signal_count, rejected_occupied, unresolved, gap_quarantined
 
 
 def summarize(trades: list[dict[str, Any]], multiplier: int) -> dict[str, Any]:
@@ -371,9 +386,9 @@ def screen(market: Mapping[str, Any]) -> dict[str, Any]:
     all_trades: list[dict[str, Any]] = []
     signals_total = occupied = unresolved = gap_quarantined = 0
     for symbol in SYMBOLS:
-        trades, rejected, open_count, quarantined = replay_symbol(symbol, market["frames"][symbol], float(market["costs"][symbol]))
+        trades, signal_count, rejected, open_count, quarantined = replay_symbol(symbol, market["frames"][symbol], float(market["costs"][symbol]))
         all_trades.extend(trades)
-        signals_total += len(trades) + rejected + open_count
+        signals_total += signal_count
         occupied += rejected
         unresolved += open_count
         gap_quarantined += quarantined

@@ -418,7 +418,7 @@ def test_saved_terminal_tamper_is_rejected_even_after_outer_rehash(monkeypatch):
     result['terminal_report']['cost_scenarios']['reference_1x']['combined_entry_normalized_bps'] += 1000
     result['result_sha256'] = common.digest({k: v for k, v in result.items() if k != 'result_sha256'})
     with pytest.raises(common.ScreenError, match='ETH_SAVED_TERMINAL'):
-        common.audit_eth_result(result, market['frames']['ETH-USDT'].to_dict('records'))
+        common.audit_eth_result(result, market['frames']['ETH-USDT'].to_dict('records'), market['eth_funding'], 14.0)
 
 
 def fixture_activation(market, head):
@@ -471,7 +471,7 @@ def test_common_fixture_verify_start_model_save_audit_persist(monkeypatch, tmp_p
             assert value['funding_raw_sha256'] == common.ETH_FUNDING_RAW_SHA256
         else:
             assert (tmp_path / 'output/RESULT.json').exists()
-            common.audit_eth_result(value['result'], market['frames']['ETH-USDT'].to_dict('records'))
+            common.audit_eth_result(value['result'], market['frames']['ETH-USDT'].to_dict('records'), market['eth_funding'], 14.0)
         return 'b' * 40
     monkeypatch.setattr(common, 'create_record', record)
     value = common.execute(Path('/ARTIFICIAL_ONLY'), activation_path, tmp_path / 'output')
@@ -496,3 +496,16 @@ def test_invalid_saved_density_stops_before_start_claim(monkeypatch, tmp_path):
     monkeypatch.setattr(common, 'create_record', lambda *args: pytest.fail('claim before preflight'))
     with pytest.raises(common.ScreenError, match='ETH_PREFLIGHT_HASH'):
         common.execute(Path('/ARTIFICIAL_ONLY'), path, tmp_path / 'output')
+
+
+def test_consistent_trade_terminal_outer_rehash_tamper_still_rejected(monkeypatch):
+    market = fixture_market(monkeypatch)
+    result = common.screen(market, common.PROFILES[common.ETH_SESSION_ID])
+    result['trades'][0]['gross_bps'] += 1000
+    result['session_accounting']['trades'] = result['trades']
+    result['cost_1x'] = common.summarize(result['trades'], 1)
+    result['cost_2x'] = common.summarize(result['trades'], 2)
+    result['terminal_report'] = terminal_eth_report(result['session_accounting'], market['frames']['ETH-USDT'].to_dict('records'), end_ms=common.END_MS)
+    result['result_sha256'] = common.digest({k: v for k, v in result.items() if k != 'result_sha256'})
+    with pytest.raises(common.ScreenError, match='ETH_SAVED_CLOSED_ARITHMETIC'):
+        common.audit_eth_result(result, market['frames']['ETH-USDT'].to_dict('records'), market['eth_funding'], 14.0)

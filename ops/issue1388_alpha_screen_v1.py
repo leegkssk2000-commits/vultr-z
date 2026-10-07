@@ -1333,12 +1333,77 @@ def validate_btc_preflight(activation: Mapping[str, Any], receipt: Mapping[str, 
         raise ScreenError("BTC_SHOCK_PREFLIGHT_INPUT_DRIFT")
 
 
-def audit_eth_result(result: Mapping[str, Any], rows: list[dict[str, Any]]) -> None:
+def audit_eth_result(result: Mapping[str, Any], rows: list[dict[str, Any]],
+                     funding_rows: list[dict[str, Any]], roundtrip_cost_bps: float) -> None:
     from ops.issue1388_eth_session_v1 import terminal_eth_report
     accounting = result.get("session_accounting", {})
     if (result.get("trades") != accounting.get("trades")
             or result.get("terminal_report") != terminal_eth_report(accounting, rows, end_ms=END_MS)):
         raise ScreenError("ETH_SAVED_TERMINAL_OR_LEDGER_AUDIT_FAIL")
+    # Independent stored-order arithmetic, not another signal/market replay.
+    prices = {row["open_ts_ms"]: float(row["open"]) for row in rows}
+    trades = result["trades"]
+    position = None
+    trade_index = 0
+    paid_cost = 0.0
+    last_time = None
+    one_way = roundtrip_cost_bps / 2
+    def funding(entry: int, exit_: int, side: int, basis: float, closed: bool) -> float:
+        total = 0.0
+        for row in funding_rows:
+            stamp = row["fundingTime"]
+            if entry <= stamp <= exit_ and stamp < END_MS:
+                debit = side * float(row["fundingRate"]) * float(row["markPrice"]) / basis * 10000
+                if stamp != entry and (not closed or stamp != exit_) or debit > 0:
+                    total += debit
+        return total
+    for order in accounting["orders"]:
+        stamp, price = order["execution_ts_ms"], order["execution_price"]
+        current = 0 if position is None else position["signed_units"]
+        desired = order["desired_units"]
+        if (type(desired) is not int or desired not in (-1, 0, 1) or order["current_units"] != current
+                or order["quantity"] != abs(desired - current) or order["quantity"] == 0
+                or not START_MS <= stamp < END_MS or (last_time is not None and stamp <= last_time)
+                or not order["available_ts_ms"] <= stamp < order["expires_ts_ms"]
+                or prices.get(stamp) != price
+                or not math.isclose(order["cost_bps"], order["quantity"] * one_way, abs_tol=1e-9)):
+            raise ScreenError("ETH_SAVED_ORDER_ARITHMETIC_AUDIT_FAIL")
+        paid_cost += order["cost_bps"]
+        last_time = stamp
+        if position is not None:
+            if trade_index >= len(trades):
+                raise ScreenError("ETH_SAVED_CLOSED_LEDGER_COUNT")
+            trade = trades[trade_index]
+            basis, entry = position["entry_price"], position["entry_ts_ms"]
+            gross = current * (price / basis - 1) * 10000
+            signed_funding = funding(entry, stamp, current, basis, True)
+            if (any(trade.get(k) != position[k] for k in ("entry_ts_ms", "entry_price", "signed_units"))
+                    or trade["exit_ts_ms"] != stamp or trade["exit_price"] != price
+                    or not math.isclose(trade["gross_bps"], gross, abs_tol=1e-9)
+                    or not math.isclose(trade["cost_bps"], roundtrip_cost_bps, abs_tol=1e-9)
+                    or not math.isclose(trade["funding_bps"], signed_funding, abs_tol=1e-9)):
+                raise ScreenError("ETH_SAVED_CLOSED_ARITHMETIC_AUDIT_FAIL")
+            trade_index += 1
+            position = None
+        if desired:
+            position = {"signed_units": desired, "entry_price": price, "entry_ts_ms": stamp}
+    if trade_index != len(trades) or not math.isclose(paid_cost, accounting["paid_trading_cost_bps"], abs_tol=1e-9):
+        raise ScreenError("ETH_SAVED_LEDGER_COUNT_COST_AUDIT_FAIL")
+    open_position = accounting["open_position"]
+    unresolved = int(open_position is not None or accounting["pending_target"] is not None or accounting["gap_quarantine"] is not None)
+    expected_disposition = ("BLOCKED_INPUT_GAP_WITH_OPEN_STATE" if accounting["gap_quarantine"] is not None else
+                            "BLOCKED_TERMINAL_OUTCOME_UNRESOLVED" if unresolved else
+                            "SCREEN_SURVIVOR_PENDING_FULL" if result["cost_1x"]["T"] > 0 and result["cost_1x"]["Net_bps"] > 0 and result["cost_2x"]["Net_bps"] > 0 else "REJECT_ECONOMIC_EARLY")
+    if (accounting["unresolved_end"] != unresolved or result["census"]["unresolved_end"] != unresolved
+            or result["disposition"] != expected_disposition):
+        raise ScreenError("ETH_SAVED_DISPOSITION_AUDIT_FAIL")
+    if ((position is None) != (open_position is None)
+            or position is not None and any(position[k] != open_position.get(k) for k in position)):
+        raise ScreenError("ETH_SAVED_OPEN_LEDGER_AUDIT_FAIL")
+    if open_position is not None and accounting["gap_quarantine"] is None:
+        expected = funding(position["entry_ts_ms"], END_MS, position["signed_units"], position["entry_price"], False)
+        if not math.isclose(open_position["funding_bps_to_end_exclusive"], expected, abs_tol=1e-9):
+            raise ScreenError("ETH_SAVED_OPEN_FUNDING_AUDIT_FAIL")
 
 
 def validate_eth_preflight(activation: Mapping[str, Any], receipt: Mapping[str, Any]) -> None:
@@ -1417,7 +1482,7 @@ def execute(source_root: Path, activation_path: Path, output_dir: Path) -> dict[
     if supplied != digest(audited) or audited.get("cost_1x") != summarize(audited["trades"], 1) or audited.get("cost_2x") != summarize(audited["trades"], 2):
         raise ScreenError("SAVED_RESULT_AUDIT_FAIL")
     if profile["candidate_id"] == ETH_SESSION_ID:
-        audit_eth_result(audited, market["frames"]["ETH-USDT"].to_dict("records"))
+        audit_eth_result(audited, market["frames"]["ETH-USDT"].to_dict("records"), market["eth_funding"], float(market["costs"]["ETH-USDT"]))
     envelope = {"schema": "zel.issue1388.persisted_result.v1", "issue": 1388, "execution_commit_sha": start_commit, "result": result, "order_authority": "BLOCKED"}
     envelope = {**envelope, "envelope_sha256": digest(envelope)}
     result_commit = create_record(profile["result_ref"], "RESULT.json", envelope, start_commit)

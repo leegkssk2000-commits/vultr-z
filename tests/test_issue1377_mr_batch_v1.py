@@ -525,5 +525,9 @@ def test_workflow_tracks_all_execution_dependencies() -> None:
     assert "group: a1-global-heavy-economic-evaluator-v1" in workflow
     assert "cancel-in-progress: false" in workflow
     assert batch.V8_TOKEN in workflow
+    assert "issue1377-mr-v8-prestart-recovery-1-20261007T0220Z-542be1c" in workflow
+    assert "ISSUE1377_V8_PRIOR_JOB_NOT_ZERO_STEP_CANCELLED" in workflow
+    assert "ISSUE1377_V8_RECOVERY_REF_ALREADY_PRESENT" in workflow
+    assert "V8_EXECUTION_RECOVERY.json" in workflow
     assert "python ops/issue1377_mr_batch_v1.py" in workflow
     assert "issue1377-mr-v8-economic-results" in workflow

@@ -330,6 +330,11 @@ def test_load_market_disables_mutable_cache(monkeypatch) -> None:
     assert set(loaded["frames"]) == set(batch.rules.PARENT_SYMBOLS)
 
 
+def test_frozen_cost_snapshot_matches_driver_hash() -> None:
+    assert batch.COST_PATH.is_file()
+    assert batch.file_sha256(batch.COST_PATH) == batch.COST_SHA256
+
+
 def test_claim_is_consumed_once_before_compute(monkeypatch) -> None:
     m = manifest()
     _, claim = authority(m)

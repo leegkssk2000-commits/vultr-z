@@ -143,3 +143,24 @@ def test_public_read_proof_does_not_expand_token_permissions(monkeypatch):
     monkeypatch.setenv('GH_TOKEN','not-to-be-transmitted-in-public-proof-read')
     assert r.get('/actions/runs/1')=={'id':1}
     assert not seen[0].has_header('Authorization')
+
+
+@pytest.mark.parametrize('name', [
+    'a1-keltner-add-only-quality-gate-v1.yml',
+    'a1-trend-ma-macd-ablation-child-v1.yml',
+])
+def test_proven_incoming_jobs_preserve_pending_and_source_only_push(name):
+    """A scheduling-only merge must not activate another owner's evaluator."""
+    from pathlib import Path
+    text = (Path(r.__file__).resolve().parents[1] / '.github/workflows' / name).read_text()
+    pr, tail = text.split('  push:', 1)
+    push, later = tail.split('  workflow_dispatch:', 1)
+    path = "      - '.github/workflows/" + name + "'"
+    assert path in pr and path not in push
+    source_paths = [line for line in pr.splitlines() if line.startswith("      - 'backend/")]
+    assert source_paths and all(line in push for line in source_paths)
+    assert "cron: '17 4,10,16,22 * * *'" in later
+    assert 'if: github.event_name != \'pull_request\'' in later
+    assert 'if: github.event_name == \'pull_request\'' in later
+    assert '      group: a1-global-heavy-economic-evaluator-v1\n      cancel-in-progress: false\n      queue: max' in later
+    assert 'permissions:\n  contents: write\n  issues: write' in text

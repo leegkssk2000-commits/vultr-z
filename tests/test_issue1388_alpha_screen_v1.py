@@ -472,3 +472,132 @@ def test_activation_binds_paper_version_and_sha_without_fake_git_identity(tmp_pa
     path.write_text(json.dumps(value))
     with pytest.raises(screen.ScreenError, match="ACTIVATION_BINDING:source_sha256"):
         screen.validate_activation(path, head)
+
+
+def test_btc_shock_log_threshold_is_not_simple_return() -> None:
+    # -1.495% arithmetic is below the exact log threshold, but above simple -1.5%.
+    data = frame_30m(6, screen.START_MS)
+    data = screen.aggregate_30m_to_1h(data)
+    data.loc[:, 'close'] = [100.0, 98.505, 98.505]
+    assert screen.btc_shock_signals(data).tolist() == [False, True, False]
+
+
+def test_btc_shock_counts_consecutive_events_without_exit_or_pnl() -> None:
+    data = screen.aggregate_30m_to_1h(frame_30m(8, screen.START_MS))
+    data.loc[:, 'close'] = [100.0, 98.0, 96.0, 96.0]
+    market = {'frames': {s: data.copy() for s in screen.SYMBOLS}}
+    result = screen.density_census(market, [screen.BTC_SHOCK_ID])
+    value = result['candidates'][screen.BTC_SHOCK_ID]
+    assert value['source_native_btc']['raw_signal_bars'] == 2
+    assert value['source_native_btc']['source_exact_episodes'] == 2
+    assert result['economic_screen_consumed'] == 0
+    assert 'trades' not in result and 'cost_1x' not in result
+
+
+def test_btc_shock_never_bridges_missing_hour_or_segment() -> None:
+    data = screen.aggregate_30m_to_1h(frame_30m(8, screen.START_MS))
+    data.loc[:, 'close'] = [100.0, 90.0, 80.0, 70.0]
+    data.loc[1, 'segment_id'] = 'B'
+    data.loc[2:, 'segment_id'] = 'B'
+    data.loc[3, 'open_ts_ms'] += 3600000
+    assert screen.btc_shock_signals(data).tolist() == [False, False, True, False]
+
+
+def test_btc_shock_signal_is_past_only() -> None:
+    data = screen.aggregate_30m_to_1h(frame_30m(8, screen.START_MS))
+    data.loc[:, 'close'] = [100.0, 98.0, 96.0, 96.0]
+    original = screen.btc_shock_signals(data)
+    data.loc[3, 'close'] = 1.0
+    assert screen.btc_shock_signals(data).iloc[:3].equals(original.iloc[:3])
+
+
+def shock_frame(hours=32):
+    data = screen.aggregate_30m_to_1h(frame_30m(hours * 2, screen.START_MS))
+    data.loc[:, 'close'] = 100.0
+    data.loc[1:, 'close'] = 98.0
+    return data
+
+
+def test_shock_event_deadline_entry_and_occupied_boundary() -> None:
+    data = shock_frame()
+    data.loc[13:, 'close'] = 96.0  # event directly before deadline; rejected while occupied
+    trades, attempts, rejected, unresolved, gaps = screen.replay_btc_shock_symbol('BTC-USDT', data, 14)
+    assert (attempts, rejected, unresolved, gaps) == (2, 1, 0, 0)
+    assert len(trades) == 1
+    assert trades[0]['entry_ts_ms'] == int(data.iloc[2].open_ts_ms)
+    assert trades[0]['exit_ts_ms'] == int(data.iloc[14].open_ts_ms)
+    assert trades[0]['exit_ts_ms'] == int(data.iloc[1].close_ts_ms) + 12 * 3600000
+    assert trades[0]['net_bps'] == trades[0]['gross_bps'] - 14
+
+
+def test_shock_gap_and_end_never_invent_exit() -> None:
+    data = shock_frame(8)
+    trades, _, _, unresolved, gaps = screen.replay_btc_shock_symbol('BTC-USDT', data, 14)
+    assert trades == [] and unresolved == 1 and gaps == 0
+    data.loc[4:, 'segment_id'] = 'B'
+    trades, _, _, unresolved, gaps = screen.replay_btc_shock_symbol('BTC-USDT', data, 14)
+    assert trades == [] and gaps == 1 and unresolved == 1
+
+
+def test_shock_delayed_receipt_does_not_extend_deadline() -> None:
+    data = shock_frame()
+    data.loc[1, 'available_ts_ms'] = int(data.iloc[4].open_ts_ms)
+    trades, _, _, _, _ = screen.replay_btc_shock_symbol('BTC-USDT', data, 14)
+    assert trades[0]['entry_ts_ms'] == int(data.iloc[4].open_ts_ms)
+    assert trades[0]['exit_ts_ms'] == int(data.iloc[14].open_ts_ms)
+
+
+def test_shock_requires_nonzero_saved_density_bound_to_input_before_claim() -> None:
+    data = shock_frame()
+    market = {'frames': {s: data.copy() for s in screen.SYMBOLS}, 'costs': {s:14.0 for s in screen.SYMBOLS}}
+    proof = screen.density_census(market, [screen.BTC_SHOCK_ID])
+    proof.pop('result_sha256')
+    receipt = screen.source_receipt(market, screen.PROFILES[screen.BTC_SHOCK_ID])
+    proof['receipts'] = {'60':receipt}
+    proof['result_sha256'] = screen.digest(proof)
+    screen.validate_btc_preflight({'density_preflight':proof}, receipt)
+    altered = copy.deepcopy(proof)
+    altered['candidates'][screen.BTC_SHOCK_ID]['source_native_btc']['raw_signal_bars'] = 0
+    altered.pop('result_sha256')
+    altered['result_sha256'] = screen.digest(altered)
+    with pytest.raises(screen.ScreenError, match='ZERO_OR_UNCONFIRMED_DENSITY'):
+        screen.validate_btc_preflight({'density_preflight':altered}, receipt)
+    with pytest.raises(screen.ScreenError, match='PREFLIGHT_INPUT_DRIFT'):
+        screen.validate_btc_preflight({'density_preflight':proof}, {**receipt, 'cost_sha256':'tampered'})
+
+
+def test_shock_density_excludes_unavailable_or_end_boundary_event() -> None:
+    data = shock_frame(4)
+    data.loc[1, 'available_ts_ms'] = screen.END_MS
+    market = {'frames': {s:data.copy() for s in screen.SYMBOLS}}
+    result = screen.density_census(market, [screen.BTC_SHOCK_ID])
+    assert result['candidates'][screen.BTC_SHOCK_ID]['source_native_btc']['raw_signal_bars'] == 0
+    data.loc[1, 'available_ts_ms'] = int(data.iloc[1].close_ts_ms)
+    old_end = screen.END_MS
+    try:
+        screen.END_MS = int(data.iloc[1].close_ts_ms)
+        result = screen.density_census({'frames':{s:data.copy() for s in screen.SYMBOLS}}, [screen.BTC_SHOCK_ID])
+        assert result['candidates'][screen.BTC_SHOCK_ID]['source_native_btc']['raw_signal_bars'] == 0
+    finally:
+        screen.END_MS = old_end
+
+
+def test_shock_terminal_unknown_cannot_be_survivor() -> None:
+    data = shock_frame(8)
+    market = {'frames': {s:data.copy() for s in screen.SYMBOLS}, 'costs': {s:14.0 for s in screen.SYMBOLS}}
+    result = screen.screen(market, screen.PROFILES[screen.BTC_SHOCK_ID])
+    assert result['census']['unresolved_end'] == 1
+    assert result['disposition'] == 'BLOCKED_TERMINAL_OUTCOME_UNRESOLVED'
+    assert result['funding_bps'] is None and result['mark_account_NAV'] is None
+
+
+@pytest.mark.parametrize('gross', [-100.0, 100.0])
+def test_shock_missing_funding_blocks_both_economic_verdicts(monkeypatch, gross) -> None:
+    data = shock_frame()
+    trade = {'identity':screen.BTC_SHOCK_ID, 'symbol':'BTC-USDT', 'exit_ts_ms':screen.START_MS+3600000, 'gross_bps':gross, 'cost_bps':14.0, 'net_bps':gross-14.0}
+    monkeypatch.setattr(screen, 'replay_btc_shock_symbol', lambda *args:([trade], 1, 0, 0, 0))
+    market = {'frames':{'BTC-USDT':data}, 'costs':{'BTC-USDT':14.0}}
+    result = screen.screen(market, screen.PROFILES[screen.BTC_SHOCK_ID])
+    assert result['disposition'] == 'BLOCKED_MISSING_FUNDING'
+    assert result['funding_bps'] is None
+    assert result['cost_1x']['Net_bps'] == gross - 14.0  # explicit scenario diagnostic only

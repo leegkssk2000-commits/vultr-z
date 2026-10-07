@@ -332,6 +332,47 @@ def test_eth_density_uses_prior_completed_day_and_counts_transitions() -> None:
     assert bool(available.loc[first_day_decision])
 
 
+def test_eth_density_counts_zero_prior_day_return_as_cash_transition() -> None:
+    start = pd.Timestamp("2026-01-13T00:00:00Z").value // 1_000_000
+    rows = []
+    for i in range(36):
+        open_ms = start + i * 3_600_000
+        rows.append({
+            "open_ts_ms": open_ms, "close_ts_ms": open_ms + 3_600_000,
+            "available_ts_ms": open_ms + 3_600_000, "segment_id": "A",
+            "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0,
+            "volume": 1.0,
+        })
+    data = pd.DataFrame(rows)
+    available, transitions = screen.eth_session_decisions(data)
+    at_17 = data.index[data.open_ts_ms == pd.Timestamp("2026-01-13T17:00:00Z").value // 1_000_000][0]
+    at_05 = data.index[data.open_ts_ms == pd.Timestamp("2026-01-14T05:00:00Z").value // 1_000_000][0]
+    assert bool(transitions.loc[at_17])  # cash -> long night
+    assert bool(available.loc[at_05])
+    assert bool(transitions.loc[at_05])  # long night -> cash day
+
+
+def test_eth_density_uses_completed_boundary_closes_not_current_opens() -> None:
+    start = pd.Timestamp("2026-01-13T00:00:00Z").value // 1_000_000
+    rows = []
+    for i in range(36):
+        open_ms = start + i * 3_600_000
+        close = 100.0 + (i if 5 <= i <= 16 else 0.0)
+        rows.append({
+            "open_ts_ms": open_ms, "close_ts_ms": open_ms + 3_600_000,
+            "available_ts_ms": open_ms + 3_600_000, "segment_id": "A",
+            "open": close, "high": close + 1, "low": close - 1,
+            "close": close, "volume": 1.0,
+        })
+    data = pd.DataFrame(rows)
+    baseline = screen.eth_session_decisions(data)
+    changed = data.copy()
+    changed.loc[changed.open_ts_ms.map(lambda value: pd.Timestamp(int(value), unit="ms", tz="UTC").hour in (5, 17)), "open"] *= 10
+    after = screen.eth_session_decisions(changed)
+    assert baseline[0].tolist() == after[0].tolist()
+    assert baseline[1].tolist() == after[1].tolist()
+
+
 def test_bband_rsi_entry_uses_typical_price_and_completed_1h_segments() -> None:
     data = frame_30m(80, start=screen.START_MS)
     data["open_ts_ms"] = screen.START_MS + data.index * 3_600_000

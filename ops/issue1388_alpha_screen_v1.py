@@ -461,25 +461,27 @@ def eth_session_decisions(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
         if len(part) > 1 and not part["open_ts_ms"].diff().iloc[1:].eq(hour_ms).all():
             raise ScreenError("INTRA_SEGMENT_TIME_GAP")
         prior_day_return: float | None = None
-        day_open: float | None = None
+        day_boundary_close: float | None = None
+        prior_close: float | None = None
         current_side = 0
         for idx, row in part.iterrows():
             hour = pd.Timestamp(int(row.open_ts_ms), unit="ms", tz="UTC").hour
-            desired = 0
+            desired: int | None = None
             if hour == 5:
-                day_open = float(row.open)
-                if prior_day_return is not None and prior_day_return != 0:
-                    desired = -1 if prior_day_return > 0 else 1
+                day_boundary_close = prior_close
+                if prior_day_return is not None:
+                    desired = -1 if prior_day_return > 0 else (1 if prior_day_return < 0 else 0)
                     available.loc[idx] = True
             elif hour == 17:
                 desired = 1
                 available.loc[idx] = True
-            if desired and desired != current_side:
+            if desired is not None and desired != current_side:
                 transitions.loc[idx] = True
                 current_side = desired
             if hour == 17:
-                prior_day_return = None if day_open is None else float(row.open) / day_open - 1.0
-                day_open = None
+                prior_day_return = None if day_boundary_close is None or prior_close is None else prior_close / day_boundary_close - 1.0
+                day_boundary_close = None
+            prior_close = float(row.close)
     return available, transitions
 
 

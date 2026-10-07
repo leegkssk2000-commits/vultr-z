@@ -1095,7 +1095,8 @@ def screen(market: Mapping[str, Any], profile: Mapping[str, Any] | None = None) 
         "order_authority": "BLOCKED", "exchange_order_submitted": False, "promotion": False,
     }
     if profile["candidate_id"] == BTC_SHOCK_ID:
-        if value["disposition"] == "SCREEN_SURVIVOR_PENDING_FULL":
+        if value["disposition"] in ("SCREEN_SURVIVOR_PENDING_FULL", "REJECT_ECONOMIC_EARLY"):
+            # Funding credits as well as debits can change the costed verdict.
             value["disposition"] = "BLOCKED_MISSING_FUNDING"
         value.update(source_hash_kind="RULE_EVIDENCE_SNAPSHOT_NOT_PDF", source_replication=False,
                      funding_bps=None, mark_account_NAV=None,

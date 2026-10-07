@@ -589,3 +589,15 @@ def test_shock_terminal_unknown_cannot_be_survivor() -> None:
     assert result['census']['unresolved_end'] == 1
     assert result['disposition'] == 'BLOCKED_TERMINAL_OUTCOME_UNRESOLVED'
     assert result['funding_bps'] is None and result['mark_account_NAV'] is None
+
+
+@pytest.mark.parametrize('gross', [-100.0, 100.0])
+def test_shock_missing_funding_blocks_both_economic_verdicts(monkeypatch, gross) -> None:
+    data = shock_frame()
+    trade = {'identity':screen.BTC_SHOCK_ID, 'symbol':'BTC-USDT', 'exit_ts_ms':screen.START_MS+3600000, 'gross_bps':gross, 'cost_bps':14.0, 'net_bps':gross-14.0}
+    monkeypatch.setattr(screen, 'replay_btc_shock_symbol', lambda *args:([trade], 1, 0, 0, 0))
+    market = {'frames':{'BTC-USDT':data}, 'costs':{'BTC-USDT':14.0}}
+    result = screen.screen(market, screen.PROFILES[screen.BTC_SHOCK_ID])
+    assert result['disposition'] == 'BLOCKED_MISSING_FUNDING'
+    assert result['funding_bps'] is None
+    assert result['cost_1x']['Net_bps'] == gross - 14.0  # explicit scenario diagnostic only

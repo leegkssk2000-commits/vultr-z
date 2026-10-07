@@ -241,7 +241,11 @@ def load_market(source_root: Path, profile: Mapping[str, Any] | None = None) -> 
     profile = profile or PROFILES[CANDIDATE_ID]
     if file_sha256(COST_PATH) != COST_SHA256:
         raise ScreenError("FROZEN_COST_FILE_DRIFT")
-    frames = source.load_candles(source_root, int(profile["timeframe_min"]), cache_dir=None)
+    timeframe_min = int(profile["timeframe_min"])
+    source_timeframe_min = 30 if timeframe_min == 60 else timeframe_min
+    frames = source.load_candles(source_root, source_timeframe_min, cache_dir=None)
+    if timeframe_min == 60:
+        frames = {symbol: aggregate_30m_to_1h(frame) for symbol, frame in frames.items()}
     if set(frames) != set(SYMBOLS):
         raise ScreenError("SOURCE_SYMBOL_COHORT_DRIFT")
     selected: dict[str, pd.DataFrame] = {}
@@ -259,6 +263,61 @@ def load_market(source_root: Path, profile: Mapping[str, Any] | None = None) -> 
     if set(costs) != set(SYMBOLS) or any(float(x) <= 0 for x in costs.values()):
         raise ScreenError("COST_PROFILE")
     return {"frames": selected, "costs": costs}
+
+
+def aggregate_30m_to_1h(frame: pd.DataFrame) -> pd.DataFrame:
+    """Build only complete causal UTC-hour bars without bridging source gaps."""
+    required = {
+        "open_ts_ms", "close_ts_ms", "available_ts_ms", "segment_id",
+        "open", "high", "low", "close", "volume",
+    }
+    if not required.issubset(frame.columns) or frame.empty:
+        raise ScreenError("INCOMPLETE_30M_SOURCE_FOR_1H")
+    rows: list[dict[str, Any]] = []
+    incomplete: list[int] = []
+    hour_ms = 3_600_000
+    half_hour_ms = 1_800_000
+    candidate = frame.copy()
+    candidate["_hour"] = (candidate.open_ts_ms.astype("int64") // hour_ms) * hour_ms
+    for hour, part in candidate.groupby("_hour", sort=True):
+        part = part.sort_values("open_ts_ms")
+        expected = [int(hour), int(hour) + half_hour_ms]
+        complete = (
+            len(part) == 2
+            and part.open_ts_ms.astype("int64").tolist() == expected
+            and part.close_ts_ms.astype("int64").tolist() == [expected[1], int(hour) + hour_ms]
+            and part.segment_id.nunique(dropna=False) == 1
+        )
+        if not complete:
+            incomplete.append(int(hour))
+            continue
+        rows.append({
+            "open_ts_ms": int(hour),
+            "close_ts_ms": int(hour) + hour_ms,
+            "available_ts_ms": int(part.available_ts_ms.max()),
+            "source_segment_id": part.iloc[0].segment_id,
+            "open": float(part.iloc[0].open),
+            "high": float(part.high.max()),
+            "low": float(part.low.min()),
+            "close": float(part.iloc[-1].close),
+            "volume": float(part.volume.sum()),
+        })
+    if not rows:
+        raise ScreenError("NO_COMPLETE_1H_BUCKETS")
+    output = pd.DataFrame(rows)
+    boundary = (
+        output.source_segment_id.ne(output.source_segment_id.shift())
+        | output.open_ts_ms.diff().ne(hour_ms)
+    )
+    output["segment_id"] = boundary.cumsum().map(lambda value: f"DERIVED_1H_{int(value)}")
+    output = output.drop(columns=["source_segment_id"])
+    output.attrs = {
+        **dict(frame.attrs),
+        "derived_from_timeframe_min": 30,
+        "timeframe_min": 60,
+        "incomplete_buckets": incomplete,
+    }
+    return output
 
 
 def source_receipt(market: Mapping[str, Any], profile: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -385,6 +444,45 @@ def _episode_starts(signal: pd.Series, frame: pd.DataFrame) -> pd.Series:
     return starts
 
 
+def eth_session_decisions(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """Past-only ETH session decisions and actual position transitions.
+
+    The 05:00 UTC day decision uses only the preceding completed 05:00-17:00
+    return.  The 17:00 UTC night decision is long.  Gaps reset all state.
+    """
+    if "segment_id" not in frame:
+        raise ScreenError("SEGMENT_ID_REQUIRED")
+    available = pd.Series(False, index=frame.index)
+    transitions = pd.Series(False, index=frame.index)
+    hour_ms = 3_600_000
+    for _, part in frame.groupby("segment_id", sort=False, dropna=False):
+        if part["segment_id"].isna().any():
+            raise ScreenError("SEGMENT_ID_REQUIRED")
+        if len(part) > 1 and not part["open_ts_ms"].diff().iloc[1:].eq(hour_ms).all():
+            raise ScreenError("INTRA_SEGMENT_TIME_GAP")
+        prior_day_return: float | None = None
+        day_open: float | None = None
+        current_side = 0
+        for idx, row in part.iterrows():
+            hour = pd.Timestamp(int(row.open_ts_ms), unit="ms", tz="UTC").hour
+            desired = 0
+            if hour == 5:
+                day_open = float(row.open)
+                if prior_day_return is not None and prior_day_return != 0:
+                    desired = -1 if prior_day_return > 0 else 1
+                    available.loc[idx] = True
+            elif hour == 17:
+                desired = 1
+                available.loc[idx] = True
+            if desired and desired != current_side:
+                transitions.loc[idx] = True
+                current_side = desired
+            if hour == 17:
+                prior_day_return = None if day_open is None else float(row.open) / day_open - 1.0
+                day_open = None
+    return available, transitions
+
+
 def density_census(market: Mapping[str, Any], candidate_ids: list[str]) -> dict[str, Any]:
     """No-PnL preflight: signal/episode counts only; exits and future outcomes are forbidden."""
     days = (END_MS - START_MS) / 86_400_000
@@ -418,10 +516,7 @@ def density_census(market: Mapping[str, Any], candidate_ids: list[str]) -> dict[
                 raw = bband_rsi_entry_signals(frame)
                 episodes = _episode_starts(raw, frame)
             elif candidate_id == ETH_SESSION_ID:
-                raw = frame.open_ts_ms.map(
-                    lambda value: pd.Timestamp(int(value), unit="ms", tz="UTC").hour in (5, 17)
-                ).astype(bool)
-                episodes = raw.copy()
+                raw, episodes = eth_session_decisions(frame)
             else:
                 raise ScreenError("DENSITY_CANDIDATE_UNSUPPORTED:" + candidate_id)
             raw_count = int((raw & in_window).sum())
@@ -449,6 +544,9 @@ def density_census(market: Mapping[str, Any], candidate_ids: list[str]) -> dict[
             candidate["six_symbol_application"] = "EXPLICIT_OUT_OF_SOURCE_UNIVERSE_EXTENSION_NOT_SOURCE_ECONOMIC_CLAIM"
         elif candidate_id == ETH_SESSION_ID:
             candidate["source_native_eth"] = by_symbol["ETH-USDT"]
+            candidate["source_exact_episodes"] = by_symbol["ETH-USDT"]["source_exact_episodes"]
+            candidate["episodes_per_day"] = by_symbol["ETH-USDT"]["episodes_per_day"]
+            candidate["six_symbol_compatibility_transition_total"] = episode_total
             candidate["six_symbol_application"] = "DENSITY_COMPATIBILITY_ONLY; ECONOMIC_SCREEN_MUST_REMAIN_SOURCE_NATIVE_ETH"
         candidates[candidate_id] = candidate
     value = {
@@ -889,7 +987,10 @@ def screen(market: Mapping[str, Any], profile: Mapping[str, Any] | None = None) 
         gap_quarantined += quarantined
     all_trades.sort(key=lambda row: (row["exit_ts_ms"], row["symbol"]))
     one, two = summarize(all_trades, 1), summarize(all_trades, 2)
-    disposition = "SCREEN_SURVIVOR_PENDING_FULL" if one["T"] > 0 and one["Net_bps"] > 0 and two["Net_bps"] > 0 else "REJECT_ECONOMIC_EARLY"
+    if gap_quarantined:
+        disposition = "BLOCKED_INPUT_GAP_WITH_OPEN_STATE"
+    else:
+        disposition = "SCREEN_SURVIVOR_PENDING_FULL" if one["T"] > 0 and one["Net_bps"] > 0 and two["Net_bps"] > 0 else "REJECT_ECONOMIC_EARLY"
     value = {
         "schema": "zel.issue1388.cheap_screen_result.v1", "issue": 1388,
         "candidate_id": profile["candidate_id"], **source_binding(profile),
@@ -898,7 +999,7 @@ def screen(market: Mapping[str, Any], profile: Mapping[str, Any] | None = None) 
         "signal_rules": profile["signal_rules"],
         "order_adapter": profile["order_adapter"],
         "donor_live_fill_equivalence": False,
-        "census": {"signals_or_attempts": signals_total, "completed": len(all_trades), "occupied_rejections": occupied, "gap_quarantined": gap_quarantined, "unresolved_end": unresolved, "missing_fill_evidence": 0},
+        "census": {"signals_or_attempts": signals_total, "completed": len(all_trades), "occupied_rejections": occupied, "gap_quarantined": gap_quarantined, "unresolved_end": unresolved, "missing_fill_evidence": gap_quarantined},
         "trades": all_trades, "cost_1x": one, "cost_2x": two,
         "disposition": disposition, "full_consumed": 0,
         "order_authority": "BLOCKED", "exchange_order_submitted": False, "promotion": False,

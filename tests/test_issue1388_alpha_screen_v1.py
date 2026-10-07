@@ -228,6 +228,59 @@ def test_rsi_w1_flip_uses_next_open_and_short_direction(monkeypatch) -> None:
     assert trades[0]["exit_reason"] == "NEXT_OPEN_OPPOSITE_EXTREME_FLIP"
 
 
+def test_rsi_w1_open_position_at_gap_blocks_survivor(monkeypatch) -> None:
+    data = frame_30m(12, start=screen.START_MS)
+    data.loc[5:, "segment_id"] = "B"
+
+    def fixed(candidate):
+        long_signal = pd.Series(False, index=candidate.index)
+        short_signal = pd.Series(False, index=candidate.index)
+        long_signal.iloc[1] = True
+        short_signal.iloc[8] = True
+        return long_signal, short_signal
+
+    monkeypatch.setattr(screen, "rsi_w1_signals", fixed)
+    trades, _, _, _, quarantined = screen.replay_rsi_w1_symbol("BTC-USDT", data, 14.0)
+    assert quarantined == 1
+    market = {
+        "frames": {symbol: data.copy() for symbol in screen.SYMBOLS},
+        "costs": {symbol: 14.0 for symbol in screen.SYMBOLS},
+    }
+    result = screen.screen(market, screen.PROFILES[screen.RSI_W1_ID])
+    assert result["disposition"] == "BLOCKED_INPUT_GAP_WITH_OPEN_STATE"
+    assert result["census"]["missing_fill_evidence"] == 1
+
+
+def test_load_market_derives_complete_1h_from_supported_30m_loader(tmp_path: Path, monkeypatch) -> None:
+    from backend.research.rebuild import scalp7_source_data_v2 as source
+
+    start = screen.START_MS - screen.WARMUP_MS
+    rows = int((screen.END_MS - start) / 1_800_000)
+    base = frame_30m(rows, start=start)
+    base.attrs = {
+        "source_inventory_sha256": screen.SOURCE_INVENTORY_SHA256,
+        "minute_gaps": [],
+        "incomplete_buckets": [],
+    }
+    observed: list[int] = []
+
+    def fake_load(root, timeframe, cache_dir):
+        observed.append(timeframe)
+        return {symbol: base.copy() for symbol in screen.SYMBOLS}
+
+    cost_path = tmp_path / "cost.json"
+    cost_path.write_text(json.dumps({"costs_bps": {symbol: 14.0 for symbol in screen.SYMBOLS}}))
+    monkeypatch.setattr(source, "load_candles", fake_load)
+    monkeypatch.setattr(screen, "COST_PATH", cost_path)
+    monkeypatch.setattr(screen, "COST_SHA256", screen.file_sha256(cost_path))
+    market = screen.load_market(tmp_path, screen.PROFILES[screen.ETH_SESSION_ID])
+    assert observed == [30]
+    eth = market["frames"]["ETH-USDT"]
+    assert int(eth.iloc[-1].close_ts_ms) == screen.END_MS
+    assert eth.open_ts_ms.diff().dropna().eq(3_600_000).all()
+    assert eth.attrs["derived_from_timeframe_min"] == 30
+
+
 def test_density_census_has_no_pnl_and_keeps_source_native_btc_separate(monkeypatch) -> None:
     market = {"frames": {symbol: frame_30m(20, start=screen.START_MS) for symbol in screen.SYMBOLS}, "costs": {symbol: 14.0 for symbol in screen.SYMBOLS}}
 
@@ -245,6 +298,38 @@ def test_density_census_has_no_pnl_and_keeps_source_native_btc_separate(monkeypa
     assert row["source_native_btc"]["source_exact_episodes"] == 2
     assert result["economic_screen_consumed"] == 0
     assert "trades" not in result and "net" not in json.dumps(result).lower()
+
+
+def test_eth_density_uses_prior_completed_day_and_counts_transitions() -> None:
+    start = pd.Timestamp("2026-01-13T00:00:00Z").value // 1_000_000
+    rows = []
+    for i in range(72):
+        open_ms = start + i * 3_600_000
+        price = 100.0
+        hour = pd.Timestamp(open_ms, unit="ms", tz="UTC").hour
+        day = i // 24
+        if hour >= 17 or hour < 5:
+            price += day
+        elif day == 0:
+            price += hour
+        elif day == 1:
+            price -= hour
+        rows.append({
+            "open_ts_ms": open_ms, "close_ts_ms": open_ms + 3_600_000,
+            "available_ts_ms": open_ms + 3_600_000, "segment_id": "A",
+            "open": price, "high": price + 1, "low": price - 1,
+            "close": price, "volume": 1.0,
+        })
+    data = pd.DataFrame(rows)
+    available, transitions = screen.eth_session_decisions(data)
+    decision_hours = [pd.Timestamp(int(data.loc[idx, "open_ts_ms"]), unit="ms", tz="UTC").hour for idx in data.index[available]]
+    assert decision_hours[0] == 17  # first 05:00 has no completed prior day input
+    assert set(decision_hours) == {5, 17}
+    assert int(transitions.sum()) <= int(available.sum())
+    first_day_decision = data.index[
+        (data.open_ts_ms == pd.Timestamp("2026-01-14T05:00:00Z").value // 1_000_000)
+    ][0]
+    assert bool(available.loc[first_day_decision])
 
 
 def test_bband_rsi_entry_uses_typical_price_and_completed_1h_segments() -> None:

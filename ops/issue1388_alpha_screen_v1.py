@@ -46,6 +46,9 @@ RESULT_REF = "refs/heads/research-results/issue1388-cheap-swinghigh-v1"
 SYMBOLS = ("BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "DOGE-USDT", "LINK-USDT")
 
 CENDERAWASIH_ID = "E_MULTIMA_CENDERAWASIH_30M_V1"
+RSI_W1_ID = "R_PAPER_RSI_W1_30M_V1"
+BBAND_RSI_ID = "E_FT_BBAND_RSI_1H_V1"
+ETH_SESSION_ID = "R_ETH_SESSION_REVERSAL_1H_V1"
 PROFILES: dict[str, dict[str, Any]] = {
     CANDIDATE_ID: {
         "candidate_id": CANDIDATE_ID,
@@ -68,6 +71,34 @@ PROFILES: dict[str, dict[str, Any]] = {
         "timeframe_min": 30,
         "signal_rules": "SOURCE_EXACT_CENDERAWASIH_30M_V1_DEFAULT_PARAMETERS",
         "order_adapter": "CONSERVATIVE_NEXT_OPEN_TAKER_STOP_FIRST_TRAILING_INTRABAR_WORST_CASE",
+    },
+    RSI_W1_ID: {
+        "candidate_id": RSI_W1_ID,
+        "source_version": "arXiv:2503.18096v1",
+        "source_sha256": "e72cd27ae7e1852876c375f5ff183db64cd814e155d999b468e90298379dc7c5",
+        "activation_token": "[issue1388-alpha-screen-3-rsi-w1-30m-v1]",
+        "execution_ref": "refs/heads/research-execution-consumptions/issue1388-cheap-rsi-w1-30m-v1",
+        "result_ref": "refs/heads/research-results/issue1388-cheap-rsi-w1-30m-v1",
+        "timeframe_min": 30,
+        "screen_symbols": ("BTC-USDT",),
+        "signal_rules": "PUBLISHED_RSI_W1_30M_WILDER5_PRIOR_CLOSED_BAR_GT95_LONG_LT5_SHORT_FLIP",
+        "order_adapter": "CONSERVATIVE_NEXT_OPEN_TAKER_FLIP_NO_END_FORCE_CLOSE",
+    },
+    BBAND_RSI_ID: {
+        "candidate_id": BBAND_RSI_ID,
+        "source_commit": "f3340ce11f5bdf62f598522e64d1f5638eaa13f5",
+        "source_blob": "addc87268affc2f3b1b00549f1ca8b119e41e655",
+        "timeframe_min": 60,
+        "signal_rules": "SOURCE_EXACT_BBAND_RSI_1H_RSI14_LT30_CLOSE_LT_TYPICAL_BB20_2SIGMA",
+        "order_adapter": "DENSITY_PREFLIGHT_ONLY",
+    },
+    ETH_SESSION_ID: {
+        "candidate_id": ETH_SESSION_ID,
+        "source_version": "DOI:10.3390/jrfm19090692",
+        "source_sha256": "dd22882ce5e89f40c5e10ca7a9814180b1b525f5eed4f8a62a2189cb02c139dd",
+        "timeframe_min": 60,
+        "signal_rules": "SOURCE_EXACT_ETH_12H_SESSIONS_05_17_UTC_NIGHT_LONG_DAY_REVERSE_PRIOR_DAY_RETURN",
+        "order_adapter": "DENSITY_PREFLIGHT_ONLY",
     },
 }
 
@@ -176,8 +207,6 @@ def validate_activation(path: Path, head: str) -> dict[str, Any]:
         "candidate_id": profile["candidate_id"],
         "token": profile["activation_token"],
         "reviewed_source_sha": head,
-        "source_commit": profile["source_commit"],
-        "source_blob": profile["source_blob"],
         "source_inventory_sha256": SOURCE_INVENTORY_SHA256,
         "cost_sha256": COST_SHA256,
         "period_ms": [START_MS, END_MS],
@@ -186,6 +215,10 @@ def validate_activation(path: Path, head: str) -> dict[str, Any]:
         "order_authority": "BLOCKED",
         "promotion": False,
     }
+    if "source_sha256" in profile:
+        required.update(source_version=profile["source_version"], source_sha256=profile["source_sha256"])
+    else:
+        required.update(source_commit=profile["source_commit"], source_blob=profile["source_blob"])
     for key, expected in required.items():
         if value.get(key) != expected:
             raise ScreenError("ACTIVATION_BINDING:" + key)
@@ -255,6 +288,12 @@ def source_receipt(market: Mapping[str, Any], profile: Mapping[str, Any] | None 
     return {**value, "receipt_sha256": digest(value)}
 
 
+def source_binding(profile: Mapping[str, Any]) -> dict[str, str]:
+    if "source_sha256" in profile:
+        return {"source_version": str(profile["source_version"]), "source_sha256": str(profile["source_sha256"])}
+    return {"source_commit": str(profile["source_commit"]), "source_blob": str(profile["source_blob"])}
+
+
 def _rsi(close: pd.Series, period: int) -> pd.Series:
     values = close.to_numpy(dtype=float)
     output = np.full(len(values), np.nan, dtype=float)
@@ -299,6 +338,131 @@ def signals(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
         entry.loc[part.index] = ((_cci(part, 72) < -175) & (_rsi(part.close, 36) < 90)).fillna(False)
         exit_.loc[part.index] = ((_cci(part, 66) > -106) & (_rsi(part.close, 45) > 88)).fillna(False)
     return entry, exit_
+
+
+def rsi_w1_signals(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """Published W1 rule evaluated only after each completed 30-minute bar."""
+    if "segment_id" not in frame:
+        raise ScreenError("SEGMENT_ID_REQUIRED")
+    long_signal = pd.Series(False, index=frame.index)
+    short_signal = pd.Series(False, index=frame.index)
+    interval = 30 * 60_000
+    for _, part in frame.groupby("segment_id", sort=False, dropna=False):
+        if part["segment_id"].isna().any():
+            raise ScreenError("SEGMENT_ID_REQUIRED")
+        if len(part) > 1 and not part["open_ts_ms"].diff().iloc[1:].eq(interval).all():
+            raise ScreenError("INTRA_SEGMENT_TIME_GAP")
+        rsi = _rsi(part.close, 5)
+        long_signal.loc[part.index] = rsi.gt(95).fillna(False)
+        short_signal.loc[part.index] = rsi.lt(5).fillna(False)
+    return long_signal, short_signal
+
+
+def bband_rsi_entry_signals(frame: pd.DataFrame) -> pd.Series:
+    """Pinned Freqtrade BbandRsi entry rule; no exit or PnL is evaluated here."""
+    if "segment_id" not in frame:
+        raise ScreenError("SEGMENT_ID_REQUIRED")
+    entry = pd.Series(False, index=frame.index)
+    interval = 60 * 60_000
+    for _, part in frame.groupby("segment_id", sort=False, dropna=False):
+        if part["segment_id"].isna().any():
+            raise ScreenError("SEGMENT_ID_REQUIRED")
+        if len(part) > 1 and not part["open_ts_ms"].diff().iloc[1:].eq(interval).all():
+            raise ScreenError("INTRA_SEGMENT_TIME_GAP")
+        typical = (part.high + part.low + part.close) / 3
+        middle = typical.rolling(20, min_periods=1).mean()
+        std = typical.rolling(20, min_periods=1).std(ddof=1)
+        lower = middle - 2 * std
+        entry.loc[part.index] = ((_rsi(part.close, 14) < 30) & (part.close < lower)).fillna(False)
+    return entry
+
+
+def _episode_starts(signal: pd.Series, frame: pd.DataFrame) -> pd.Series:
+    starts = pd.Series(False, index=signal.index)
+    for _, part in frame.groupby("segment_id", sort=False, dropna=False):
+        local = signal.loc[part.index].fillna(False)
+        starts.loc[part.index] = local & ~local.shift(1, fill_value=False)
+    return starts
+
+
+def density_census(market: Mapping[str, Any], candidate_ids: list[str]) -> dict[str, Any]:
+    """No-PnL preflight: signal/episode counts only; exits and future outcomes are forbidden."""
+    days = (END_MS - START_MS) / 86_400_000
+    candidates: dict[str, Any] = {}
+    for candidate_id in candidate_ids:
+        profile = profile_for(candidate_id)
+        by_symbol: dict[str, Any] = {}
+        raw_total = episode_total = 0
+        for symbol in SYMBOLS:
+            frame = market["frames"][symbol]
+            in_window = (frame.open_ts_ms >= START_MS) & (frame.open_ts_ms < END_MS)
+            if candidate_id == RSI_W1_ID:
+                long_signal, short_signal = rsi_w1_signals(frame)
+                raw = long_signal | short_signal
+                state = pd.Series(0, index=frame.index, dtype=int)
+                state.loc[long_signal] = 1
+                state.loc[short_signal] = -1
+                episodes = pd.Series(False, index=frame.index)
+                prior = 0
+                prior_segment: Any = None
+                for idx, row in frame.iterrows():
+                    segment = row["segment_id"]
+                    if segment != prior_segment:
+                        prior = 0
+                        prior_segment = segment
+                    current = int(state.loc[idx])
+                    if current and current != prior:
+                        episodes.loc[idx] = True
+                        prior = current
+            elif candidate_id == BBAND_RSI_ID:
+                raw = bband_rsi_entry_signals(frame)
+                episodes = _episode_starts(raw, frame)
+            elif candidate_id == ETH_SESSION_ID:
+                raw = frame.open_ts_ms.map(
+                    lambda value: pd.Timestamp(int(value), unit="ms", tz="UTC").hour in (5, 17)
+                ).astype(bool)
+                episodes = raw.copy()
+            else:
+                raise ScreenError("DENSITY_CANDIDATE_UNSUPPORTED:" + candidate_id)
+            raw_count = int((raw & in_window).sum())
+            episode_count = int((episodes & in_window).sum())
+            raw_total += raw_count
+            episode_total += episode_count
+            by_symbol[symbol] = {
+                "raw_signal_bars": raw_count,
+                "source_exact_episodes": episode_count,
+                "episodes_per_day": episode_count / days,
+            }
+        candidate = {
+            "candidate_id": candidate_id,
+            **source_binding(profile),
+            "timeframe_min": profile["timeframe_min"],
+            "signal_rules": profile["signal_rules"],
+            "raw_signal_bars": raw_total,
+            "source_exact_episodes": episode_total,
+            "episodes_per_day": episode_total / days,
+            "symbols_with_episodes": sum(1 for row in by_symbol.values() if row["source_exact_episodes"] > 0),
+            "by_symbol": by_symbol,
+        }
+        if candidate_id == RSI_W1_ID:
+            candidate["source_native_btc"] = by_symbol["BTC-USDT"]
+            candidate["six_symbol_application"] = "EXPLICIT_OUT_OF_SOURCE_UNIVERSE_EXTENSION_NOT_SOURCE_ECONOMIC_CLAIM"
+        elif candidate_id == ETH_SESSION_ID:
+            candidate["source_native_eth"] = by_symbol["ETH-USDT"]
+            candidate["six_symbol_application"] = "DENSITY_COMPATIBILITY_ONLY; ECONOMIC_SCREEN_MUST_REMAIN_SOURCE_NATIVE_ETH"
+        candidates[candidate_id] = candidate
+    value = {
+        "schema": "zel.issue1388.signal_density_preflight.v1",
+        "issue": 1388,
+        "classification": "NO_PNL_NO_EXIT_NO_FUTURE_OUTCOME_SOURCE_EXACT_SIGNAL_CENSUS",
+        "period_ms": [START_MS, END_MS],
+        "source_inventory_sha256": SOURCE_INVENTORY_SHA256,
+        "candidates": candidates,
+        "economic_screen_consumed": 0,
+        "order_authority": "BLOCKED",
+        "exchange_order_submitted": False,
+    }
+    return {**value, "result_sha256": digest(value)}
 
 
 def _tv_wma(series: pd.Series, length: int) -> pd.Series:
@@ -591,6 +755,80 @@ def replay_cenderawasih_symbol(
     return trades, signal_count, rejected_occupied, unresolved, gap_quarantined
 
 
+def replay_rsi_w1_symbol(
+    symbol: str, frame: pd.DataFrame, cost_bps: float,
+) -> tuple[list[dict[str, Any]], int, int, int, int]:
+    long_signal, short_signal = rsi_w1_signals(frame)
+    rows = frame.to_dict("records")
+    trades: list[dict[str, Any]] = []
+    position: dict[str, Any] | None = None
+    pending_side: str | None = None
+    pending_signal: dict[str, int] | None = None
+    prior_segment: Any = None
+    gap_quarantined = rejected_same_side = transitions = 0
+
+    def close_at_open(bar: Mapping[str, Any], reason: str) -> None:
+        nonlocal position
+        assert position is not None
+        exit_price = float(bar["open"])
+        direction = 1.0 if position["side"] == "LONG" else -1.0
+        gross = direction * (exit_price / float(position["entry_price"]) - 1) * 10_000
+        trades.append({
+            **position,
+            "exit_ts_ms": int(bar["open_ts_ms"]),
+            "exit_price": exit_price,
+            "exit_reason": reason,
+            "gross_bps": gross,
+            "cost_bps": cost_bps,
+            "net_bps": gross - cost_bps,
+        })
+        position = None
+
+    for i, bar in enumerate(rows):
+        open_ms = int(bar["open_ts_ms"])
+        if open_ms >= END_MS:
+            break
+        segment = bar.get("segment_id")
+        if segment is None or (isinstance(segment, float) and math.isnan(segment)):
+            raise ScreenError("SEGMENT_ID_REQUIRED")
+        if prior_segment is not None and segment != prior_segment:
+            gap_quarantined += int(position is not None or pending_side is not None)
+            position = None
+            pending_side = None
+            pending_signal = None
+        prior_segment = segment
+        if pending_side is not None and START_MS <= open_ms < END_MS:
+            if position is not None and position["side"] != pending_side:
+                close_at_open(bar, "NEXT_OPEN_OPPOSITE_EXTREME_FLIP")
+            if position is None:
+                assert pending_signal is not None
+                position = {
+                    "identity": RSI_W1_ID,
+                    "symbol": symbol,
+                    "signal_open_ts_ms": pending_signal["signal_open_ts_ms"],
+                    "signal_available_ts_ms": pending_signal["signal_available_ts_ms"],
+                    "entry_ts_ms": open_ms,
+                    "entry_price": float(bar["open"]),
+                    "side": pending_side,
+                }
+            pending_side = None
+            pending_signal = None
+        desired = "LONG" if bool(long_signal.iloc[i]) else ("SHORT" if bool(short_signal.iloc[i]) else None)
+        if open_ms >= START_MS and desired is not None:
+            current_or_pending = pending_side or (position["side"] if position is not None else None)
+            if desired != current_or_pending and i + 1 < len(rows):
+                transitions += 1
+                pending_side = desired
+                pending_signal = {
+                    "signal_open_ts_ms": open_ms,
+                    "signal_available_ts_ms": int(bar["close_ts_ms"]),
+                }
+            else:
+                rejected_same_side += 1
+    unresolved = int(position is not None or pending_side is not None)
+    return trades, transitions, rejected_same_side, unresolved, gap_quarantined
+
+
 def summarize(trades: list[dict[str, Any]], multiplier: int) -> dict[str, Any]:
     days = (END_MS - START_MS) / 86_400_000
     nets = [float(t["gross_bps"]) - multiplier * float(t["cost_bps"]) for t in trades]
@@ -631,10 +869,14 @@ def screen(market: Mapping[str, Any], profile: Mapping[str, Any] | None = None) 
     profile = profile or PROFILES[CANDIDATE_ID]
     all_trades: list[dict[str, Any]] = []
     signals_total = occupied = unresolved = gap_quarantined = 0
-    for symbol in SYMBOLS:
+    for symbol in profile.get("screen_symbols", SYMBOLS):
         if profile["candidate_id"] == CENDERAWASIH_ID:
             trades, signal_count, rejected, open_count, quarantined = replay_cenderawasih_symbol(
                 symbol, market["frames"][symbol], market["frames"]["BTC-USDT"], float(market["costs"][symbol]),
+            )
+        elif profile["candidate_id"] == RSI_W1_ID:
+            trades, signal_count, rejected, open_count, quarantined = replay_rsi_w1_symbol(
+                symbol, market["frames"][symbol], float(market["costs"][symbol]),
             )
         else:
             trades, signal_count, rejected, open_count, quarantined = replay_symbol(
@@ -650,7 +892,7 @@ def screen(market: Mapping[str, Any], profile: Mapping[str, Any] | None = None) 
     disposition = "SCREEN_SURVIVOR_PENDING_FULL" if one["T"] > 0 and one["Net_bps"] > 0 and two["Net_bps"] > 0 else "REJECT_ECONOMIC_EARLY"
     value = {
         "schema": "zel.issue1388.cheap_screen_result.v1", "issue": 1388,
-        "candidate_id": profile["candidate_id"], "source_commit": profile["source_commit"], "source_blob": profile["source_blob"],
+        "candidate_id": profile["candidate_id"], **source_binding(profile),
         "period_ms": [START_MS, END_MS], "timeframe_min": profile["timeframe_min"],
         "classification": "DEVELOPMENT_ONLY_NOT_FRESH_NOT_OOS",
         "signal_rules": profile["signal_rules"],
@@ -696,13 +938,57 @@ def execute(source_root: Path, activation_path: Path, output_dir: Path) -> dict[
     return {"state": "COMPLETE_PERSISTED_AND_AUDITED", "disposition": result["disposition"], "result_sha256": result["result_sha256"], "result_commit_sha": result_commit, "economic_table": {"1x": result["cost_1x"], "2x": result["cost_2x"]}}
 
 
+def execute_density(source_root: Path, candidate_ids: list[str], output_dir: Path) -> dict[str, Any]:
+    if output_dir.exists():
+        raise ScreenError("OUTPUT_DIRECTORY_ALREADY_EXISTS_NO_RETRY")
+    if not candidate_ids or len(set(candidate_ids)) != len(candidate_ids):
+        raise ScreenError("DENSITY_CANDIDATES_REQUIRED_UNIQUE")
+    frames_by_timeframe: dict[int, Mapping[str, Any]] = {}
+    combined: dict[str, Any] = {}
+    receipts: dict[str, Any] = {}
+    for candidate_id in candidate_ids:
+        profile = profile_for(candidate_id)
+        timeframe = int(profile["timeframe_min"])
+        market = frames_by_timeframe.get(timeframe)
+        if market is None:
+            market = load_market(source_root, profile)
+            frames_by_timeframe[timeframe] = market
+            receipts[str(timeframe)] = source_receipt(market, profile)
+        result = density_census(market, [candidate_id])
+        combined[candidate_id] = result["candidates"][candidate_id]
+    value = {
+        "schema": "zel.issue1388.signal_density_preflight.v1",
+        "issue": 1388,
+        "classification": "NO_PNL_NO_EXIT_NO_FUTURE_OUTCOME_SOURCE_EXACT_SIGNAL_CENSUS",
+        "period_ms": [START_MS, END_MS],
+        "source_inventory_sha256": SOURCE_INVENTORY_SHA256,
+        "receipts": receipts,
+        "candidates": combined,
+        "economic_screen_consumed": 0,
+        "order_authority": "BLOCKED",
+        "exchange_order_submitted": False,
+    }
+    result = {**value, "result_sha256": digest(value)}
+    output_dir.mkdir(parents=True)
+    write_once(output_dir / "DENSITY.json", result)
+    return {"state": "NO_PNL_DENSITY_COMPLETE", "result_sha256": result["result_sha256"], "candidates": combined}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-root", type=Path, default=SOURCE_ROOT)
-    parser.add_argument("--activation", type=Path, required=True)
+    parser.add_argument("--activation", type=Path)
+    parser.add_argument("--density-candidates")
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
-    print(json.dumps(execute(args.source_root, args.activation, args.output_dir), sort_keys=True, allow_nan=False))
+    if bool(args.activation) == bool(args.density_candidates):
+        raise ScreenError("EXACTLY_ONE_OF_ACTIVATION_OR_DENSITY_CANDIDATES")
+    if args.density_candidates:
+        candidate_ids = [value.strip() for value in args.density_candidates.split(",") if value.strip()]
+        value = execute_density(args.source_root, candidate_ids, args.output_dir)
+    else:
+        value = execute(args.source_root, args.activation, args.output_dir)
+    print(json.dumps(value, sort_keys=True, allow_nan=False))
 
 
 if __name__ == "__main__":

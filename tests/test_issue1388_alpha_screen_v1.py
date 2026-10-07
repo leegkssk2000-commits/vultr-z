@@ -198,6 +198,66 @@ def test_cenderawasih_next_open_and_same_bar_trailing_are_conservative(monkeypat
     assert trades[0]["exit_price"] == pytest.approx(float(data.iloc[3].high) * 0.99)
 
 
+def test_rsi_w1_is_completed_bar_only_and_future_invariant() -> None:
+    data = frame_30m(80, start=screen.START_MS - 20 * 1_800_000)
+    data.loc[5:15, "close"] *= 1.20
+    before = screen.rsi_w1_signals(data)
+    changed = data.copy()
+    changed.loc[60:, "close"] *= 10
+    after = screen.rsi_w1_signals(changed)
+    assert before[0].iloc[:60].tolist() == after[0].iloc[:60].tolist()
+    assert before[1].iloc[:60].tolist() == after[1].iloc[:60].tolist()
+
+
+def test_rsi_w1_flip_uses_next_open_and_short_direction(monkeypatch) -> None:
+    data = frame_30m(12, start=screen.START_MS)
+
+    def fixed(candidate):
+        long_signal = pd.Series(False, index=candidate.index)
+        short_signal = pd.Series(False, index=candidate.index)
+        long_signal.iloc[1] = True
+        short_signal.iloc[4] = True
+        return long_signal, short_signal
+
+    monkeypatch.setattr(screen, "rsi_w1_signals", fixed)
+    trades, transitions, _, unresolved, _ = screen.replay_rsi_w1_symbol("BTC-USDT", data, 14.0)
+    assert transitions == 2 and len(trades) == 1 and unresolved == 1
+    assert trades[0]["entry_ts_ms"] == int(data.iloc[2].open_ts_ms)
+    assert trades[0]["exit_ts_ms"] == int(data.iloc[5].open_ts_ms)
+    assert trades[0]["signal_available_ts_ms"] <= trades[0]["entry_ts_ms"]
+    assert trades[0]["exit_reason"] == "NEXT_OPEN_OPPOSITE_EXTREME_FLIP"
+
+
+def test_density_census_has_no_pnl_and_keeps_source_native_btc_separate(monkeypatch) -> None:
+    market = {"frames": {symbol: frame_30m(20, start=screen.START_MS) for symbol in screen.SYMBOLS}, "costs": {symbol: 14.0 for symbol in screen.SYMBOLS}}
+
+    def fixed(candidate):
+        long_signal = pd.Series(False, index=candidate.index)
+        short_signal = pd.Series(False, index=candidate.index)
+        long_signal.iloc[1] = True
+        short_signal.iloc[4] = True
+        return long_signal, short_signal
+
+    monkeypatch.setattr(screen, "rsi_w1_signals", fixed)
+    result = screen.density_census(market, [screen.RSI_W1_ID])
+    row = result["candidates"][screen.RSI_W1_ID]
+    assert row["source_exact_episodes"] == 12
+    assert row["source_native_btc"]["source_exact_episodes"] == 2
+    assert result["economic_screen_consumed"] == 0
+    assert "trades" not in result and "net" not in json.dumps(result).lower()
+
+
+def test_bband_rsi_entry_uses_typical_price_and_completed_1h_segments() -> None:
+    data = frame_30m(80, start=screen.START_MS)
+    data["open_ts_ms"] = screen.START_MS + data.index * 3_600_000
+    data["close_ts_ms"] = data.open_ts_ms + 3_600_000
+    data["available_ts_ms"] = data.close_ts_ms
+    signal = screen.bband_rsi_entry_signals(data)
+    changed = data.copy()
+    changed.loc[60:, "close"] *= 0.1
+    assert signal.iloc[:60].tolist() == screen.bband_rsi_entry_signals(changed).iloc[:60].tolist()
+
+
 def test_saved_result_rehash_cannot_hide_accounting_tamper(tmp_path: Path) -> None:
     trades = [{"symbol": "BTC-USDT", "gross_bps": 20.0, "cost_bps": 10.0}]
     value = {"trades": trades, "cost_1x": screen.summarize(trades, 1), "cost_2x": screen.summarize(trades, 2)}
@@ -258,3 +318,31 @@ def test_activation_selects_cenderawasih_profile(tmp_path: Path, monkeypatch) ->
     monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
     monkeypatch.setenv("ISSUE1388_GLOBAL_HEAVY_GROUP", screen.GLOBAL_HEAVY_GROUP)
     assert screen.validate_activation(path, head)["candidate_id"] == screen.CENDERAWASIH_ID
+
+
+def test_activation_binds_paper_version_and_sha_without_fake_git_identity(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "source.py"
+    source.write_text("x=1\n")
+    monkeypatch.setattr(screen, "ROOT", tmp_path)
+    profile = screen.PROFILES[screen.RSI_W1_ID]
+    head = "c" * 40
+    value = {
+        "schema": "zel.issue1388.alpha_screen_activation.v1", "issue": 1388,
+        "candidate_id": profile["candidate_id"], "token": profile["activation_token"],
+        "reviewed_source_sha": head, "source_version": profile["source_version"],
+        "source_sha256": profile["source_sha256"], "source_inventory_sha256": screen.SOURCE_INVENTORY_SHA256,
+        "cost_sha256": screen.COST_SHA256, "period_ms": [screen.START_MS, screen.END_MS],
+        "timeframe_min": 30, "global_heavy_group": screen.GLOBAL_HEAVY_GROUP,
+        "order_authority": "BLOCKED", "promotion": False,
+        "source_files_sha256": {"source.py": screen.file_sha256(source)},
+    }
+    path = tmp_path / "activation.json"
+    path.write_text(json.dumps(value))
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+    monkeypatch.setenv("ISSUE1388_GLOBAL_HEAVY_GROUP", screen.GLOBAL_HEAVY_GROUP)
+    assert screen.validate_activation(path, head)["source_version"] == "arXiv:2503.18096v1"
+    value["source_sha256"] = "0" * 64
+    path.write_text(json.dumps(value))
+    with pytest.raises(screen.ScreenError, match="ACTIVATION_BINDING:source_sha256"):
+        screen.validate_activation(path, head)

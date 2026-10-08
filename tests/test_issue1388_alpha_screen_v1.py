@@ -687,6 +687,6 @@ def test_ema800_density_never_calls_economic_model_and_separates_universe(monkey
     assert result['economic_screen_consumed']==0 and 'trades' not in c
 
 
-def test_density_only_profile_cannot_activate_economic_replay(tmp_path):
+def test_ema_profile_requires_complete_bound_activation(tmp_path):
     p=tmp_path/'activation.json';p.write_text(json.dumps({'candidate_id':screen.EMA800_ID}))
-    with pytest.raises(screen.ScreenError,match='DENSITY_ONLY_PROFILE'):screen.validate_activation(p,'a'*40)
+    with pytest.raises(screen.ScreenError,match='ACTIVATION_BINDING'):screen.validate_activation(p,'a'*40)

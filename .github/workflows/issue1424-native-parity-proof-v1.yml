@@ -83,6 +83,46 @@ jobs:
               print(json.dumps({"identity":pid,"parent_opportunities":len(baseline["parent_opportunities"]),"child_trades":len(baseline["child_trades"]),"integrity_defects":baseline["integrity_defects"][:3],"old_sec":round(old_seconds,4),"new_sec":round(new_seconds,4),"same_replay_hash":True}),flush=True)
           print(json.dumps({"synthetic_dev_only":True,"six_lanes_equal":True,"old_sec":round(total_old,4),"new_sec":round(total_new,4),"not_real_trading_economics":True}),flush=True)
           PY
+      - name: Assert nonzero native breakout-trade parity on fixed synthetic bars
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+          import importlib
+          import json
+          from pathlib import Path
+          import subprocess
+          import sys
+          import types
+          from backend.research.architecture_factory import a1_external_research_exact8_through_a3_runner_v1 as runner
+          new=runner.core
+          base_path="backend/research/architecture_factory/a1_external_research_exact8_through_a3_v1.py"
+          old_code=subprocess.check_output(["git","show","d57993aa4168bb2bf9546fe3af1c6ce7d27a9c23:"+base_path],text=True)
+          old=types.ModuleType("a1_exact8_nonzero_native_baseline")
+          old.__file__=str(Path.cwd()/base_path)
+          sys.modules[old.__name__]=old
+          exec(compile(old_code,old.__file__,"exec"),old.__dict__)
+          pid="break_and_continue"
+          spec=new.read(new.SPEC_PATH)
+          tf=3600000
+          boundary=int(new.read(new.BOUNDARY_PATH)["boundary_ms"])
+          state={"boundary_ms":boundary,"streams":{},"cost_snapshot_by_symbol":{},"integrity_defects":[]}
+          for sym in new.SYMBOLS:
+              close=100.0 if sym=="BTC-USDT" else 150.0
+              rows=[]
+              for i in range(210):
+                  opened=close
+                  close=opened+(1.15 if i>=100 and i%13==0 else 0.02)
+                  rows.append({"ts_ms":boundary-129*tf+i*tf,"open":opened,"high":max(opened,close)+0.5,"low":min(opened,close)-0.5,"close":close,"volume":150.0})
+              state["streams"][f"{sym}|{tf}"]=rows
+              state["cost_snapshot_by_symbol"][sym]={"pretrade_verified_cost_bps":14.0}
+          a=old.replay_child(pid,state,spec)
+          b=new.replay_child(pid,state,spec)
+          assert new.stable_sha(a)==new.stable_sha(b),"NONZERO_NATIVE_REPLAY_MISMATCH"
+          assert len(a["parent_opportunities"])>0,"NO_CAUSAL_PARENT_TRADE_IN_SYNTHETIC_FIXTURE"
+          assert len(a["child_trades"])>0,"NO_CHILD_TRADE_IN_SYNTHETIC_FIXTURE"
+          assert not a["integrity_defects"],a["integrity_defects"]
+          print(json.dumps({"synthetic_fixture_only":True,"strategy":pid,"parent_opportunities":len(a["parent_opportunities"]),"child_trades":len(a["child_trades"]),"first_child_trade_net_bps":b["child_trades"][0]["net_bps"],"old_new_full_trade_ledger_equal":True,"actual_market_economic_credit":0}),flush=True)
+          PY
       - name: Create strictly nonpromotable interrupted-job checkpoint canary
         run: |
           python - <<'PY'

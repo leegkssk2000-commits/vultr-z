@@ -129,7 +129,22 @@ def load_and_check(files):
             receipt=json.loads(receipt_bytes)
             if receipt.get("symbol")!=sym or int(receipt["start_ms"])!=start or int(receipt["end_exclusive_ms"])!=start+DAY:
                 raise RuntimeError("RECEIPT_SYMBOL_OR_WINDOW_MISMATCH")
-            if receipt.get("source")!=SOURCE:raise RuntimeError("RECEIPT_SOURCE_MISMATCH")
+            # Daily receipts do not duplicate the endpoint URL. Their verified
+            # source child receipts and the sealed segment manifest carry it.
+            # Match the canonical history owner's actual self-hash semantics.
+            from backend.research.rebuild.economic7_canonical_history_v1 import json_bytes, SCHEMA
+            unsigned={k:v for k,v in receipt.items() if k!="receipt_sha256"}
+            if digest(json_bytes(unsigned))!=receipt.get("receipt_sha256"):
+                raise RuntimeError("DAILY_RECEIPT_SELF_HASH_MISMATCH")
+            if (receipt.get("schema")!=SCHEMA+".daily"
+                    or receipt.get("rows_1m")!=1440
+                    or receipt.get("expected_rows_1m")!=1440
+                    or receipt.get("gap_count")!=0
+                    or receipt.get("duplicate_count")!=0
+                    or receipt.get("volume_unit")!="UNKNOWN"
+                    or receipt.get("synthetic_fill") is not False
+                    or receipt.get("forward_fill") is not False):
+                raise RuntimeError("DAILY_RECEIPT_CANONICAL_IDENTITY_OR_COVERAGE_MISMATCH")
             by_path={a.get("path"):a for a in receipt.get("artifacts",[])}
             paths=[f"1m/{sym}/{stem}.csv.gz",f"60m/{sym}/{stem}.csv.gz"]
             verified={}

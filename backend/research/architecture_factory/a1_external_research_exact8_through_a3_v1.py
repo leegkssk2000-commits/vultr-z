@@ -7,6 +7,7 @@ import importlib.util
 import json
 import random
 import sys
+import time
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -664,7 +665,16 @@ def evaluate_all(state: Mapping[str, Any]) -> dict[str, Any]:
     spec = read(SPEC_PATH)
     rows: list[dict[str, Any]] = []
     for parent_id in SOURCE_READY:
+        # Diagnostics only: persisted economics and hashes never use wallclock time.
+        # Flush before replay so a job killed by timeout retains the last begun lane.
+        started = time.monotonic()
+        print(f"EXACT8_LANE_REPLAY_START:{parent_id}", file=sys.stderr, flush=True)
         replay = replay_child(parent_id, state, spec)
+        print(
+            f"EXACT8_LANE_REPLAY_DONE:{parent_id}:seconds={time.monotonic() - started:.3f}",
+            file=sys.stderr,
+            flush=True,
+        )
         a1_result = evaluate_a1(replay, state)
         a2_result = evaluate_a2(a1_result, replay, state)
         a3_result = evaluate_a3(a2_result, replay)
@@ -768,7 +778,14 @@ def main() -> int:
         return self_test()
     if not args.collect_live:
         raise SystemExit("--collect-live required unless --self-test")
+    print("EXACT8_SOURCE_COLLECT_START", file=sys.stderr, flush=True)
+    source_started = time.monotonic()
     state = collect_live(args.state)
+    print(
+        f"EXACT8_SOURCE_COLLECT_DONE:seconds={time.monotonic() - source_started:.3f}",
+        file=sys.stderr,
+        flush=True,
+    )
     result = evaluate_all(state)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")

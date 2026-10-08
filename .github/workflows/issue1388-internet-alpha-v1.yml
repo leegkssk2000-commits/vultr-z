@@ -24,6 +24,7 @@ on:
       - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/PREFLIGHT_004.json'
       - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/PREFLIGHT_005.json'
       - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/PREFLIGHT_006.json'
+      - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/PREFLIGHT_007.json'
       - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/ACTIVATION_003.json'
       - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/ACTIVATION_004.json'
       - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/ACTIVATION_005.json'
@@ -274,7 +275,8 @@ jobs:
       (contains(github.event.head_commit.message, '[issue1388-density-preflight-3-v1]') ||
        contains(github.event.head_commit.message, '[issue1388-density-preflight-4-v1]') ||
        contains(github.event.head_commit.message, '[issue1388-density-preflight-5-v1]') ||
-       contains(github.event.head_commit.message, '[issue1388-density-preflight-6-v1]'))
+       contains(github.event.head_commit.message, '[issue1388-density-preflight-6-v1]') ||
+       contains(github.event.head_commit.message, '[issue1388-density-preflight-7-v1]'))
     needs: contract-tests
     runs-on: ubuntu-latest
     steps:
@@ -289,8 +291,8 @@ jobs:
           import json, os, subprocess
           from pathlib import Path
           message = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_bytes())['head_commit']['message']
-          number = '006' if '[issue1388-density-preflight-6-v1]' in message else '005' if '[issue1388-density-preflight-5-v1]' in message else '004' if '[issue1388-density-preflight-4-v1]' in message else '003'
-          candidates = ['R_MOSER_INVERTED_HAMMER_1H_V1'] if number == '006' else ['E_FT_EMA800_PRICE_THRESHOLD_1H_V1'] if number == '005' else ['R_BTC_NEGATIVE_SHOCK_1H_V1', 'E_FT_BBAND_RSI_1H_V1'] if number == '004' else ['R_PAPER_RSI_W1_30M_V1', 'R_ETH_SESSION_REVERSAL_1H_V1']
+          number = '007' if '[issue1388-density-preflight-7-v1]' in message else '006' if '[issue1388-density-preflight-6-v1]' in message else '005' if '[issue1388-density-preflight-5-v1]' in message else '004' if '[issue1388-density-preflight-4-v1]' in message else '003'
+          candidates = ['R_MOSER_INVERTED_HAMMER_1H_V1'] if number in {'006','007'} else ['E_FT_EMA800_PRICE_THRESHOLD_1H_V1'] if number == '005' else ['R_BTC_NEGATIVE_SHOCK_1H_V1', 'E_FT_BBAND_RSI_1H_V1'] if number == '004' else ['R_PAPER_RSI_W1_30M_V1', 'R_ETH_SESSION_REVERSAL_1H_V1']
           path = Path('research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/PREFLIGHT_' + number + '.json')
           value = json.loads(path.read_bytes())
           head = subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
@@ -312,6 +314,14 @@ jobs:
               if value.get(key) != expected:
                   raise SystemExit('PREFLIGHT_BINDING:' + key)
           source = value.get('reviewed_source_sha')
+          if not isinstance(source,str) or len(source) != 40 or any(x not in '0123456789abcdef' for x in source):
+              raise SystemExit('PREFLIGHT_REVIEWED_SOURCE_SHA_REQUIRED')
+          if number == '007':
+              previous = json.loads(path.with_name('PREFLIGHT_006.json').read_bytes())
+              if previous.get('reviewed_source_sha') is not None or source != '82ed536e8cc292591d93d54bc84c450958575459':
+                  raise SystemExit('PREFLIGHT_RECOVERY_SOURCE_PROFILE')
+              if value.get('previous_run') != 37709688816 or value.get('previous_job') != 113092602335 or value.get('previous_stage') != 'ACTIVATION_FAILED_BEFORE_SOURCE_INPUT_OR_SIGNAL':
+                  raise SystemExit('PREFLIGHT_RECOVERY_EVIDENCE_PROFILE')
           if subprocess.run(['git','merge-base','--is-ancestor',source,parent]).returncode:
               raise SystemExit('REVIEWED_SOURCE_NOT_ANCESTOR')
           with Path(os.environ['GITHUB_OUTPUT']).open('a') as handle:

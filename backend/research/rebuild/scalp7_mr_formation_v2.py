@@ -500,11 +500,7 @@ def _formation_exit_update(
 
 PARENT_IDENTITY = "mr_cross_sectional_v1_30m_causal_control_v2"
 REEXPANSION_IDENTITY = "mr_reexpansion_bar4_30m_causal_control_v2"
-COST_COVERED_IDENTITY = "mr_cross_sectional_contraction_cost2_gate_30m_v1"
-# Keep the historical campaign cohort byte-for-byte stable.  The Issue 1377
-# child is opt-in and must be called with the frozen cost authority.
 IDENTITIES = (PARENT_IDENTITY, REEXPANSION_IDENTITY, IDENTITY)
-SUPPORTED_IDENTITIES = (*IDENTITIES, COST_COVERED_IDENTITY)
 PARENT_SYMBOLS = (
     "BTC-USDT",
     "ETH-USDT",
@@ -518,11 +514,7 @@ PARENT_STRETCH = 0.03
 PARENT_MIN_FAIL_BARS = 4
 
 
-def _control_signals(
-    frames: dict[str, pd.DataFrame],
-    identities: tuple[str, ...] = (PARENT_IDENTITY, REEXPANSION_IDENTITY),
-    costs_bps: Mapping[str, float] | None = None,
-) -> list[dict[str, Any]]:
+def _control_signals(frames: dict[str, pd.DataFrame]) -> list[dict[str, Any]]:
     """Frozen parent/PR1335 grammar on UTC bars; separate occupancy per identity.
 
     The original files remain unchanged. New control identities explicitly bind
@@ -552,18 +544,9 @@ def _control_signals(
         ]
     )
     result: list[dict[str, Any]] = []
-    if COST_COVERED_IDENTITY in identities:
-        if costs_bps is None or not all(
-            symbol in costs_bps for symbol in PARENT_SYMBOLS
-        ):
-            raise ValueError("ISSUE1377_FROZEN_COST_AUTHORITY_REQUIRED")
-        if not all(
-            isfinite(float(costs_bps[symbol])) and float(costs_bps[symbol]) >= 0
-            for symbol in PARENT_SYMBOLS
-        ):
-            raise ValueError("ISSUE1377_INVALID_FROZEN_COST")
     positions: dict[str, dict[str, Any] | None] = {
-        identity: None for identity in identities
+        PARENT_IDENTITY: None,
+        REEXPANSION_IDENTITY: None,
     }
     segment_start = 0
     previous_segments: tuple[str, ...] | None = None
@@ -589,7 +572,7 @@ def _control_signals(
             and (ts != previous_ts + TF_MS or segment != previous_segments)
         ):
             segment_start = i if valid else i + 1
-            positions = {identity: None for identity in identities}
+            positions = {PARENT_IDENTITY: None, REEXPANSION_IDENTITY: None}
         previous_ts, previous_segments = ts, segment
         if not valid or i - segment_start < 20:
             continue
@@ -604,7 +587,7 @@ def _control_signals(
             and laggard == int(np.argmin(previous))
             and spread < previous_spread
         )
-        for identity in identities:
+        for identity in (PARENT_IDENTITY, REEXPANSION_IDENTITY):
             position = positions[identity]
             if position is not None:
                 held = i - int(position["signal_index"])
@@ -627,18 +610,6 @@ def _control_signals(
                 PARENT_SYMBOLS[leader],
                 PARENT_SYMBOLS[laggard],
             )
-            pair_cost_1x_bps: float | None = None
-            observed_contraction_bps = (previous_spread - spread) * 10_000.0
-            if identity == COST_COVERED_IDENTITY:
-                assert costs_bps is not None
-                pair_cost_1x_bps = 0.5 * (
-                    float(costs_bps[leader_symbol]) + float(costs_bps[laggard_symbol])
-                )
-                # No fitted multiple: the completed-bar convergence already
-                # observed before entry must cover the exact frozen 2x pair
-                # round-trip debit.  Entry/exit/occupancy remain the parent.
-                if observed_contraction_bps < 2.0 * pair_cost_1x_bps:
-                    continue
             result.append(
                 {
                     "identity": identity,
@@ -659,27 +630,11 @@ def _control_signals(
                         "laggard": laggard_symbol,
                         "signal_spread6h": spread,
                         "previous_spread6h": previous_spread,
-                        "observed_contraction_bps": observed_contraction_bps,
-                        "frozen_pair_cost_1x_bps": pair_cost_1x_bps,
-                        "cost2_hurdle_bps": (
-                            2.0 * pair_cost_1x_bps
-                            if pair_cost_1x_bps is not None
-                            else None
-                        ),
-                        "issue1377_gate": (
-                            "OBSERVED_FIRST_CONTRACTION_GTE_EXACT_FROZEN_PAIR_COST2"
-                            if identity == COST_COVERED_IDENTITY
-                            else None
-                        ),
                         "parent_source": "a1_cross_sectional_mean_reversion_v1.py",
                         "child_source": (
                             "a1_scalp7_mr_reexpansion_exit_v1.py"
                             if identity == REEXPANSION_IDENTITY
-                            else (
-                                "issue1377_contraction_cost2_entry_gate_v1"
-                                if identity == COST_COVERED_IDENTITY
-                                else None
-                            )
+                            else None
                         ),
                         "source_identity_note": "PRESERVED_GRAMMAR_UTC_COMPLETED_BARS_NEXT_OPEN_EXIT_CONTROL",
                         "pair_segment_ids": {
@@ -699,24 +654,16 @@ def _control_signals(
 
 
 def generate_signals(
-    frames: dict[str, pd.DataFrame],
-    identity: str | None = None,
-    costs_bps: Mapping[str, float] | None = None,
+    frames: dict[str, pd.DataFrame], identity: str | None = None
 ) -> list[dict[str, Any]]:
     """All three independent MR identities, or one explicit frozen identity."""
-    if identity is not None and identity not in SUPPORTED_IDENTITIES:
+    if identity is not None and identity not in IDENTITIES:
         raise ValueError("UNKNOWN_MR_IDENTITY")
     signals = []
     if identity is None or identity == IDENTITY:
         signals.extend(_formation_signals(frames))
-    if identity is None:
+    if identity is None or identity in (PARENT_IDENTITY, REEXPANSION_IDENTITY):
         signals.extend(_control_signals(frames))
-    elif identity in (
-        PARENT_IDENTITY,
-        REEXPANSION_IDENTITY,
-        COST_COVERED_IDENTITY,
-    ):
-        signals.extend(_control_signals(frames, (identity,), costs_bps))
     return sorted(
         (row for row in signals if identity is None or row["identity"] == identity),
         key=lambda row: (
@@ -737,11 +684,7 @@ def exit_update(
     identity = str(signal["identity"])
     if identity == IDENTITY:
         return _formation_exit_update(position, bar, history)
-    if identity not in (
-        PARENT_IDENTITY,
-        REEXPANSION_IDENTITY,
-        COST_COVERED_IDENTITY,
-    ):
+    if identity not in (PARENT_IDENTITY, REEXPANSION_IDENTITY):
         raise ValueError("UNKNOWN_MR_IDENTITY")
     held = int(position["hold_bars"])
     reason: str | None = "TIME_8BAR" if held >= MAX_HOLD_BARS else None

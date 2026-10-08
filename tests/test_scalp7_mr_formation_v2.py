@@ -9,7 +9,6 @@ import pandas as pd  # type: ignore[import-untyped]
 import pytest
 
 from backend.research.rebuild.scalp7_mr_formation_v2 import (
-    COST_COVERED_IDENTITY,
     FORMATION_BARS,
     MAX_HOLD_BARS,
     PAIR,
@@ -314,55 +313,6 @@ def test_parent_and_bar4_child_keep_independent_occupancy_and_weights() -> None:
     prefix = {symbol: frame.iloc[:21] for symbol, frame in bars.items()}
     assert generate_signals(prefix, PARENT_IDENTITY) == parent[:1]
     assert generate_signals(prefix, REEXPANSION_IDENTITY) == child[:1]
-
-
-def test_issue1377_cost_covered_child_requires_complete_frozen_costs() -> None:
-    bars = control_frames()
-    with pytest.raises(ValueError, match="FROZEN_COST_AUTHORITY_REQUIRED"):
-        generate_signals(bars, COST_COVERED_IDENTITY)
-    with pytest.raises(ValueError, match="FROZEN_COST_AUTHORITY_REQUIRED"):
-        generate_signals(bars, COST_COVERED_IDENTITY, {PAIR[0]: 15.0})
-
-
-def test_issue1377_gate_uses_only_observed_contraction_and_exact_cost2() -> None:
-    from backend.research.rebuild.scalp7_mr_formation_v2 import PARENT_SYMBOLS
-
-    bars = control_frames()
-    parent = generate_signals(bars, PARENT_IDENTITY)
-    assert parent
-    cheap = {symbol: 15.0 for symbol in PARENT_SYMBOLS}
-    child = generate_signals(bars, COST_COVERED_IDENTITY, cheap)
-    assert child
-    signal = child[0]
-    assert signal["signal_open_ts_ms"] == parent[0]["signal_open_ts_ms"]
-    assert signal["max_hold_bars"] == parent[0]["max_hold_bars"] == 8
-    assert signal["meta"]["observed_contraction_bps"] == pytest.approx(50.0)
-    assert signal["meta"]["frozen_pair_cost_1x_bps"] == pytest.approx(15.0)
-    assert signal["meta"]["cost2_hurdle_bps"] == pytest.approx(30.0)
-    assert signal["meta"]["issue1377_gate"] == (
-        "OBSERVED_FIRST_CONTRACTION_GTE_EXACT_FROZEN_PAIR_COST2"
-    )
-
-    expensive = {symbol: 30.0 for symbol in PARENT_SYMBOLS}
-    assert generate_signals(bars, COST_COVERED_IDENTITY, expensive) == []
-    assert generate_signals(bars, PARENT_IDENTITY, expensive) == parent
-
-
-def test_issue1377_child_exit_and_occupancy_are_parent_exact() -> None:
-    from backend.research.rebuild.scalp7_mr_formation_v2 import PARENT_SYMBOLS
-
-    bars = control_frames()
-    costs = {symbol: 15.0 for symbol in PARENT_SYMBOLS}
-    child = generate_signals(bars, COST_COVERED_IDENTITY, costs)[0]
-    current = {symbol: frame.iloc[24].to_dict() for symbol, frame in bars.items()}
-    assert exit_update({"signal": child, "hold_bars": 4}, current, {}) == {
-        "exit_next_open": False,
-        "reason": None,
-        "current_spread6h": None,
-    }
-    assert exit_update({"signal": child, "hold_bars": 8}, current, {})["reason"] == (
-        "TIME_8BAR"
-    )
 
 
 def test_parent_fixed_hold_and_pr1335_bar4_thesis_rule_are_separate() -> None:

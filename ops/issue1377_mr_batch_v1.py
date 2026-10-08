@@ -31,6 +31,7 @@ if str(ROOT) not in sys.path:
 
 from backend.research.rebuild import scalp7_metrics_v2 as metrics
 from backend.research.rebuild import scalp7_mr_formation_v2 as rules
+from backend.research.rebuild import scalp7_mr_cost2_child_v1 as child_rules
 from backend.research.rebuild import scalp7_source_binding_repair_v2 as binding
 PROTOCOL_PATH = ROOT / "research/campaigns/scalp7_20261006/issue1377_keltner_orthogonal_v1/PROTOCOL.json"
 COST_PATH = ROOT / (
@@ -45,7 +46,7 @@ START_MS = 1_768_262_400_000
 END_MS = 1_781_654_400_000
 WARMUP_MS = 90 * 86_400_000
 PARENT = rules.PARENT_IDENTITY
-CANDIDATE = rules.COST_COVERED_IDENTITY
+CANDIDATE = child_rules.COST_COVERED_IDENTITY
 INSTANCE_IDS = ("N_PARENT", "N_CANDIDATE")
 APPROVAL_REF = "refs/heads/research-approvals/issue1377-mr-20261007-v1"
 CLAIM_REF = "refs/heads/research-execution-claims/issue1377-mr-20261007-v1"
@@ -688,16 +689,17 @@ def _key(row: Mapping[str, Any]) -> tuple[str, int, str]:
 
 def _run_identity(identity: str, market: Mapping[str, Any]) -> dict[str, Any]:
     frames, costs = market["frames"], market["costs"]
-    signals = rules.generate_signals(
-        frames,
-        identity=identity,
-        costs_bps=costs if identity == CANDIDATE else None,
-    )
+    if identity == CANDIDATE:
+        signals = child_rules.generate_signals(frames, identity=identity, costs_bps=costs)
+        exit_update = child_rules.exit_update
+    else:
+        signals = rules.generate_signals(frames, identity=identity)
+        exit_update = rules.exit_update
     selected = [
         row for row in signals if START_MS <= int(row["signal_ts_ms"]) < END_MS
     ]
     replay = binding.replay(
-        selected, frames, costs, identity=identity, exit_update=rules.exit_update
+        selected, frames, costs, identity=identity, exit_update=exit_update
     )
     complete, excluded = metrics.partition_rows(replay["trades"], START_MS, END_MS)
     if excluded:

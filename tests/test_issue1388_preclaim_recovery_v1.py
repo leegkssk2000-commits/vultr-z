@@ -126,7 +126,7 @@ def test_second_admission_requires_first_add_commit_and_zero_step_prior(tmp_path
 def test_common_workflow_keeps_max_queue_at_workflow_and_heavy_job_levels():
     from pathlib import Path
     text=(Path(r.__file__).resolve().parents[1]/'.github/workflows/issue1388-internet-alpha-v1.yml').read_text()
-    assert '  group: issue1388-contract-${{ github.event.pull_request.number || github.ref }}\n  cancel-in-progress: false\n  queue: max' in text
+    assert '  group: issue1388-contract-${{ github.event.pull_request.number || github.sha }}\n  cancel-in-progress: false\n  queue: max' in text
     assert text.count('      group: a1-global-heavy-economic-evaluator-v1\n      cancel-in-progress: false\n      queue: max')==3
     assert 'actions: write' not in text and 'actions: read' not in text
 

@@ -48,6 +48,7 @@ SYMBOLS = ("BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "DOGE-USDT", "LINK-US
 CENDERAWASIH_ID = "E_MULTIMA_CENDERAWASIH_30M_V1"
 RSI_W1_ID = "R_PAPER_RSI_W1_30M_V1"
 BBAND_RSI_ID = "E_FT_BBAND_RSI_1H_V1"
+INVERTED_HAMMER_ID = "R_MOSER_INVERTED_HAMMER_1H_V1"
 BTC_FUNDING_RAW_SHA256 = "e939345a319eb5a9de77fddf7330d7b2e4db20f60b9298f5f3527e99173239ff"
 BTC_FUNDING_RECEIPT_SHA256 = "f7e889a0c03727baceadc5e0a3cd050100330cfaa397c4aac2336abbd1c8a15c"
 EMA800_ID = "E_FT_EMA800_PRICE_THRESHOLD_1H_V1"
@@ -57,6 +58,15 @@ ETH_FUNDING_RECEIPT_SHA256 = "3462c99458ef79bb06b6ca7c1ecac887cee0aa1accdc28da55
 BTC_SHOCK_ID = "R_BTC_NEGATIVE_SHOCK_1H_V1"
 OTHER_FUNDING_HASHES = {'XRP-USDT': {'raw': 'ef7aedb09e5d1e86cca81ecb04363aec55c493407ba3103cff246fbc841968dd', 'receipt': 'e1fe53fdad89cd423e541837050cd5d3d30c1558332149534fe2fad276a38072'}, 'SOL-USDT': {'raw': '5e1f1e5fd1a2b75dda96e44dd0bfa22b1ce8a3c47de55f6f22bebffbc5097c3e', 'receipt': '2faa33c4ad610580231d629b86704e2530e03cbdd73b1c1564a7a78a07a537b1'}, 'LINK-USDT': {'raw': '893b570d39b3cff5e278331672688b911ae4dba8bddb5e199258b16965c1a3df', 'receipt': '042e3ecc3a27b8049e20a1328f03e80003200778a94ff5d3e288afb42d87ee84'}, 'DOGE-USDT': {'raw': '07a52994272f35a062799623ebe94d26bfe4b6868512212a9114eebb6cb4b32b', 'receipt': '6d3f77019aadef8553768fcfa957102c82e9605d0807e553155394773924b75f'}}
 PROFILES: dict[str, dict[str, Any]] = {
+    INVERTED_HAMMER_ID: {
+        "candidate_id": INVERTED_HAMMER_ID,
+        "source_version": "DOI:10.1016/j.iref.2026.105158#EXPLICIT_ZEL_TALIB_V0_4_0_TRANSLATION",
+        "source_sha256": "9a4abc631fa617e5d835ff28726e30e9b92e8e5baec30cbf887fb605a04ecac4",
+        "source_hash_kind": "FROZEN_THESIS_RULE_TRANSLATION_NOT_ARTICLE_BYTES",
+        "timeframe_min": 60,
+        "signal_rules": "PINNED_TALIB_INVERTEDHAMMER_STRICT_BODY_SHADOW_GAP_DOWN_WITH_SMA144_DECREASING_T_MINUS6_TO_T",
+        "order_adapter": "DENSITY_PREFLIGHT_ONLY_ECONOMIC_ADAPTER_NOT_IMPLEMENTED",
+    },
     EMA800_ID: {
         "candidate_id": EMA800_ID,
         "source_commit": "1e154a2f6b9aeecbaacb7db5ed6b866603daee2c",
@@ -707,6 +717,8 @@ def density_census(market: Mapping[str, Any], candidate_ids: list[str]) -> dict[
     candidates: dict[str, Any] = {}
     for candidate_id in candidate_ids:
         profile = profile_for(candidate_id)
+        if candidate_id == INVERTED_HAMMER_ID and file_sha256(INTAKE_PATH.parent / "INVERTED_HAMMER_PRE_SCREEN_THESIS.json") != profile["source_sha256"]:
+            raise ScreenError("INVERTED_HAMMER_FROZEN_THESIS_DRIFT")
         by_symbol: dict[str, Any] = {}
         raw_total = episode_total = 0
         warmup_ready_by_symbol: dict[str, int] = {}
@@ -743,6 +755,12 @@ def density_census(market: Mapping[str, Any], candidate_ids: list[str]) -> dict[
                 raw, episodes = eth_session_decisions(frame)
             elif candidate_id == EMA800_ID:
                 raw, ready = ema800_entry_signals(frame)
+                in_window &= frame.close_ts_ms.lt(END_MS) & frame.available_ts_ms.lt(END_MS)
+                episodes = raw.copy()
+                warmup_ready_by_symbol[symbol] = int((ready & in_window).sum())
+            elif candidate_id == INVERTED_HAMMER_ID:
+                from ops.issue1388_inverted_hammer_v1 import inverted_hammer_census_flags
+                raw, ready = inverted_hammer_census_flags(frame)
                 in_window &= frame.close_ts_ms.lt(END_MS) & frame.available_ts_ms.lt(END_MS)
                 episodes = raw.copy()
                 warmup_ready_by_symbol[symbol] = int((ready & in_window).sum())
@@ -783,11 +801,20 @@ def density_census(market: Mapping[str, Any], candidate_ids: list[str]) -> dict[
             candidate["source_native_overlap"] = {symbol: by_symbol[symbol] for symbol in ("BTC-USDT", "ETH-USDT", "XRP-USDT")}
             candidate["six_symbol_application"] = "NATIVE_OVERLAP_BTC_ETH_XRP; SOL_DOGE_LINK_COMPATIBILITY_ONLY; NO_ECONOMIC_ADAPTER_READY"
             candidate["warmup_ready_bars_by_symbol"] = warmup_ready_by_symbol
+        if candidate_id == INVERTED_HAMMER_ID:
+            candidate["source_exact_episodes"] = None
+            candidate["pinned_translation_events"] = episode_total
+            for row in candidate["by_symbol"].values():
+                row["pinned_translation_events"] = row.pop("source_exact_episodes")
+            candidate["source_replication"] = False
+            candidate["source_hash_kind"] = profile["source_hash_kind"]
+            candidate["warmup_ready_bars_by_symbol"] = warmup_ready_by_symbol
+            candidate["six_symbol_application"] = "FIXED_SIX_COMPATIBILITY_ONLY; PAPER_UNIVERSE_AND_TALIB_VERSION_DIFFER; NO_ECONOMIC_ADAPTER_READY"
         candidates[candidate_id] = candidate
     value = {
         "schema": "zel.issue1388.signal_density_preflight.v1",
         "issue": 1388,
-        "classification": "NO_PNL_NO_EXIT_NO_FUTURE_OUTCOME_SOURCE_EXACT_SIGNAL_CENSUS",
+        "classification": "NO_PNL_NO_EXIT_NO_FUTURE_OUTCOME_DISCLOSED_PINNED_TRANSLATION_CENSUS" if INVERTED_HAMMER_ID in candidate_ids else "NO_PNL_NO_EXIT_NO_FUTURE_OUTCOME_SOURCE_EXACT_SIGNAL_CENSUS",
         "period_ms": [START_MS, END_MS],
         "source_inventory_sha256": SOURCE_INVENTORY_SHA256,
         "candidates": candidates,
@@ -1814,7 +1841,7 @@ def execute_density(source_root: Path, candidate_ids: list[str], output_dir: Pat
     value = {
         "schema": "zel.issue1388.signal_density_preflight.v1",
         "issue": 1388,
-        "classification": "NO_PNL_NO_EXIT_NO_FUTURE_OUTCOME_SOURCE_EXACT_SIGNAL_CENSUS",
+        "classification": "NO_PNL_NO_EXIT_NO_FUTURE_OUTCOME_DISCLOSED_PINNED_TRANSLATION_CENSUS" if INVERTED_HAMMER_ID in candidate_ids else "NO_PNL_NO_EXIT_NO_FUTURE_OUTCOME_SOURCE_EXACT_SIGNAL_CENSUS",
         "period_ms": [START_MS, END_MS],
         "source_inventory_sha256": SOURCE_INVENTORY_SHA256,
         "receipts": receipts,

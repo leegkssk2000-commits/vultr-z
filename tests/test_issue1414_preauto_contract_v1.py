@@ -297,4 +297,7 @@ def test_cached_native_scout_non_economic_dry_run_never_calls_provider(
         value["execution_authority"] == "NONE" and value["order_authority"] == "BLOCKED"
     )
     assert value["promotion_authority"] is False
+    assert value["request_audit"]["requests"] == []
+    assert value["request_audit"]["generation_requests"] == 0
+    assert value["request_audit"]["cost_usd"] == 0
     assert json.loads((tmp_path / "cache-dry-run.json").read_text()) == value

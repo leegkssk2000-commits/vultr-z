@@ -18,6 +18,7 @@ import tempfile
 import time
 import types
 
+sys.path.insert(0, str(Path.cwd()))
 from backend.research.architecture_factory import a1_external_research_exact8_through_a3_runner_v1 as runner
 
 CORE = runner.core

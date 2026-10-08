@@ -52,6 +52,8 @@ INVERTED_HAMMER_ID = "R_MOSER_INVERTED_HAMMER_1H_V1"
 INVERTED_CONTRACT_SHA256 = "8510afea5e1c6355cc2485e790343735a6713e97293a18d6ac4e22d2ddcb3622"
 BTC_FUNDING_RAW_SHA256 = "e939345a319eb5a9de77fddf7330d7b2e4db20f60b9298f5f3527e99173239ff"
 BTC_FUNDING_RECEIPT_SHA256 = "f7e889a0c03727baceadc5e0a3cd050100330cfaa397c4aac2336abbd1c8a15c"
+EMA800_CONTRACT_SHA256 = "ca8dfdf5bd6508f847b667d6e6de5d4ea9b59a63cf576e624bd745607ad50c30"
+EMA800_THESIS_SHA256 = "666a85e2480b80a9bacb26525d63cadce800a8d87860a9738466501a80e5cd88"
 EMA800_ID = "E_FT_EMA800_PRICE_THRESHOLD_1H_V1"
 ETH_SESSION_ID = "R_ETH_SESSION_REVERSAL_1H_V1"
 ETH_FUNDING_RAW_SHA256 = "cd1b4dea78e2bdc62e985fe0a0c47cd9a301f41836cadc82c136355a056f0aac"
@@ -77,7 +79,10 @@ PROFILES: dict[str, dict[str, Any]] = {
         "source_blob": "f3e7d7dbf6789787d799430be74a05f67c671345",
         "timeframe_min": 60,
         "signal_rules": "SOURCE_EXACT_EMA800_COMPLETED_CLOSE_CROSSED_ABOVE_WITH_VOLUME_GT0",
-        "order_adapter": "DENSITY_PREFLIGHT_ONLY",
+        "order_adapter": "INTERNAL_2021_5_DEFAULT_EMA800_PRIOR_RECEIVED_HIGH_TRAILING_NEXT_OPEN",
+        "activation_token": "[issue1388-alpha-screen-8-ema800-1h-v1]",
+        "execution_ref": "refs/heads/research-execution-consumptions/issue1388-cheap-ema800-1h-v1",
+        "result_ref": "refs/heads/research-results/issue1388-cheap-ema800-1h-v1",
     },
     CANDIDATE_ID: {
         "candidate_id": CANDIDATE_ID,
@@ -301,6 +306,16 @@ def validate_activation(path: Path, head: str) -> dict[str, Any]:
         if not required_files.issubset(files):
             raise ScreenError("INVERTED_ACTIVATION_SOURCE_CLOSURE_REQUIRED")
         validate_inverted_contract()
+    if profile["candidate_id"] == EMA800_ID:
+        validate_ema800_contract()
+        base = "research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/"
+        required_files = {"ops/issue1388_alpha_screen_v1.py", "ops/issue1388_bband_rsi_v1.py",
+                          "ops/issue1388_ema800_execution_v1.py", "ops/issue1388_ema800_audit_v1.py",
+                          base + "EMA800_PRE_SCREEN_THESIS.json", base + "EMA800_EXECUTION_CONTRACT.json",
+                          base + "EMA800_SOURCE.py", base + "EMA800_LICENSE.txt"}
+        required_files.update(base + symbol.split("-")[0] + "_FUNDING_" + kind + ".json" for symbol in SYMBOLS for kind in ("RAW", "RECEIPT"))
+        if not required_files.issubset(files):
+            raise ScreenError("EMA800_ACTIVATION_SOURCE_CLOSURE_REQUIRED")
     for relative, expected in files.items():
         if file_sha256(ROOT / relative) != expected:
             raise ScreenError("ACTIVATION_SOURCE_FILE_DRIFT:" + relative)
@@ -351,7 +366,7 @@ def load_market(source_root: Path, profile: Mapping[str, Any] | None = None) -> 
         market["btc_funding"] = load_btc_funding()
     if profile["candidate_id"] == ETH_SESSION_ID:
         market["eth_funding"] = load_eth_funding()
-    if profile["candidate_id"] in (BBAND_RSI_ID, INVERTED_HAMMER_ID):
+    if profile["candidate_id"] in (BBAND_RSI_ID, INVERTED_HAMMER_ID, EMA800_ID):
         market["six_funding"] = load_six_funding()
     return market
 
@@ -726,6 +741,16 @@ def ema800_entry_signals(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
         ready.loc[part.index] = ema.notna()
         raw.loc[part.index] = ((close > ema) & (close.shift(1) <= ema.shift(1)) & (part.volume > 0)).fillna(False)
     return raw, ready
+
+
+def ema800_source_decisions(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    entry, _ = ema800_entry_signals(frame)
+    exit_ = pd.Series(False, index=frame.index)
+    for _, part in frame.groupby("segment_id", sort=False, dropna=False):
+        close = part.close.astype(float)
+        threshold = _ema_talib(close, 800) * 0.99
+        exit_.loc[part.index] = ((close < threshold) & (close.shift() >= threshold.shift())).fillna(False)
+    return entry, exit_
 
 
 def density_census(market: Mapping[str, Any], candidate_ids: list[str]) -> dict[str, Any]:
@@ -1338,6 +1363,50 @@ def screen_bband_rsi(market: Mapping[str, Any], profile: Mapping[str, Any]) -> d
     return {**value, "result_sha256": digest(value)}
 
 
+def screen_ema800(market: Mapping[str, Any], profile: Mapping[str, Any]) -> dict[str, Any]:
+    from ops.issue1388_bband_rsi_v1 import bind_bband_decisions
+    from ops.issue1388_ema800_execution_v1 import replay_ema800
+    validate_ema800_contract()
+    if set(market.get("six_funding", {})) != set(SYMBOLS):
+        raise ScreenError("EMA800_SIX_FUNDING_REQUIRED_BEFORE_MODEL")
+    funding = {symbol: validate_symbol_funding({"code": 0, "data": market["six_funding"][symbol]}, symbol) for symbol in SYMBOLS}
+    accounting, all_trades = {}, []
+    for symbol in SYMBOLS:
+        frame = market["frames"][symbol]
+        rows = frame.to_dict("records")
+        entry, exits = ema800_source_decisions(frame)
+        decisions = bind_bband_decisions(rows, entry.tolist(), exits.tolist())
+        value = replay_ema800(symbol, rows, decisions, funding[symbol], start_ms=START_MS, end_ms=END_MS,
+                                 roundtrip_cost_bps=float(market["costs"][symbol]))
+        accounting[symbol] = value
+        all_trades.extend(value["trades"])
+    all_trades.sort(key=lambda row: (row["exit_ts_ms"], row["symbol"]))
+    one, two = summarize(all_trades, 1), summarize(all_trades, 2)
+    census = {"signals_or_attempts": sum(x["signals"] for x in accounting.values()), "completed": len(all_trades),
+              "occupied_rejections": sum(x["occupied_rejections"] for x in accounting.values()),
+              "pending_rejections": sum(x["pending_entry_rejections"] for x in accounting.values()),
+              "gap_quarantined": sum(int(x["gap_quarantine"] is not None or x["protective_touch_quarantine"] is not None) for x in accounting.values()),
+              "unresolved_end": sum(x["unresolved_end"] for x in accounting.values())}
+    census["missing_fill_evidence"] = census["gap_quarantined"]
+    disposition = ("BLOCKED_INPUT_GAP_OR_PROTECTIVE_CLOCK" if census["gap_quarantined"] else
+                   "BLOCKED_TERMINAL_OUTCOME_UNRESOLVED" if census["unresolved_end"] else
+                   "SCREEN_SURVIVOR_PENDING_FULL" if one["T"] > 0 and one["Net_bps"] > 0 and two["Net_bps"] > 0 else "REJECT_ECONOMIC_EARLY")
+    value = {"schema": "zel.issue1388.cheap_screen_result.v1", "issue": 1388,
+             "candidate_id": EMA800_ID, **source_binding(profile), "period_ms": [START_MS, END_MS],
+             "timeframe_min": 60, "classification": "DEVELOPMENT_ONLY_NOT_FRESH_NOT_OOS",
+             "signal_rules": profile["signal_rules"], "order_adapter": profile["order_adapter"],
+             "source_replication": False, "donor_live_fill_equivalence": False,
+             "donor_config_and_net_roi_engine_reproduced": False,
+             "execution_contract_sha256": EMA800_CONTRACT_SHA256,
+             "frozen_thesis_sha256": EMA800_THESIS_SHA256,
+             "trades": all_trades, "cost_1x": one, "cost_2x": two, "census": census,
+             "symbol_accounting": accounting, "funding_hashes": six_funding_hashes(),
+             "mark_account_NAV": None, "funding_actual_account_debit_certified": False,
+             "disposition": disposition, "full_consumed": 0,
+             "order_authority": "BLOCKED", "exchange_order_submitted": False, "promotion": False}
+    return {**value, "result_sha256": digest(value)}
+
+
 def screen_eth_session(market: Mapping[str, Any], profile: Mapping[str, Any]) -> dict[str, Any]:
     from ops.issue1388_eth_session_v1 import replay_eth_sessions, terminal_eth_report
     if "eth_funding" not in market:
@@ -1500,6 +1569,8 @@ def audit_inverted_result(result: Mapping[str, Any], market: Mapping[str, Any]) 
 
 def screen(market: Mapping[str, Any], profile: Mapping[str, Any] | None = None) -> dict[str, Any]:
     profile = profile or PROFILES[CANDIDATE_ID]
+    if profile["candidate_id"] == EMA800_ID:
+        return screen_ema800(market, profile)
     if profile["candidate_id"] == INVERTED_HAMMER_ID:
         return screen_inverted_hammer(market, profile)
     if profile["candidate_id"] == ETH_SESSION_ID:
@@ -1885,6 +1956,33 @@ def validate_eth_preflight(activation: Mapping[str, Any], receipt: Mapping[str, 
         raise ScreenError("ETH_FUNDING_ACTIVATION_BINDING")
 
 
+def validate_ema800_contract() -> None:
+    if (file_sha256(INTAKE_PATH.parent / "EMA800_EXECUTION_CONTRACT.json") != EMA800_CONTRACT_SHA256
+            or file_sha256(INTAKE_PATH.parent / "EMA800_PRE_SCREEN_THESIS.json") != EMA800_THESIS_SHA256):
+        raise ScreenError("EMA800_FROZEN_CONTRACT_THESIS_DRIFT")
+
+
+def validate_ema800_preflight(activation: Mapping[str, Any], receipt: Mapping[str, Any]) -> None:
+    proof = activation.get("density_preflight")
+    pinned = "7db98eb161ed4516998676f6bb25069f55df26f5986bd985d2b4bc3b4b636f54"
+    if (not isinstance(proof, dict) or proof.get("result_sha256") != pinned
+            or digest({k: v for k, v in proof.items() if k != "result_sha256"}) != pinned):
+        raise ScreenError("EMA800_PINNED_PREFLIGHT_HASH")
+    candidate = proof.get("candidates", {}).get(EMA800_ID, {})
+    if (proof.get("period_ms") != [START_MS, END_MS] or proof.get("source_inventory_sha256") != SOURCE_INVENTORY_SHA256
+            or proof.get("economic_screen_consumed") != 0 or proof.get("order_authority") != "BLOCKED"
+            or any(candidate.get(k) != v for k, v in source_binding(PROFILES[EMA800_ID]).items())
+            or candidate.get("raw_signal_bars") != 172):
+        raise ScreenError("EMA800_PREFLIGHT_SOURCE_DENSITY")
+    saved, expected = dict(proof.get("receipts", {}).get("60", {})), dict(receipt)
+    for value in (saved, expected):
+        value.pop("receipt_sha256", None)
+        value.pop("order_adapter", None)
+    if (saved != expected or activation.get("funding_hashes") != six_funding_hashes()
+            or activation.get("execution_contract_sha256") != EMA800_CONTRACT_SHA256):
+        raise ScreenError("EMA800_PREFLIGHT_INPUT_FUNDING_CONTRACT")
+
+
 def execute(source_root: Path, activation_path: Path, output_dir: Path) -> dict[str, Any]:
     head = current_head()
     activation = validate_activation(activation_path, head)
@@ -1901,6 +1999,12 @@ def execute(source_root: Path, activation_path: Path, output_dir: Path) -> dict[
         validate_eth_preflight(activation, receipt)
     if profile["candidate_id"] == BBAND_RSI_ID:
         validate_bband_preflight(activation, receipt)
+    if profile["candidate_id"] == EMA800_ID:
+        if set(market.get("six_funding", {})) != set(SYMBOLS):
+            raise ScreenError("EMA800_SIX_FUNDING_REQUIRED_BEFORE_START")
+        for symbol in SYMBOLS:
+            validate_symbol_funding({"code": 0, "data": market["six_funding"][symbol]}, symbol)
+        validate_ema800_preflight(activation, receipt)
     if profile["candidate_id"] == INVERTED_HAMMER_ID:
         # No signals or return calculation: certify the loaded funding cohort
         # and its full frozen coverage before consuming the permanent start.
@@ -1920,7 +2024,7 @@ def execute(source_root: Path, activation_path: Path, output_dir: Path) -> dict[
         start.update(funding_raw_sha256=BTC_FUNDING_RAW_SHA256, funding_receipt_sha256=BTC_FUNDING_RECEIPT_SHA256)
     if profile["candidate_id"] == ETH_SESSION_ID:
         start.update(funding_raw_sha256=ETH_FUNDING_RAW_SHA256, funding_receipt_sha256=ETH_FUNDING_RECEIPT_SHA256)
-    if profile["candidate_id"] in (BBAND_RSI_ID, INVERTED_HAMMER_ID):
+    if profile["candidate_id"] in (BBAND_RSI_ID, INVERTED_HAMMER_ID, EMA800_ID):
         start.update(funding_hashes=six_funding_hashes())
     start_commit = create_record(profile["execution_ref"], "STARTED.json", start, head)
     output_dir.mkdir(parents=True)
@@ -1938,7 +2042,7 @@ def execute(source_root: Path, activation_path: Path, output_dir: Path) -> dict[
                 handle.write((INTAKE_PATH.parent / filename).read_bytes())
                 handle.flush()
                 os.fsync(handle.fileno())
-    if profile["candidate_id"] in (BBAND_RSI_ID, INVERTED_HAMMER_ID):
+    if profile["candidate_id"] in (BBAND_RSI_ID, INVERTED_HAMMER_ID, EMA800_ID):
         for symbol in SYMBOLS:
             for kind in ("RAW", "RECEIPT"):
                 filename = symbol.split("-")[0] + "_FUNDING_" + kind + ".json"
@@ -1958,6 +2062,9 @@ def execute(source_root: Path, activation_path: Path, output_dir: Path) -> dict[
         audit_bband_result(audited, market)
     if profile["candidate_id"] == INVERTED_HAMMER_ID:
         audit_inverted_result(audited, market)
+    if profile["candidate_id"] == EMA800_ID:
+        from ops.issue1388_ema800_audit_v1 import audit_ema800_result
+        audit_ema800_result(audited, market)
     envelope = {"schema": "zel.issue1388.persisted_result.v1", "issue": 1388, "execution_commit_sha": start_commit, "result": result, "order_authority": "BLOCKED"}
     envelope = {**envelope, "envelope_sha256": digest(envelope)}
     result_commit = create_record(profile["result_ref"], "RESULT.json", envelope, start_commit)

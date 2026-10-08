@@ -2,10 +2,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from backend.research.rebuild.issue1388_five_minute_input_v1 import (
-    aggregate_five_minute,
-)
 from backend.research.rebuild.scalp7_source_data_v2 import SourceDataError
+from ops.issue1388_five_minute_input_v1 import aggregate_five_minute
 
 
 def minutes(count=60):

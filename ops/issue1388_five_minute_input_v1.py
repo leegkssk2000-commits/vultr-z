@@ -113,7 +113,7 @@ def load_five_minute_candles(
     witness_dir = (
         Path(time_authority)
         if time_authority
-        else Path(__file__).resolve().parents[3]
+        else Path(__file__).resolve().parents[1]
         / "research/campaigns/scalp7_20260915/source_time_v2"
     )
     witness = source.verify_time_witness(witness_dir)

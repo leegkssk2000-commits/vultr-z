@@ -191,3 +191,19 @@ def test_invalid_records_fail_closed(column, value, error):
 def test_missing_schema():
     with pytest.raises(ValueError, match="REQUIRED"):
         inverted_hammer_flags(artificial().drop(columns="segment_id"))
+
+
+def test_density_metadata_recovery_is_bounded_to_missing_source_and_original_candidate():
+    from pathlib import Path
+    import json
+    root=Path(__file__).resolve().parents[1]
+    text=(root/'.github/workflows/issue1388-internet-alpha-v1.yml').read_text()
+    assert 'PREFLIGHT_007.json' in text
+    assert "if number in {'006','007'}" in text
+    assert 'PREFLIGHT_REVIEWED_SOURCE_SHA_REQUIRED' in text
+    assert "previous.get('reviewed_source_sha') is not None" in text
+    assert "source != '82ed536e8cc292591d93d54bc84c450958575459'" in text
+    assert "value.get('previous_run') != 37709688816" in text
+    assert 'ACTIVATION_FAILED_BEFORE_SOURCE_INPUT_OR_SIGNAL' in text
+    assert text.count('group: a1-global-heavy-economic-evaluator-v1') == 3
+    assert json.loads((root/'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/PREFLIGHT_006.json').read_text()).get('reviewed_source_sha') is None

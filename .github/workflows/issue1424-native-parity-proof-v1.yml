@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 695c6ae37689d0d07eb934f68b3be21c262c0cf3
+          ref: c24c8499b7fa3413c6c3a798d4c179abf7de74d2
           fetch-depth: 0
           persist-credentials: false
       - name: Required frontend precheck on exact source
@@ -132,6 +132,10 @@ jobs:
           b='    timeout-minutes: 45'
           c='      - name: Preserve completed-lane diagnostic evidence on timeout\n        if: always()'
           assert src.count(a)==1 and src.count(b)==1 and src.count(c)==1, 'TIMEOUT_OR_ARTIFACT_GUARD_MISMATCH'
+          exclusive="    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'"
+          assert src.count(exclusive)==1 and "github.event_name != 'pull_request'" not in src, 'HEAVY_SOURCE_PUSH_GATE_INVALID'
+          assert "    - cron: '55 * * * *'" in src, 'HOURLY_SCHEDULE_NOT_PRESERVED'
+          print('PASS_NO_MASTER_PUSH_HEAVY_SCHEDULE_AND_MANUAL_ONLY')
           assert src.find(a)<src.find(c), 'ARTIFACT_PRECEDES_SOURCE_STEP'
           print('PASS_PROD_38M_STEP_45M_JOB_PARTIAL_ARTIFACT_GUARD')
           PY

@@ -78,13 +78,53 @@ def get_source(symbol: str, timeframe_ms: int) -> list[dict]:
     if isinstance(value, dict) and value.get("code") not in (None, 0, "0"):
         raise RuntimeError("SOURCE_EXCHANGE_ERROR:" + str(value.get("code")))
     arr = source_audit.extract_rows(value)
+    primary_count = len(arr)
+    primary_sha = digest
+    fallback_count = None
+    fallback_sha = None
+    retrieval_mode = "START_AND_END"
+    if not arr:
+        # One bounded alternate public endpoint parameterization, not a replay retry.
+        time.sleep(1.1)
+        end_only = {
+            "symbol": symbol, "interval": TF[timeframe_ms],
+            "endTime": end, "limit": LIMITS[timeframe_ms],
+        }
+        end_url = "https://open-api.bingx.com/openApi/swap/v3/quote/klines?" + urllib.parse.urlencode(end_only)
+        with urllib.request.urlopen(
+            urllib.request.Request(end_url, headers={"Accept":"application/json","User-Agent":"zel-pr1424-preboundary-cpu-parity/1.0"}),
+            timeout=22,
+        ) as response:
+            fallback_raw = response.read()
+        fallback_sha = hashlib.sha256(fallback_raw).hexdigest()
+        try:
+            fallback_value = json.loads(fallback_raw.decode("utf-8"))
+        except Exception as exc:
+            raise RuntimeError("SOURCE_ENDTIME_RESPONSE_NOT_JSON") from exc
+        if isinstance(fallback_value, dict) and fallback_value.get("code") not in (None, 0, "0"):
+            raise RuntimeError("SOURCE_ENDTIME_EXCHANGE_ERROR:" + str(fallback_value.get("code")))
+        fallback = source_audit.extract_rows(fallback_value)
+        fallback_count = len(fallback)
+        if fallback:
+            raw, digest, arr = fallback_raw, fallback_sha, fallback
+            retrieval_mode = "END_ONLY_PREBOUNDARY"
     if len(arr) < 125:
-        raise RuntimeError(f"SOURCE_BARS_TOO_FEW:{symbol}:{TF[timeframe_ms]}:{len(arr)}")
+        report.setdefault("blocked_source_requests", []).append({
+            "symbol": symbol, "timeframe": TF[timeframe_ms],
+            "start_end_count": primary_count, "start_end_raw_sha256": primary_sha,
+            "end_only_count": fallback_count, "end_only_raw_sha256": fallback_sha,
+            "exchange_response_code": value.get("code") if isinstance(value, dict) else None,
+            "no_private_credentials_used": True,
+        })
+        raise RuntimeError(f"SOURCE_BARS_TOO_FEW_BOTH_PARAM_FORMS:{symbol}:{TF[timeframe_ms]}:{len(arr)}")
     audit, closed = source_audit.audit_stream(arr, symbol=symbol, timeframe_ms=timeframe_ms, now_ms=end+3*timeframe_ms)
     if audit["state"] != "PASS_SOURCE_STREAM_INTEGRITY":
         raise RuntimeError(f"SOURCE_AUDIT_INVALID:{symbol}:{TF[timeframe_ms]}:{audit['state']}:{audit.get('blockers')}")
-    if not closed:
-        raise RuntimeError("SOURCE_NO_CLOSED_BARS")
+    # End-only responses can extend earlier than the pinned interval. Select only
+    # already-completed pre-fresh-bounded bars, without inventing or filling gaps.
+    closed = [row for row in closed if start <= int(row["ts_ms"]) < end]
+    if len(closed) < 125:
+        raise RuntimeError("SOURCE_TOO_FEW_VERIFIED_BARS_IN_DEV_WINDOW")
     if min(int(x["ts_ms"]) for x in closed) < start or max(int(x["ts_ms"]) for x in closed) >= end:
         raise RuntimeError(f"NOT_PREBOUNDARY_FIXED_DEV_WINDOW:{symbol}:{TF[timeframe_ms]}")
     if any(int(x["ts_ms"]) >= BOUNDARY for x in closed):
@@ -95,6 +135,7 @@ def get_source(symbol: str, timeframe_ms: int) -> list[dict]:
     rawname = f"{symbol.replace('-', '')}_{TF[timeframe_ms]}.raw.json"
     (ROOT / rawname).write_bytes(raw)
     report["source"].append({
+        "retrieval_mode": retrieval_mode,
         "symbol": symbol,
         "timeframe_ms": timeframe_ms,
         "raw_response_sha256": digest,

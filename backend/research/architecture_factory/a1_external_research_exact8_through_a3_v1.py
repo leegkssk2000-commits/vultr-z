@@ -5,6 +5,7 @@ import hashlib
 import importlib
 import importlib.util
 import json
+import os
 import random
 import sys
 import time
@@ -661,7 +662,55 @@ def evaluate_a3(a2_result: Mapping[str, Any], replay: Mapping[str, Any]) -> dict
     return result
 
 
-def evaluate_all(state: Mapping[str, Any]) -> dict[str, Any]:
+def _write_lane_checkpoint(
+    checkpoint_dir: Path, *, state: Mapping[str, Any],
+    spec: Mapping[str, Any], row: Mapping[str, Any],
+) -> Path:
+    """Write one fully evaluated lane as diagnostic evidence, NEVER a stage PASS.
+
+    Source-state and candidate hashes bind each immutable partial file to one
+    run's exact input. A different result at the same hash fails closed.
+    """
+    parent_id = str(row["parent_id"])
+    if parent_id not in SOURCE_READY:
+        raise RuntimeError(f"EXACT8_CHECKPOINT_PARENT_UNKNOWN:{parent_id}")
+    if str(row["child_id"]) != str(spec["specs"][parent_id]["child_id"]):
+        raise RuntimeError("EXACT8_CHECKPOINT_CHILD_IDENTITY_DRIFT")
+    source_hash = str(state["receipt_sha256"])
+    if len(source_hash) != 64 or any(x not in "0123456789abcdef" for x in source_hash):
+        raise RuntimeError("EXACT8_CHECKPOINT_SOURCE_HASH_INVALID")
+    evidence = {
+        "schema_version": "zel.exact8_partial_diagnostic.v1",
+        "state": "PARTIAL_DIAGNOSTIC_ONLY_NOT_ECONOMIC_STAGE_RECEIPT",
+        "source_state_sha256": source_hash,
+        "source_audit_receipt_sha256": state.get("source_audit_receipt_sha256"),
+        "spec_sha256": stable_sha(spec),
+        "boundary_utc": state["boundary_utc"],
+        "lane": dict(row),
+        "formal_credit": 0,
+        **AUTH,
+    }
+    evidence["receipt_sha256"] = stable_sha(evidence)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    dest = checkpoint_dir / f"{parent_id}__{source_hash}.json"
+    payload = json.dumps(evidence, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    if dest.exists():
+        if dest.read_text(encoding="utf-8") != payload:
+            raise RuntimeError("EXACT8_CHECKPOINT_CONTENT_DRIFT")
+        return dest
+    tmp = checkpoint_dir / f".{parent_id}__{source_hash}.{os.getpid()}.tmp"
+    try:
+        tmp.write_text(payload, encoding="utf-8")
+        os.replace(tmp, dest)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+    return dest
+
+
+def evaluate_all(
+    state: Mapping[str, Any], *, checkpoint_dir: Path | None = None,
+) -> dict[str, Any]:
     spec = read(SPEC_PATH)
     rows: list[dict[str, Any]] = []
     for parent_id in SOURCE_READY:
@@ -678,7 +727,7 @@ def evaluate_all(state: Mapping[str, Any]) -> dict[str, Any]:
         a1_result = evaluate_a1(replay, state)
         a2_result = evaluate_a2(a1_result, replay, state)
         a3_result = evaluate_a3(a2_result, replay)
-        rows.append({
+        row = {
             "parent_id": parent_id,
             "child_id": replay["child_id"],
             "completed_child_trades": len(replay["child_trades"]),
@@ -689,7 +738,13 @@ def evaluate_all(state: Mapping[str, Any]) -> dict[str, Any]:
             "a1": a1_result,
             "a2": a2_result,
             "a3": a3_result,
-        })
+        }
+        rows.append(row)
+        if checkpoint_dir is not None:
+            path = _write_lane_checkpoint(
+                checkpoint_dir, state=state, spec=spec, row=row,
+            )
+            print(f"EXACT8_LANE_DIAGNOSTIC_SAVED:{parent_id}:{path}", file=sys.stderr, flush=True)
     a3_pass = sum(x["a3_state"] == "PASS_A3_GLOBAL_DURABILITY" for x in rows)
     a2_pass = sum(x["a2_state"] == "PASS_A2_COST_TURNOVER" for x in rows)
     a1_pass = sum(x["a1_state"] == "PASS_EXACT8_A1_CAUSAL_READY_FOR_A2" for x in rows)
@@ -786,7 +841,7 @@ def main() -> int:
         file=sys.stderr,
         flush=True,
     )
-    result = evaluate_all(state)
+    result = evaluate_all(state, checkpoint_dir=args.output.parent / "exact8_lane_checkpoints")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps({

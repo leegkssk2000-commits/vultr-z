@@ -6,6 +6,9 @@ from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
 import importlib
+import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
 
@@ -65,6 +68,43 @@ class Exact8ParentReuseParityTests(unittest.TestCase):
                     getattr(baseline, "no_trade", None),
                     getattr(optimized, "no_trade", None),
                 )
+
+    def test_partial_checkpoint_is_hash_bound_fail_closed_not_a_pass(self) -> None:
+        spec = core.read(core.SPEC_PATH)
+        parent_id = "anchor_vwap_trend"
+        child_id = spec["specs"][parent_id]["child_id"]
+        state = {
+            "boundary_utc": core.read(core.BOUNDARY_PATH)["boundary_utc"],
+            "receipt_sha256": "a" * 64,
+            "source_audit_receipt_sha256": "b" * 64,
+        }
+        row = {
+            "parent_id": parent_id, "child_id": child_id,
+            "completed_child_trades": 0,
+            "a1_state": "WAIT_EXACT8_A1_FRESH_SAMPLE",
+            "a2_state": "BLOCKED_BEFORE_A2",
+            "a3_state": "BLOCKED_BEFORE_A3",
+        }
+        with TemporaryDirectory() as workdir:
+            root = Path(workdir)
+            dest = core._write_lane_checkpoint(root, state=state, spec=spec, row=row)
+            saved = json.loads(dest.read_text(encoding="utf-8"))
+            receipt = saved.pop("receipt_sha256")
+            self.assertEqual(core.stable_sha(saved), receipt)
+            self.assertEqual(saved["formal_credit"], 0)
+            self.assertEqual(saved["selection_authority"], False)
+            self.assertEqual(saved["promotion_authority"], False)
+            self.assertEqual(saved["order_authority"], "BLOCKED")
+            self.assertIn("PARTIAL_DIAGNOSTIC_ONLY", saved["state"])
+            self.assertEqual(
+                core._write_lane_checkpoint(root, state=state, spec=spec, row=row), dest,
+            )
+            changed = dict(row, completed_child_trades=1)
+            with self.assertRaisesRegex(RuntimeError, "EXACT8_CHECKPOINT_CONTENT_DRIFT"):
+                core._write_lane_checkpoint(root, state=state, spec=spec, row=changed)
+            invalid = dict(row, parent_id="../unknown")
+            with self.assertRaisesRegex(RuntimeError, "EXACT8_CHECKPOINT_PARENT_UNKNOWN"):
+                core._write_lane_checkpoint(root, state=state, spec=spec, row=invalid)
 
     def test_missing_parent_snapshot_fails_closed(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "EXACT8_CHILD_PARENT_FEATURE_MISSING"):

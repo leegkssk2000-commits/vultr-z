@@ -110,7 +110,7 @@ def read60(data,start):
     rows=list(csv.DictReader(io.StringIO(gzip.decompress(data).decode())))
     if len(rows)!=24:raise RuntimeError("SAVED_60M_COUNT_INVALID")
     for k,row in enumerate(rows):
-        if int(row["open_ts_ms"])!=start+k*3600000:raise RuntimeError("SAVED_60M_TIME_DRIFT")
+        if int(row["timestamp_ms"])!=start+k*3600000:raise RuntimeError("SAVED_60M_TIME_DRIFT")
     return rows
 def load_and_check(files):
     manifest=get(files,"MANIFEST.json")

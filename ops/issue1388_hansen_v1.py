@@ -1,8 +1,8 @@
-"""Source-exact no-PnL signal census for Hansen Candlestick Pattern V1.
+"""Source-exact decisions for Hansen Candlestick Pattern V1.
 
 The donor source is pinned in HANSEN_PRE_SCREEN_THESIS.json. This module only
-computes completed-bar entry flags. It never evaluates exits, future outcomes,
-PnL, costs, or orders.
+computes completed-bar entry/exit flags. It never evaluates future outcomes,
+PnL, costs, fills, or orders.
 """
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ class HansenCensusError(RuntimeError):
     pass
 
 
-def hansen_entry_census_flags(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
-    """Return source-exact entry flags and indicator-ready flags.
+def hansen_source_decision_flags(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """Return source-exact entry, exit, and indicator-ready flags.
 
     Exact donor quirks are preserved: hopen uses open/close shifted by two
     bars; ABANDONEDBABY is a second CDLEVENINGSTAR computation; and the
@@ -27,7 +27,8 @@ def hansen_entry_census_flags(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series
     required = {"open", "high", "low", "close", "open_ts_ms", "segment_id"}
     if not required.issubset(frame.columns):
         raise HansenCensusError("HANSEN_REQUIRED_COLUMNS")
-    raw = pd.Series(False, index=frame.index, dtype=bool)
+    entry = pd.Series(False, index=frame.index, dtype=bool)
+    exit_ = pd.Series(False, index=frame.index, dtype=bool)
     ready = pd.Series(False, index=frame.index, dtype=bool)
     hour_ms = 3_600_000
     for segment, part in frame.groupby("segment_id", sort=False, dropna=False):
@@ -52,11 +53,19 @@ def hansen_entry_census_flags(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series
         talib.CDLINVERTEDHAMMER(o, h, l, c)
         engulfing = np.asarray(talib.CDLENGULFING(o, h, l, c))
         local_ready = np.isfinite(emao) & np.isfinite(emac)
-        local_raw = (
+        local_entry = (
             ((three_line < 0) | (evening > 0) | (abandoned > 0)
              | (harami > 0) | (engulfing > 0))
             & (emao < emac) & local_ready
         )
-        raw.loc[part.index] = local_raw
+        entry.loc[part.index] = local_entry
+        exit_.loc[part.index] = (emao > emac) & local_ready
         ready.loc[part.index] = local_ready
-    return raw, ready
+    return entry, exit_, ready
+
+
+def hansen_entry_census_flags(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """Compatibility wrapper for the immutable no-PnL density receipt."""
+    entry, _, ready = hansen_source_decision_flags(frame)
+    return entry, ready
+

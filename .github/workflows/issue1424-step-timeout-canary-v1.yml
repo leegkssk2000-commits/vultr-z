@@ -1,0 +1,45 @@
+name: Issue1424 isolated step-timeout artifact semantics
+on:
+  push:
+    branches: ['ci/issue1424-nativeproof-20261009']
+    paths:
+      - '.github/workflows/issue1424-step-timeout-canary-v1.yml'
+permissions:
+  contents: read
+concurrency:
+  group: issue1424-step-timeout-canary-unique
+  cancel-in-progress: false
+jobs:
+  checkpoint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Write nonpromotable marker before intentionally timed out step
+        run: |
+          mkdir -p out/exact8_lane_checkpoints
+          echo '{"state":"PARTIAL_DIAGNOSTIC_ONLY_NOT_ECONOMIC_STAGE_RECEIPT","formal_credit":0,"source":"SYNTHETIC_ARTIFACT_TIMEOUT_PROBE","order_authority":"BLOCKED"}' > out/exact8_lane_checkpoints/fixture-only.json
+      - name: Simulate actual step timeout without running economics
+        id: artificial_step_timeout
+        timeout-minutes: 1
+        continue-on-error: true
+        run: |
+          echo "SIMULATED_STEP_TIMEOUT_START"
+          sleep 80
+          echo "SHOULD_NEVER_REACH_AFTER_TIMEOUT"
+      - name: Upload partial evidence after timed-out step
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue1424-step-timeout-canary
+          path: out/exact8_lane_checkpoints/
+          retention-days: 7
+          if-no-files-found: error
+      - name: Assert timeout was recorded but cannot become economic PASS
+        if: always()
+        env:
+          TIMEOUT_OUTCOME: ${{ steps.artificial_step_timeout.outcome }}
+        run: |
+          test "$TIMEOUT_OUTCOME" = failure
+          test -f out/exact8_lane_checkpoints/fixture-only.json
+          grep -q '"formal_credit":0' out/exact8_lane_checkpoints/fixture-only.json
+          echo "PASS_STEP_TIMEOUT_ARTIFACT_FAILCLOSED"

@@ -22,6 +22,7 @@ on:
       - 'tests/test_issue1388_eth_session_v1.py'
       - 'tests/test_issue1388_preclaim_recovery_v1.py'
       - 'tests/test_issue1388_alpha_screen_v1.py'
+      - 'tests/test_issue1388_oversold_reversion_density_v1.py'
       - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/**'
   push:
     branches: [master]
@@ -33,6 +34,7 @@ on:
       - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/PREFLIGHT_005.json'
       - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/PREFLIGHT_006.json'
       - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/PREFLIGHT_007.json'
+      - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/PREFLIGHT_009.json'
       - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/ACTIVATION_003.json'
       - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/ACTIVATION_004.json'
       - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/ACTIVATION_005.json'
@@ -59,7 +61,7 @@ jobs:
         with:
           python-version: '3.12.14'
       - run: python -m pip install --disable-pip-version-check numpy==2.4.3 pandas==3.0.1 pytest==9.0.2
-      - run: python -m pytest -q tests/test_issue1388_alpha_screen_v1.py tests/test_issue1388_preclaim_recovery_v1.py tests/test_issue1388_eth_session_v1.py tests/test_issue1388_bband_rsi_v1.py tests/test_issue1388_inverted_hammer_v1.py tests/test_issue1388_inverted_execution_v1.py tests/test_issue1388_inverted_audit_v1.py tests/test_issue1388_inverted_common_v1.py tests/test_issue1388_ema800_v1.py
+      - run: python -m pytest -q tests/test_issue1388_alpha_screen_v1.py tests/test_issue1388_oversold_reversion_density_v1.py tests/test_issue1388_preclaim_recovery_v1.py tests/test_issue1388_eth_session_v1.py tests/test_issue1388_bband_rsi_v1.py tests/test_issue1388_inverted_hammer_v1.py tests/test_issue1388_inverted_execution_v1.py tests/test_issue1388_inverted_audit_v1.py tests/test_issue1388_inverted_common_v1.py tests/test_issue1388_ema800_v1.py
       - run: python -m py_compile ops/issue1388_alpha_screen_v1.py ops/issue1388_eth_session_v1.py ops/issue1388_bband_rsi_v1.py ops/issue1388_inverted_hammer_v1.py ops/issue1388_inverted_execution_v1.py ops/issue1388_inverted_audit_v1.py ops/issue1388_ema800_execution_v1.py ops/issue1388_ema800_audit_v1.py && git diff --check
 
   cheap-screen-001:
@@ -286,7 +288,8 @@ jobs:
        contains(github.event.head_commit.message, '[issue1388-density-preflight-4-v1]') ||
        contains(github.event.head_commit.message, '[issue1388-density-preflight-5-v1]') ||
        contains(github.event.head_commit.message, '[issue1388-density-preflight-6-v1]') ||
-       contains(github.event.head_commit.message, '[issue1388-density-preflight-7-v1]'))
+       contains(github.event.head_commit.message, '[issue1388-density-preflight-7-v1]') ||
+       contains(github.event.head_commit.message, '[issue1388-density-preflight-9-v1]'))
     needs: contract-tests
     runs-on: ubuntu-latest
     steps:
@@ -298,11 +301,11 @@ jobs:
         id: activation
         run: |
           python - <<'PY'
-          import json, os, subprocess
+          import hashlib, json, os, subprocess
           from pathlib import Path
           message = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_bytes())['head_commit']['message']
-          number = '007' if '[issue1388-density-preflight-7-v1]' in message else '006' if '[issue1388-density-preflight-6-v1]' in message else '005' if '[issue1388-density-preflight-5-v1]' in message else '004' if '[issue1388-density-preflight-4-v1]' in message else '003'
-          candidates = ['R_MOSER_INVERTED_HAMMER_1H_V1'] if number in {'006','007'} else ['E_FT_EMA800_PRICE_THRESHOLD_1H_V1'] if number == '005' else ['R_BTC_NEGATIVE_SHOCK_1H_V1', 'E_FT_BBAND_RSI_1H_V1'] if number == '004' else ['R_PAPER_RSI_W1_30M_V1', 'R_ETH_SESSION_REVERSAL_1H_V1']
+          number = '009' if '[issue1388-density-preflight-9-v1]' in message else '007' if '[issue1388-density-preflight-7-v1]' in message else '006' if '[issue1388-density-preflight-6-v1]' in message else '005' if '[issue1388-density-preflight-5-v1]' in message else '004' if '[issue1388-density-preflight-4-v1]' in message else '003'
+          candidates = ['E_FT_OVERSOLD_REVERSION_1H_V1'] if number == '009' else ['R_MOSER_INVERTED_HAMMER_1H_V1'] if number in {'006','007'} else ['E_FT_EMA800_PRICE_THRESHOLD_1H_V1'] if number == '005' else ['R_BTC_NEGATIVE_SHOCK_1H_V1', 'E_FT_BBAND_RSI_1H_V1'] if number == '004' else ['R_PAPER_RSI_W1_30M_V1', 'R_ETH_SESSION_REVERSAL_1H_V1']
           path = Path('research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/PREFLIGHT_' + number + '.json')
           value = json.loads(path.read_bytes())
           head = subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
@@ -332,6 +335,22 @@ jobs:
                   raise SystemExit('PREFLIGHT_RECOVERY_SOURCE_PROFILE')
               if value.get('previous_run') != 37709688816 or value.get('previous_job') != 113092602335 or value.get('previous_stage') != 'ACTIVATION_FAILED_BEFORE_SOURCE_INPUT_OR_SIGNAL':
                   raise SystemExit('PREFLIGHT_RECOVERY_EVIDENCE_PROFILE')
+          if number == '009':
+              root = path.parent
+              review = root / 'OVERSOLD_REVERSION_SOURCE_REVIEW.json'
+              thesis = root / 'OVERSOLD_REVERSION_PRE_SCREEN_THESIS.json'
+              sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+              if value.get('source_review_sha256') != sha(review) or value.get('pre_screen_thesis_sha256') != sha(thesis):
+                  raise SystemExit('OVERSOLD_SOURCE_THESIS_BINDING')
+              source_review = json.loads(review.read_bytes())
+              frozen = json.loads(thesis.read_bytes())
+              if (source_review.get('source_commit') != '26f1ae32fe92e6e0324f985c8ea512ab57f47fc9'
+                      or source_review.get('source_code_blob') != '97fd08bb3a3a2e46be388eb920ba54af7f093b3c'
+                      or source_review.get('license_blob') != '9cecc1d4669ee8af2ca727a5d8cde10cd8b2d7cc'
+                      or source_review.get('economic_screen_ready') is not False
+                      or frozen.get('permitted_stage') != 'NO_PNL_SOURCE_EXACT_RAW_SIGNAL_CENSUS_ONLY'
+                      or frozen.get('economic_screen_permitted') is not False):
+                  raise SystemExit('OVERSOLD_SOURCE_REVIEW_PROFILE')
           if subprocess.run(['git','merge-base','--is-ancestor',source,parent]).returncode:
               raise SystemExit('REVIEWED_SOURCE_NOT_ANCESTOR')
           with Path(os.environ['GITHUB_OUTPUT']).open('a') as handle:

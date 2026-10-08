@@ -446,6 +446,13 @@ def test_activation_selects_cenderawasih_profile(tmp_path: Path, monkeypatch) ->
     assert screen.validate_activation(path, head)["candidate_id"] == screen.CENDERAWASIH_ID
 
 
+def test_hansen_recovery_uses_new_one_shot_token_without_changing_permanent_refs() -> None:
+    profile = screen.PROFILES[screen.HANSEN_ID]
+    assert profile["activation_token"] == "[issue1388-alpha-screen-10-hansen-1h-v1]"
+    assert profile["execution_ref"] == "refs/heads/research-execution-consumptions/issue1388-cheap-hansen-1h-v1"
+    assert profile["result_ref"] == "refs/heads/research-results/issue1388-cheap-hansen-1h-v1"
+
+
 def test_activation_binds_paper_version_and_sha_without_fake_git_identity(tmp_path: Path, monkeypatch) -> None:
     source = tmp_path / "source.py"
     source.write_text("x=1\n")
@@ -690,3 +697,4 @@ def test_ema800_density_never_calls_economic_model_and_separates_universe(monkey
 def test_ema_profile_requires_complete_bound_activation(tmp_path):
     p=tmp_path/'activation.json';p.write_text(json.dumps({'candidate_id':screen.EMA800_ID}))
     with pytest.raises(screen.ScreenError,match='ACTIVATION_BINDING'):screen.validate_activation(p,'a'*40)
+

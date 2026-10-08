@@ -46,6 +46,7 @@ on:
       - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/ACTIVATION_006.json'
       - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/ACTIVATION_008.json'
       - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/ACTIVATION_009.json'
+      - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/ACTIVATION_010.json'
       - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/ACTIVATION_007.json'
       - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/RECOVERY_004_1.json'
       - 'research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/RECOVERY_004_2.json'
@@ -464,7 +465,8 @@ jobs:
        contains(github.event.head_commit.message, '[issue1388-alpha-screen-6-bband-rsi-1h-v1]') ||
        contains(github.event.head_commit.message, '[issue1388-alpha-screen-7-inverted-hammer-1h-v1]') ||
        contains(github.event.head_commit.message, '[issue1388-alpha-screen-8-ema800-1h-v1]') ||
-       contains(github.event.head_commit.message, '[issue1388-alpha-screen-9-hansen-1h-v1]'))
+       contains(github.event.head_commit.message, '[issue1388-alpha-screen-9-hansen-1h-v1]') ||
+       contains(github.event.head_commit.message, '[issue1388-alpha-screen-10-hansen-1h-v1]'))
     needs: contract-tests
     runs-on: ubuntu-latest
     permissions:
@@ -492,7 +494,9 @@ jobs:
           from pathlib import Path
           message = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_bytes())['head_commit']['message']
           number = '008' if '[issue1388-alpha-screen-8-ema800-1h-v1]' in message else '007' if '[issue1388-alpha-screen-7-inverted-hammer-1h-v1]' in message else '006' if '[issue1388-alpha-screen-6-bband-rsi-1h-v1]' in message else '005' if '[issue1388-alpha-screen-5-eth-session-1h-v1]' in message else '004' if '[issue1388-alpha-screen-4-btc-shock-1h-v1]' in message else '003'
-          if '[issue1388-alpha-screen-9-hansen-1h-v1]' in message:
+          if '[issue1388-alpha-screen-10-hansen-1h-v1]' in message:
+              number = '010'
+          elif '[issue1388-alpha-screen-9-hansen-1h-v1]' in message:
               number = '009'
           path = Path('research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/ACTIVATION_' + number + '.json')
           value = json.loads(path.read_bytes())
@@ -502,8 +506,8 @@ jobs:
           if changed != ['A\t' + str(path)]:
               if number in ('007', '008'):
                   raise SystemExit('INVERTED_SINGLE_ADD_ACTIVATION_REQUIRED')
-              if number == '009':
-                  raise SystemExit('INVERTED_SINGLE_ADD_ACTIVATION_REQUIRED')
+              if number in ('009', '010'):
+                  raise SystemExit('HANSEN_SINGLE_ADD_ACTIVATION_REQUIRED')
               from ops.issue1388_preclaim_recovery_v1 import recover
               recover(Path.cwd(), path, head, parent, changed)
           source = value.get('reviewed_source_sha')
@@ -511,6 +515,17 @@ jobs:
               raise SystemExit('REVIEWED_SOURCE_SHA_REQUIRED')
           if subprocess.run(['git','merge-base','--is-ancestor',source,parent]).returncode:
               raise SystemExit('REVIEWED_SOURCE_NOT_ANCESTOR')
+          if number == '010':
+              required_recovery = {
+                  'previous_run': 37807041292,
+                  'previous_job': 113414546728,
+                  'previous_stage': 'PREFLIGHT_HASH_VALIDATION_FAILED_BEFORE_PERMANENT_START_OR_SIGNAL_COMPUTE',
+                  'previous_economic_screen_consumed': 0,
+                  'previous_execution_ref_present': False,
+                  'previous_result_ref_present': False,
+              }
+              if any(value.get(key) != expected for key, expected in required_recovery.items()):
+                  raise SystemExit('HANSEN_RECOVERY_EVIDENCE_PROFILE')
           dest = Path(os.environ['RUNNER_TEMP']) / 'ACTIVATION.json'
           dest.write_bytes(path.read_bytes())
           with Path(os.environ['GITHUB_OUTPUT']).open('a') as handle:

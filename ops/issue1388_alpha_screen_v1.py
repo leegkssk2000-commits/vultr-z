@@ -55,12 +55,21 @@ BTC_FUNDING_RECEIPT_SHA256 = "f7e889a0c03727baceadc5e0a3cd050100330cfaa397c4aac2
 EMA800_CONTRACT_SHA256 = "ca8dfdf5bd6508f847b667d6e6de5d4ea9b59a63cf576e624bd745607ad50c30"
 EMA800_THESIS_SHA256 = "666a85e2480b80a9bacb26525d63cadce800a8d87860a9738466501a80e5cd88"
 EMA800_ID = "E_FT_EMA800_PRICE_THRESHOLD_1H_V1"
+OVERSOLD_REVERSION_ID = "E_FT_OVERSOLD_REVERSION_1H_V1"
 ETH_SESSION_ID = "R_ETH_SESSION_REVERSAL_1H_V1"
 ETH_FUNDING_RAW_SHA256 = "cd1b4dea78e2bdc62e985fe0a0c47cd9a301f41836cadc82c136355a056f0aac"
 ETH_FUNDING_RECEIPT_SHA256 = "3462c99458ef79bb06b6ca7c1ecac887cee0aa1accdc28da55d198b8004e3357"
 BTC_SHOCK_ID = "R_BTC_NEGATIVE_SHOCK_1H_V1"
 OTHER_FUNDING_HASHES = {'XRP-USDT': {'raw': 'ef7aedb09e5d1e86cca81ecb04363aec55c493407ba3103cff246fbc841968dd', 'receipt': 'e1fe53fdad89cd423e541837050cd5d3d30c1558332149534fe2fad276a38072'}, 'SOL-USDT': {'raw': '5e1f1e5fd1a2b75dda96e44dd0bfa22b1ce8a3c47de55f6f22bebffbc5097c3e', 'receipt': '2faa33c4ad610580231d629b86704e2530e03cbdd73b1c1564a7a78a07a537b1'}, 'LINK-USDT': {'raw': '893b570d39b3cff5e278331672688b911ae4dba8bddb5e199258b16965c1a3df', 'receipt': '042e3ecc3a27b8049e20a1328f03e80003200778a94ff5d3e288afb42d87ee84'}, 'DOGE-USDT': {'raw': '07a52994272f35a062799623ebe94d26bfe4b6868512212a9114eebb6cb4b32b', 'receipt': '6d3f77019aadef8553768fcfa957102c82e9605d0807e553155394773924b75f'}}
 PROFILES: dict[str, dict[str, Any]] = {
+    OVERSOLD_REVERSION_ID: {
+        "candidate_id": OVERSOLD_REVERSION_ID,
+        "source_commit": "26f1ae32fe92e6e0324f985c8ea512ab57f47fc9",
+        "source_blob": "97fd08bb3a3a2e46be388eb920ba54af7f093b3c",
+        "timeframe_min": 60,
+        "signal_rules": "SOURCE_EXACT_RSI14_CROSSED_BELOW_30_CLOSE_SMA1200_DISLOCATION_LT_MINUS_0_30_VOLUME_GT0",
+        "order_adapter": "DENSITY_PREFLIGHT_ONLY_SOURCE_ACCUMULATION_AND_PARTIAL_EXIT_LIFECYCLE_UNBOUND",
+    },
     INVERTED_HAMMER_ID: {
         "candidate_id": INVERTED_HAMMER_ID,
         "source_version": "DOI:10.1016/j.iref.2026.105158#EXPLICIT_ZEL_TALIB_V0_4_0_TRANSLATION",
@@ -743,6 +752,39 @@ def ema800_entry_signals(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
     return raw, ready
 
 
+def oversold_reversion_entry_signals(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """Clean-room source-exact entry census; no orders, exits, sizing or PnL.
+
+    The donor uses a completed 1h candle RSI14 cross below 30 together with
+    close/SMA1200 - 1 < -0.30 and positive volume.  Segment boundaries reset
+    both indicators and the cross state, so missing history cannot fabricate a
+    signal.  The donor's accumulation/partial-unwind lifecycle is deliberately
+    outside this census.
+    """
+    required = {"close", "volume", "segment_id", "open_ts_ms"}
+    if not required.issubset(frame.columns):
+        raise ScreenError("OVERSOLD_REVERSION_CENSUS_FIELDS_REQUIRED")
+    raw = pd.Series(False, index=frame.index)
+    ready = pd.Series(False, index=frame.index)
+    for _, part in frame.groupby("segment_id", sort=False, dropna=False):
+        if part.segment_id.isna().any() or (
+            len(part) > 1 and not part.open_ts_ms.diff().iloc[1:].eq(3_600_000).all()
+        ):
+            raise ScreenError("OVERSOLD_REVERSION_CENSUS_SEGMENT_GAP")
+        close = part.close.astype(float)
+        rsi = _rsi(close, 14)
+        sma1200 = close.rolling(1200, min_periods=1200).mean()
+        startup_ready = pd.Series(np.arange(len(part)) >= 1249, index=part.index)
+        indicator_ready = rsi.notna() & sma1200.notna() & startup_ready
+        crossed_below = rsi.lt(30) & rsi.shift(1).ge(30)
+        dislocated = close.div(sma1200).sub(1).lt(-0.30)
+        ready.loc[part.index] = indicator_ready
+        raw.loc[part.index] = (
+            indicator_ready & crossed_below & dislocated & part.volume.astype(float).gt(0)
+        ).fillna(False)
+    return raw, ready
+
+
 def ema800_source_decisions(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
     entry, _ = ema800_entry_signals(frame)
     exit_ = pd.Series(False, index=frame.index)
@@ -800,6 +842,11 @@ def density_census(market: Mapping[str, Any], candidate_ids: list[str]) -> dict[
                 in_window &= frame.close_ts_ms.lt(END_MS) & frame.available_ts_ms.lt(END_MS)
                 episodes = raw.copy()
                 warmup_ready_by_symbol[symbol] = int((ready & in_window).sum())
+            elif candidate_id == OVERSOLD_REVERSION_ID:
+                raw, ready = oversold_reversion_entry_signals(frame)
+                in_window &= frame.close_ts_ms.lt(END_MS) & frame.available_ts_ms.lt(END_MS)
+                episodes = raw.copy()
+                warmup_ready_by_symbol[symbol] = int((ready & in_window).sum())
             elif candidate_id == INVERTED_HAMMER_ID:
                 from ops.issue1388_inverted_hammer_v1 import inverted_hammer_census_flags
                 raw, ready = inverted_hammer_census_flags(frame)
@@ -843,6 +890,13 @@ def density_census(market: Mapping[str, Any], candidate_ids: list[str]) -> dict[
             candidate["source_native_overlap"] = {symbol: by_symbol[symbol] for symbol in ("BTC-USDT", "ETH-USDT", "XRP-USDT")}
             candidate["six_symbol_application"] = "NATIVE_OVERLAP_BTC_ETH_XRP; SOL_DOGE_LINK_COMPATIBILITY_ONLY; NO_ECONOMIC_ADAPTER_READY"
             candidate["warmup_ready_bars_by_symbol"] = warmup_ready_by_symbol
+        if candidate_id == OVERSOLD_REVERSION_ID:
+            candidate["warmup_ready_bars_by_symbol"] = warmup_ready_by_symbol
+            candidate["source_native_market"] = "BINANCEUS_SPOT_1H"
+            candidate["six_symbol_application"] = "ZEL_PORTABILITY_CENSUS_ONLY_NOT_BINANCEUS_REPRODUCTION"
+            candidate["source_native_lifecycle_bound"] = False
+            candidate["economic_screen_ready"] = False
+            candidate["economic_blocker"] = "ACCUMULATION_LIMIT_ENTRY_TIMEOUT_QUOTE_VOLUME_CAP_PARTIAL_UNWIND_AND_SPOT_TO_FUTURES_EXECUTION_UNBOUND"
         if candidate_id == INVERTED_HAMMER_ID:
             candidate["source_exact_episodes"] = None
             candidate["pinned_translation_events"] = episode_total

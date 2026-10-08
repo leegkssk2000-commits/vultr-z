@@ -56,12 +56,22 @@ EMA800_CONTRACT_SHA256 = "ca8dfdf5bd6508f847b667d6e6de5d4ea9b59a63cf576e624bd745
 EMA800_THESIS_SHA256 = "666a85e2480b80a9bacb26525d63cadce800a8d87860a9738466501a80e5cd88"
 EMA800_ID = "E_FT_EMA800_PRICE_THRESHOLD_1H_V1"
 OVERSOLD_REVERSION_ID = "E_FT_OVERSOLD_REVERSION_1H_V1"
+HANSEN_ID = "E_HANSEN_CANDLE_PATTERN_1H_V1"
 ETH_SESSION_ID = "R_ETH_SESSION_REVERSAL_1H_V1"
 ETH_FUNDING_RAW_SHA256 = "cd1b4dea78e2bdc62e985fe0a0c47cd9a301f41836cadc82c136355a056f0aac"
 ETH_FUNDING_RECEIPT_SHA256 = "3462c99458ef79bb06b6ca7c1ecac887cee0aa1accdc28da55d198b8004e3357"
 BTC_SHOCK_ID = "R_BTC_NEGATIVE_SHOCK_1H_V1"
 OTHER_FUNDING_HASHES = {'XRP-USDT': {'raw': 'ef7aedb09e5d1e86cca81ecb04363aec55c493407ba3103cff246fbc841968dd', 'receipt': 'e1fe53fdad89cd423e541837050cd5d3d30c1558332149534fe2fad276a38072'}, 'SOL-USDT': {'raw': '5e1f1e5fd1a2b75dda96e44dd0bfa22b1ce8a3c47de55f6f22bebffbc5097c3e', 'receipt': '2faa33c4ad610580231d629b86704e2530e03cbdd73b1c1564a7a78a07a537b1'}, 'LINK-USDT': {'raw': '893b570d39b3cff5e278331672688b911ae4dba8bddb5e199258b16965c1a3df', 'receipt': '042e3ecc3a27b8049e20a1328f03e80003200778a94ff5d3e288afb42d87ee84'}, 'DOGE-USDT': {'raw': '07a52994272f35a062799623ebe94d26bfe4b6868512212a9114eebb6cb4b32b', 'receipt': '6d3f77019aadef8553768fcfa957102c82e9605d0807e553155394773924b75f'}}
 PROFILES: dict[str, dict[str, Any]] = {
+    HANSEN_ID: {
+        "candidate_id": HANSEN_ID,
+        "source_commit": "f80d4d8b77c53435e9c0a9045636f1bfb2b8c539",
+        "source_blob": "7f84524f6bdda5b01db312a8fc7064cd9e671c19",
+        "source_license_blob": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+        "timeframe_min": 60,
+        "signal_rules": "SOURCE_EXACT_HANSEN_CANDLE_PATTERNS_WITH_SHIFT2_HEIKIN_SMA6_STATE",
+        "order_adapter": "DENSITY_ONLY_COMPLETED_BAR_SOURCE_SIGNAL_NO_PNL_NO_EXIT",
+    },
     OVERSOLD_REVERSION_ID: {
         "candidate_id": OVERSOLD_REVERSION_ID,
         "source_commit": "26f1ae32fe92e6e0324f985c8ea512ab57f47fc9",
@@ -853,6 +863,12 @@ def density_census(market: Mapping[str, Any], candidate_ids: list[str]) -> dict[
                 in_window &= frame.close_ts_ms.lt(END_MS) & frame.available_ts_ms.lt(END_MS)
                 episodes = raw.copy()
                 warmup_ready_by_symbol[symbol] = int((ready & in_window).sum())
+            elif candidate_id == HANSEN_ID:
+                from ops.issue1388_hansen_v1 import hansen_entry_census_flags
+                raw, ready = hansen_entry_census_flags(frame)
+                in_window &= frame.close_ts_ms.lt(END_MS) & frame.available_ts_ms.lt(END_MS)
+                episodes = _episode_starts(raw, frame)
+                warmup_ready_by_symbol[symbol] = int((ready & in_window).sum())
             else:
                 raise ScreenError("DENSITY_CANDIDATE_UNSUPPORTED:" + candidate_id)
             raw_count = int((raw & in_window).sum())
@@ -897,6 +913,20 @@ def density_census(market: Mapping[str, Any], candidate_ids: list[str]) -> dict[
             candidate["source_native_lifecycle_bound"] = False
             candidate["economic_screen_ready"] = False
             candidate["economic_blocker"] = "ACCUMULATION_LIMIT_ENTRY_TIMEOUT_QUOTE_VOLUME_CAP_PARTIAL_UNWIND_AND_SPOT_TO_FUTURES_EXECUTION_UNBOUND"
+        if candidate_id == HANSEN_ID:
+            candidate["source_license"] = "Apache-2.0"
+            candidate["source_license_blob"] = profile["source_license_blob"]
+            candidate["source_native_market"] = "BINANCE_FUTURES_1H_LONG_ONLY"
+            candidate["warmup_ready_bars_by_symbol"] = warmup_ready_by_symbol
+            candidate["six_symbol_application"] = "SOURCE_NATIVE_MARKET_AND_TIMEFRAME; FIXED_SIX_SIGNAL_CENSUS"
+            candidate["source_economics_reported"] = False
+            candidate["economic_screen_ready"] = False
+            candidate["economic_next_gate"] = "ADEQUATE_SIGNAL_DENSITY_AND_FROZEN_CAUSAL_FILL_CONTRACT"
+            candidate["frozen_source_quirks"] = [
+                "HOPEN_SHIFT2",
+                "ABANDONEDBABY_DUPLICATES_EVENINGSTAR",
+                "INVERTEDHAMMER_COMPUTED_BUT_UNUSED",
+            ]
         if candidate_id == INVERTED_HAMMER_ID:
             candidate["source_exact_episodes"] = None
             candidate["pinned_translation_events"] = episode_total

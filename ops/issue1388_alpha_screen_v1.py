@@ -57,6 +57,8 @@ EMA800_THESIS_SHA256 = "666a85e2480b80a9bacb26525d63cadce800a8d87860a9738466501a
 EMA800_ID = "E_FT_EMA800_PRICE_THRESHOLD_1H_V1"
 OVERSOLD_REVERSION_ID = "E_FT_OVERSOLD_REVERSION_1H_V1"
 HANSEN_ID = "E_HANSEN_CANDLE_PATTERN_1H_V1"
+HANSEN_CONTRACT_SHA256 = "82a85e9b8ae9508863d77f7f1cae2bf59ad5cfcf0548959d39170973f834cfc5"
+HANSEN_THESIS_SHA256 = "bd3325f09dd39ba85b4fd736a0aee584c59fc703a89b1324197103453664aad5"
 ETH_SESSION_ID = "R_ETH_SESSION_REVERSAL_1H_V1"
 ETH_FUNDING_RAW_SHA256 = "cd1b4dea78e2bdc62e985fe0a0c47cd9a301f41836cadc82c136355a056f0aac"
 ETH_FUNDING_RECEIPT_SHA256 = "3462c99458ef79bb06b6ca7c1ecac887cee0aa1accdc28da55d198b8004e3357"
@@ -70,7 +72,10 @@ PROFILES: dict[str, dict[str, Any]] = {
         "source_license_blob": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
         "timeframe_min": 60,
         "signal_rules": "SOURCE_EXACT_HANSEN_CANDLE_PATTERNS_WITH_SHIFT2_HEIKIN_SMA6_STATE",
-        "order_adapter": "DENSITY_ONLY_COMPLETED_BAR_SOURCE_SIGNAL_NO_PNL_NO_EXIT",
+        "order_adapter": "INTERNAL_CAUSAL_NEXT_OPEN_SOURCE_ROI1000_STOP10_SINGLE_LONG_NO_END_EXIT",
+        "activation_token": "[issue1388-alpha-screen-9-hansen-1h-v1]",
+        "execution_ref": "refs/heads/research-execution-consumptions/issue1388-cheap-hansen-1h-v1",
+        "result_ref": "refs/heads/research-results/issue1388-cheap-hansen-1h-v1",
     },
     OVERSOLD_REVERSION_ID: {
         "candidate_id": OVERSOLD_REVERSION_ID,
@@ -335,6 +340,16 @@ def validate_activation(path: Path, head: str) -> dict[str, Any]:
         required_files.update(base + symbol.split("-")[0] + "_FUNDING_" + kind + ".json" for symbol in SYMBOLS for kind in ("RAW", "RECEIPT"))
         if not required_files.issubset(files):
             raise ScreenError("EMA800_ACTIVATION_SOURCE_CLOSURE_REQUIRED")
+    if profile["candidate_id"] == HANSEN_ID:
+        validate_hansen_contract()
+        base = "research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/"
+        required_files = {"ops/issue1388_alpha_screen_v1.py", "ops/issue1388_hansen_v1.py",
+                          "ops/issue1388_hansen_execution_v1.py",
+                          base + "HANSEN_PRE_SCREEN_THESIS.json", base + "HANSEN_EXECUTION_CONTRACT.json"}
+        required_files.update(base + symbol.split("-")[0] + "_FUNDING_" + kind + ".json"
+                              for symbol in SYMBOLS for kind in ("RAW", "RECEIPT"))
+        if not required_files.issubset(files):
+            raise ScreenError("HANSEN_ACTIVATION_SOURCE_CLOSURE_REQUIRED")
     for relative, expected in files.items():
         if file_sha256(ROOT / relative) != expected:
             raise ScreenError("ACTIVATION_SOURCE_FILE_DRIFT:" + relative)
@@ -351,6 +366,8 @@ def load_market(source_root: Path, profile: Mapping[str, Any] | None = None) -> 
     profile = profile or PROFILES[CANDIDATE_ID]
     if profile["candidate_id"] == INVERTED_HAMMER_ID:
         validate_inverted_contract()
+    if profile["candidate_id"] == HANSEN_ID:
+        validate_hansen_contract()
     if profile["candidate_id"] == BTC_SHOCK_ID and file_sha256(INTAKE_PATH.parent / "BTC_SHOCK_SOURCE_RECHECK.json") != profile["source_sha256"]:
         raise ScreenError("SOURCE_RULE_EVIDENCE_SNAPSHOT_DRIFT")
     if profile["candidate_id"] == EMA800_ID:
@@ -385,7 +402,7 @@ def load_market(source_root: Path, profile: Mapping[str, Any] | None = None) -> 
         market["btc_funding"] = load_btc_funding()
     if profile["candidate_id"] == ETH_SESSION_ID:
         market["eth_funding"] = load_eth_funding()
-    if profile["candidate_id"] in (BBAND_RSI_ID, INVERTED_HAMMER_ID, EMA800_ID):
+    if profile["candidate_id"] in (BBAND_RSI_ID, INVERTED_HAMMER_ID, EMA800_ID, HANSEN_ID):
         market["six_funding"] = load_six_funding()
     return market
 
@@ -1404,6 +1421,52 @@ def summarize(trades: list[dict[str, Any]], multiplier: int) -> dict[str, Any]:
     }
 
 
+def screen_hansen(market: Mapping[str, Any], profile: Mapping[str, Any]) -> dict[str, Any]:
+    from ops.issue1388_hansen_execution_v1 import bind_hansen_decisions, replay_hansen
+    from ops.issue1388_hansen_v1 import hansen_source_decision_flags
+    if set(market.get("six_funding", {})) != set(SYMBOLS):
+        raise ScreenError("HANSEN_SIX_FUNDING_REQUIRED_BEFORE_MODEL")
+    funding = {symbol: validate_symbol_funding({"code": 0, "data": market["six_funding"][symbol]}, symbol) for symbol in SYMBOLS}
+    accounting, all_trades = {}, []
+    for symbol in SYMBOLS:
+        frame = market["frames"][symbol]
+        rows = frame.to_dict("records")
+        entry, exits, _ = hansen_source_decision_flags(frame)
+        decisions = bind_hansen_decisions(rows, entry.tolist(), exits.tolist())
+        value = replay_hansen(symbol, rows, decisions, funding[symbol], start_ms=START_MS, end_ms=END_MS,
+                                 roundtrip_cost_bps=float(market["costs"][symbol]))
+        accounting[symbol] = value
+        all_trades.extend(value["trades"])
+    all_trades.sort(key=lambda row: (row["exit_ts_ms"], row["symbol"]))
+    one, two = summarize(all_trades, 1), summarize(all_trades, 2)
+    census = {"signals_or_attempts": sum(x["signals"] for x in accounting.values()), "completed": len(all_trades),
+              "occupied_rejections": sum(x["occupied_rejections"] for x in accounting.values()),
+              "pending_rejections": sum(x["pending_entry_rejections"] for x in accounting.values()),
+              "gap_quarantined": sum(int(x["gap_quarantine"] is not None or x["protective_touch_quarantine"] is not None) for x in accounting.values()),
+              "unresolved_end": sum(x["unresolved_end"] for x in accounting.values())}
+    census["missing_fill_evidence"] = census["gap_quarantined"]
+    disposition = ("BLOCKED_INPUT_GAP_OR_PROTECTIVE_CLOCK" if census["gap_quarantined"] else
+                   "BLOCKED_TERMINAL_OUTCOME_UNRESOLVED" if census["unresolved_end"] else
+                   "SCREEN_SURVIVOR_PENDING_FULL" if one["T"] > 0 and one["Net_bps"] > 0 and two["Net_bps"] > 0 else "REJECT_ECONOMIC_EARLY")
+    value = {"schema": "zel.issue1388.cheap_screen_result.v1", "issue": 1388,
+             "candidate_id": HANSEN_ID, **source_binding(profile), "period_ms": [START_MS, END_MS],
+             "timeframe_min": 60, "classification": "DEVELOPMENT_ONLY_NOT_FRESH_NOT_OOS",
+             "execution_contract_sha256": HANSEN_CONTRACT_SHA256,
+             "density_result_sha256": "7b2d72892cc6c4543906973757968dd3b34247ef5f4730af2c24365afbe9cabe",
+             "signal_rules": profile["signal_rules"], "order_adapter": profile["order_adapter"],
+             "source_replication": False, "donor_live_fill_equivalence": False,
+             "donor_config_and_net_roi_engine_reproduced": False,
+             "source_minimal_roi_ratio": 11.0, "source_stoploss_ratio": 0.90,
+             "trades": all_trades, "cost_1x": one, "cost_2x": two, "census": census,
+             "symbol_accounting": accounting, "funding_hashes": six_funding_hashes(),
+             "mark_account_NAV": None, "funding_actual_account_debit_certified": False,
+             "disposition": disposition, "full_consumed": 0,
+             "order_authority": "BLOCKED", "exchange_order_submitted": False, "promotion": False}
+    return {**value, "result_sha256": digest(value)}
+
+
+
+
 def screen_bband_rsi(market: Mapping[str, Any], profile: Mapping[str, Any]) -> dict[str, Any]:
     from ops.issue1388_bband_rsi_v1 import bind_bband_decisions, exit_flags_from_rsi14, replay_bband_rsi
     if set(market.get("six_funding", {})) != set(SYMBOLS):
@@ -1653,6 +1716,8 @@ def audit_inverted_result(result: Mapping[str, Any], market: Mapping[str, Any]) 
 
 def screen(market: Mapping[str, Any], profile: Mapping[str, Any] | None = None) -> dict[str, Any]:
     profile = profile or PROFILES[CANDIDATE_ID]
+    if profile["candidate_id"] == HANSEN_ID:
+        return screen_hansen(market, profile)
     if profile["candidate_id"] == EMA800_ID:
         return screen_ema800(market, profile)
     if profile["candidate_id"] == INVERTED_HAMMER_ID:
@@ -1993,6 +2058,215 @@ def audit_bband_result(result: Mapping[str, Any], market: Mapping[str, Any]) -> 
         raise ScreenError("BBAND_SAVED_DISPOSITION_AUDIT")
 
 
+def audit_hansen_result(result: Mapping[str, Any], market: Mapping[str, Any]) -> None:
+    from decimal import Decimal
+    from ops.issue1388_hansen_execution_v1 import bind_hansen_decisions
+    from ops.issue1388_hansen_v1 import hansen_source_decision_flags
+    validate_hansen_contract()
+    profile = PROFILES[HANSEN_ID]
+    required = {"candidate_id": HANSEN_ID, **source_binding(profile),
+                "period_ms": [START_MS, END_MS], "timeframe_min": 60,
+                "signal_rules": profile["signal_rules"], "order_adapter": profile["order_adapter"],
+                "execution_contract_sha256": HANSEN_CONTRACT_SHA256,
+                "density_result_sha256": "7b2d72892cc6c4543906973757968dd3b34247ef5f4730af2c24365afbe9cabe",
+                "source_replication": False, "donor_live_fill_equivalence": False,
+                "source_minimal_roi_ratio": 11.0, "source_stoploss_ratio": 0.90,
+                "order_authority": "BLOCKED", "exchange_order_submitted": False,
+                "promotion": False, "funding_hashes": six_funding_hashes(), "full_consumed": 0}
+    if any(result.get(k) != v for k, v in required.items()):
+        raise ScreenError("HANSEN_SAVED_SOURCE_COST_CONTRACT_BINDING")
+    accounting = result["symbol_accounting"]
+    trades = sorted([t for x in accounting.values() for t in x["trades"]], key=lambda t: (t["exit_ts_ms"], t["symbol"]))
+    if result["trades"] != trades:
+        raise ScreenError("HANSEN_SAVED_TRADE_BINDING")
+    for symbol in SYMBOLS:
+        saved = accounting[symbol]
+        rows = market["frames"][symbol].to_dict("records")
+        opens = {r["open_ts_ms"]: r for r in rows}
+        closes = {r["close_ts_ms"]: r for r in rows}
+        frame = market["frames"][symbol]
+        entry, exits, _ = hansen_source_decision_flags(frame)
+        # No order/model replay: independently certify source decisions and clocks.
+        decisions = bind_hansen_decisions(rows, entry.tolist(), exits.tolist())
+        by_signal = {d["signal_open_ts_ms"]: d for d in decisions}
+        clock_keys = ("signal_open_ts_ms", "signal_close_ts_ms", "signal_available_ts_ms")
+        def verify_signal(order: Mapping[str, Any], flag: str, execution: int) -> Mapping[str, Any]:
+            decision = by_signal.get(order.get("signal_open_ts_ms"))
+            if (decision is None or not decision[flag]
+                    or any(order.get(k) != decision[k] for k in clock_keys)
+                    or not START_MS <= decision["signal_open_ts_ms"] < decision["signal_close_ts_ms"] < END_MS):
+                raise ScreenError("HANSEN_SAVED_SOURCE_SIGNAL_BINDING")
+            eligible = next((r for r in rows if r["open_ts_ms"] >= decision["signal_available_ts_ms"]), None)
+            if (eligible is None or eligible["open_ts_ms"] != execution
+                    or eligible["segment_id"] != decision["segment_id"]):
+                raise ScreenError("HANSEN_SAVED_EARLIEST_CAUSAL_OPEN")
+            return decision
+        def first_flat_signal(previous: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+            return next((d for d in decisions if d["entry"] and START_MS <= d["signal_open_ts_ms"]
+                         and d["signal_close_ts_ms"] < END_MS and (previous is None or
+                         (d["signal_close_ts_ms"] >= previous["exit_ts_ms"] if previous["exit_reason"].startswith("INTRABAR")
+                          else d["signal_open_ts_ms"] >= previous["exit_ts_ms"]))), None)
+        def first_exit_certificate(position: Mapping[str, Any]) -> tuple[int, float, str] | None:
+            basis = Decimal(str(position["entry_price"]))
+            stop, roi = float(basis * Decimal("0.90")), float(basis * Decimal("11.0"))
+            pending_hansen = next((d for d in decisions if d["exit"] and d["signal_open_ts_ms"] >= position["entry_ts_ms"]), None)
+            prior = None
+            for bar in rows:
+                opened = bar["open_ts_ms"]
+                if opened < position["entry_ts_ms"] or opened >= END_MS:
+                    continue
+                if prior is not None and (opened != prior["close_ts_ms"] or bar["segment_id"] != prior["segment_id"]):
+                    return None  # Occupied gap cannot certify a later exit.
+                prior = bar
+                if opened > position["entry_ts_ms"]:
+                    if float(bar["open"]) <= stop:
+                        return opened, float(bar["open"]), "OPEN_STOP"
+                    if float(bar["open"]) >= roi:
+                        return opened, float(bar["open"]), "OPEN_ROI"
+                    if pending_hansen is not None and pending_hansen["signal_available_ts_ms"] <= opened:
+                        return opened, float(bar["open"]), "NEXT_AVAILABLE_OPEN_HANSEN_EXIT"
+                reason = "INTRABAR_STOP_FIRST" if float(bar["low"]) <= stop else "INTRABAR_ROI" if float(bar["high"]) >= roi else None
+                if reason:
+                    if bar["close_ts_ms"] == END_MS or bar["available_ts_ms"] != bar["close_ts_ms"]:
+                        return None  # Terminal or late protective receipt remains unresolved.
+                    return bar["close_ts_ms"], stop if reason == "INTRABAR_STOP_FIRST" else roi, reason
+            return None
+        one_way = float(market["costs"][symbol]) / 2
+        position, trade_index, paid, last_stamp = None, 0, 0.0, -1
+        def funding(entry: int, exit_: int, basis: float, closed: bool) -> tuple[float, int]:
+            debit, count = 0.0, 0
+            for row in market["six_funding"][symbol]:
+                stamp = row["fundingTime"]
+                if entry <= stamp <= exit_ and stamp < END_MS:
+                    value = float(row["fundingRate"]) * float(row["markPrice"]) / basis * 10000
+                    if stamp != entry and (not closed or stamp != exit_) or value > 0:
+                        debit += value
+                        count += 1
+            return debit, count
+        for order in saved["orders"]:
+            stamp, price = order["execution_ts_ms"], order["price"]
+            if (order["quantity"] != 1 or not START_MS <= stamp < END_MS
+                    or not math.isclose(order["cost_bps"], one_way, abs_tol=1e-9)):
+                raise ScreenError("HANSEN_SAVED_ORDER_COST_CLOCK")
+            if stamp < last_stamp:
+                raise ScreenError("HANSEN_SAVED_EXECUTION_CHRONOLOGY")
+            last_stamp = stamp
+            paid += one_way
+            if order["kind"] == "ENTRY":
+                if position is not None or stamp not in opens or price != float(opens[stamp]["open"]):
+                    raise ScreenError("HANSEN_SAVED_ENTRY_PRICE")
+                decision = verify_signal(order, "entry", stamp)
+                previous = saved["trades"][trade_index - 1] if trade_index else None
+                if first_flat_signal(previous) != decision:
+                    raise ScreenError("HANSEN_SAVED_FIRST_ADMISSIBLE_ENTRY")
+                identity = f"{symbol}:{stamp}:{order['signal_open_ts_ms']}"
+                if order["entry_identity"] != identity:
+                    raise ScreenError("HANSEN_SAVED_ENTRY_SIGNAL_IDENTITY")
+                position = {"entry_ts_ms": stamp, "entry_price": price, "entry_identity": identity,
+                            **{k: order[k] for k in clock_keys}}
+            elif order["kind"] == "EXIT":
+                if position is None or order["entry_identity"] != position["entry_identity"] or trade_index >= len(saved["trades"]):
+                    raise ScreenError("HANSEN_SAVED_EXIT_BINDING")
+                if stamp <= position["entry_ts_ms"]:
+                    raise ScreenError("HANSEN_SAVED_EXECUTION_CHRONOLOGY")
+                trade = saved["trades"][trade_index]
+                if order["reason"] == "NEXT_AVAILABLE_OPEN_HANSEN_EXIT":
+                    decision = verify_signal(order, "exit", stamp)
+                    first = next((d for d in decisions if d["exit"] and
+                                  d["signal_open_ts_ms"] >= position["entry_ts_ms"]), None)
+                    if (first != decision or any(trade.get("exit_" + k) != decision[k] for k in clock_keys)):
+                        raise ScreenError("HANSEN_SAVED_EXIT_FIRST_SIGNAL_BINDING")
+                basis = position["entry_price"]
+                stop, roi = float(Decimal(str(basis)) * Decimal("0.90")), float(Decimal(str(basis)) * Decimal("11.0"))
+                reason = order["reason"]
+                if first_exit_certificate(position) != (stamp, price, reason):
+                    raise ScreenError("HANSEN_SAVED_FIRST_EXIT_OR_SOURCE_GAP")
+                if reason.startswith("INTRABAR"):
+                    bar = closes.get(stamp)
+                    valid = (bar is not None and bar["available_ts_ms"] == stamp and stop < float(bar["open"]) < roi
+                             and (reason == "INTRABAR_STOP_FIRST" and float(bar["low"]) <= stop and price == stop
+                                  or reason == "INTRABAR_ROI" and float(bar["low"]) > stop and float(bar["high"]) >= roi and price == roi))
+                else:
+                    bar = opens.get(stamp)
+                    valid = bar is not None and price == float(bar["open"]) and (
+                        reason == "OPEN_STOP" and price <= stop or reason == "OPEN_ROI" and price >= roi
+                        or reason == "NEXT_AVAILABLE_OPEN_HANSEN_EXIT" and stop < price < roi)
+                gross = (price / basis - 1) * 10000
+                debit, count = funding(position["entry_ts_ms"], stamp, basis, True)
+                if (not valid or any(trade.get(k) != position[k] for k in position)
+                        or trade["symbol"] != symbol or trade["exit_ts_ms"] != stamp or trade["exit_price"] != price
+                        or trade["exit_reason"] != reason or not math.isclose(trade["gross_bps"], gross, abs_tol=1e-9)
+                        or not math.isclose(trade["cost_bps"], 2 * one_way, abs_tol=1e-9)
+                        or not math.isclose(trade["funding_bps"], debit, abs_tol=1e-9)
+                        or trade["funding_settlements"] != count
+                        or not math.isclose(trade["net_bps"], gross - 2 * one_way - debit, abs_tol=1e-9)):
+                    raise ScreenError("HANSEN_SAVED_EXIT_GROSS_FUNDING_AUDIT")
+                trade_index += 1
+                position = None
+            else:
+                raise ScreenError("HANSEN_SAVED_ORDER_KIND")
+        open_position = saved["open_position"]
+        if position is None and saved["gap_quarantine"] is None and saved["protective_touch_quarantine"] is None:
+            next_signal = first_flat_signal(saved["trades"][-1] if saved["trades"] else None)
+            if next_signal is not None:
+                expected_open = next((r for r in rows if r["open_ts_ms"] >= next_signal["signal_available_ts_ms"]), None)
+                if expected_open is not None and expected_open["open_ts_ms"] < END_MS:
+                    raise ScreenError("HANSEN_SAVED_MISSING_ADMISSIBLE_ENTRY")
+                if saved["pending_entry"] != next_signal:
+                    raise ScreenError("HANSEN_SAVED_PENDING_ENTRY_BINDING")
+        if position is not None and first_exit_certificate(position) is not None:
+            raise ScreenError("HANSEN_SAVED_OMITTED_FIRST_EXIT")
+        if ((position is None) != (open_position is None) or trade_index != len(saved["trades"])
+                or position is not None and any(position[k] != open_position.get(k) for k in position)
+                or not math.isclose(paid, saved["paid_trading_cost_bps"], abs_tol=1e-9)
+                or not math.isclose(paid, sum(t["cost_bps"] for t in saved["trades"]) + (one_way if position else 0), abs_tol=1e-9)):
+            raise ScreenError("HANSEN_SAVED_OPEN_COUNT_PAID_COST_AUDIT")
+        if position is not None and open_position["funding_bps_to_end_exclusive"] is not None:
+            debit, count = funding(position["entry_ts_ms"], END_MS, position["entry_price"], False)
+            if not math.isclose(open_position["funding_bps_to_end_exclusive"], debit, abs_tol=1e-9) or open_position["funding_settlements"] != count:
+                raise ScreenError("HANSEN_SAVED_OPEN_FUNDING_AUDIT")
+    gaps = sum(int(x["gap_quarantine"] is not None or x["protective_touch_quarantine"] is not None) for x in accounting.values())
+    unresolved = sum(int(x["open_position"] is not None or x["pending_entry"] is not None or x["pending_exit"] is not None or x["gap_quarantine"] is not None or x["protective_touch_quarantine"] is not None) for x in accounting.values())
+    disposition = ("BLOCKED_INPUT_GAP_OR_PROTECTIVE_CLOCK" if gaps else "BLOCKED_TERMINAL_OUTCOME_UNRESOLVED" if unresolved else
+                   "SCREEN_SURVIVOR_PENDING_FULL" if result["cost_1x"]["T"] > 0 and result["cost_1x"]["Net_bps"] > 0 and result["cost_2x"]["Net_bps"] > 0 else "REJECT_ECONOMIC_EARLY")
+    if result["census"]["gap_quarantined"] != gaps or result["census"]["unresolved_end"] != unresolved or result["disposition"] != disposition:
+        raise ScreenError("HANSEN_SAVED_DISPOSITION_AUDIT")
+
+
+
+
+def validate_hansen_contract() -> None:
+    base = INTAKE_PATH.parent
+    if (file_sha256(base / "HANSEN_EXECUTION_CONTRACT.json") != HANSEN_CONTRACT_SHA256
+            or file_sha256(base / "HANSEN_PRE_SCREEN_THESIS.json") != HANSEN_THESIS_SHA256):
+        raise ScreenError("HANSEN_FROZEN_SOURCE_RULE_CONTRACT_DRIFT")
+
+
+def validate_hansen_preflight(activation: Mapping[str, Any], receipt: Mapping[str, Any]) -> None:
+    proof = activation.get("density_preflight")
+    pinned = "7b2d72892cc6c4543906973757968dd3b34247ef5f4730af2c24365afbe9cabe"
+    if (not isinstance(proof, dict) or proof.get("result_sha256") != pinned
+            or digest({k: v for k, v in proof.items() if k != "result_sha256"}) != pinned):
+        raise ScreenError("HANSEN_PREFLIGHT_PINNED_HASH_REQUIRED")
+    candidate = proof.get("candidates", {}).get(HANSEN_ID, {})
+    profile = PROFILES[HANSEN_ID]
+    if (proof.get("period_ms") != [START_MS, END_MS] or proof.get("source_inventory_sha256") != SOURCE_INVENTORY_SHA256
+            or proof.get("economic_screen_consumed") != 0 or proof.get("order_authority") != "BLOCKED"
+            or any(candidate.get(k) != v for k, v in source_binding(profile).items())
+            or candidate.get("signal_rules") != profile["signal_rules"] or candidate.get("timeframe_min") != 60
+            or candidate.get("raw_signal_bars") != 1205 or candidate.get("source_exact_episodes") != 1202
+            or candidate.get("symbols_with_episodes") != 6):
+        raise ScreenError("HANSEN_PREFLIGHT_SOURCE_RULE_WINDOW_DENSITY")
+    saved, expected = dict(proof.get("receipts", {}).get("60", {})), dict(receipt)
+    for value in (saved, expected):
+        value.pop("receipt_sha256", None)
+        value.pop("order_adapter", None)
+    if (saved != expected or activation.get("funding_hashes") != six_funding_hashes()
+            or activation.get("execution_contract_sha256") != HANSEN_CONTRACT_SHA256
+            or activation.get("density_receipt_sha256") != "48163abd1702c87498f701efe7942be439d79d85bc780728676a8b983ebc3bd0"):
+        raise ScreenError("HANSEN_PREFLIGHT_INPUT_FUNDING_CONTRACT_BINDING")
+
+
 def validate_bband_preflight(activation: Mapping[str, Any], receipt: Mapping[str, Any]) -> None:
     proof = activation.get("density_preflight")
     if not isinstance(proof, dict) or proof.get("result_sha256") != digest({k: v for k, v in proof.items() if k != "result_sha256"}):
@@ -2083,6 +2357,12 @@ def execute(source_root: Path, activation_path: Path, output_dir: Path) -> dict[
         validate_eth_preflight(activation, receipt)
     if profile["candidate_id"] == BBAND_RSI_ID:
         validate_bband_preflight(activation, receipt)
+    if profile["candidate_id"] == HANSEN_ID:
+        if set(market.get("six_funding", {})) != set(SYMBOLS):
+            raise ScreenError("HANSEN_SIX_FUNDING_REQUIRED_BEFORE_START")
+        for symbol in SYMBOLS:
+            validate_symbol_funding({"code": 0, "data": market["six_funding"][symbol]}, symbol)
+        validate_hansen_preflight(activation, receipt)
     if profile["candidate_id"] == EMA800_ID:
         if set(market.get("six_funding", {})) != set(SYMBOLS):
             raise ScreenError("EMA800_SIX_FUNDING_REQUIRED_BEFORE_START")
@@ -2108,7 +2388,7 @@ def execute(source_root: Path, activation_path: Path, output_dir: Path) -> dict[
         start.update(funding_raw_sha256=BTC_FUNDING_RAW_SHA256, funding_receipt_sha256=BTC_FUNDING_RECEIPT_SHA256)
     if profile["candidate_id"] == ETH_SESSION_ID:
         start.update(funding_raw_sha256=ETH_FUNDING_RAW_SHA256, funding_receipt_sha256=ETH_FUNDING_RECEIPT_SHA256)
-    if profile["candidate_id"] in (BBAND_RSI_ID, INVERTED_HAMMER_ID, EMA800_ID):
+    if profile["candidate_id"] in (BBAND_RSI_ID, INVERTED_HAMMER_ID, EMA800_ID, HANSEN_ID):
         start.update(funding_hashes=six_funding_hashes())
     start_commit = create_record(profile["execution_ref"], "STARTED.json", start, head)
     output_dir.mkdir(parents=True)
@@ -2126,7 +2406,7 @@ def execute(source_root: Path, activation_path: Path, output_dir: Path) -> dict[
                 handle.write((INTAKE_PATH.parent / filename).read_bytes())
                 handle.flush()
                 os.fsync(handle.fileno())
-    if profile["candidate_id"] in (BBAND_RSI_ID, INVERTED_HAMMER_ID, EMA800_ID):
+    if profile["candidate_id"] in (BBAND_RSI_ID, INVERTED_HAMMER_ID, EMA800_ID, HANSEN_ID):
         for symbol in SYMBOLS:
             for kind in ("RAW", "RECEIPT"):
                 filename = symbol.split("-")[0] + "_FUNDING_" + kind + ".json"
@@ -2144,6 +2424,8 @@ def execute(source_root: Path, activation_path: Path, output_dir: Path) -> dict[
         audit_eth_result(audited, market["frames"]["ETH-USDT"].to_dict("records"), market["eth_funding"], float(market["costs"]["ETH-USDT"]))
     if profile["candidate_id"] == BBAND_RSI_ID:
         audit_bband_result(audited, market)
+    if profile["candidate_id"] == HANSEN_ID:
+        audit_hansen_result(audited, market)
     if profile["candidate_id"] == INVERTED_HAMMER_ID:
         audit_inverted_result(audited, market)
     if profile["candidate_id"] == EMA800_ID:
@@ -2211,3 +2493,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

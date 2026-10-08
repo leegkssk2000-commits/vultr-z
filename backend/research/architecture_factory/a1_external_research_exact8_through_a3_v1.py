@@ -346,6 +346,18 @@ def _candidate_bars(state: Mapping[str, Any], symbol: str, timeframe_ms: int) ->
     return [dict(x) for x in (state.get("streams") or {}).get(_stream_key(symbol, timeframe_ms), [])]
 
 
+def _parent_feature_from_child(child_feature: Any) -> Any:
+    """Reuse the native parent snapshot carried by each frozen Exact8 child.
+
+    This changes the calculation path only, not the parent/child rule or window.
+    Missing parent lineage must fail closed, never synthesize a source signal.
+    """
+    parent = getattr(child_feature, "parent", None)
+    if parent is None:
+        raise RuntimeError("EXACT8_CHILD_PARENT_FEATURE_MISSING")
+    return parent
+
+
 def replay_child(parent_id: str, state: Mapping[str, Any], spec: Mapping[str, Any]) -> dict[str, Any]:
     row = spec["specs"][parent_id]
     child_id = str(row["child_id"])
@@ -361,7 +373,10 @@ def replay_child(parent_id: str, state: Mapping[str, Any], spec: Mapping[str, An
         raise RuntimeError(f"CHILD_ADAPTER_ENTRYPOINT_MISSING:{parent_id}")
     parent_path = ROOT / str(row["parent_policy"])
     parent_module = _load_parent(parent_path, parent_id)
-    parent_compute, parent_build = ev.policy_functions(parent_module, parent_id)
+    # Keep the frozen parent policy selection/contract, but avoid computing its
+    # expensive historical indicators twice per completed bar: every preregistered
+    # Exact8 child snapshot already contains the unmodified parent snapshot.
+    _, parent_build = ev.policy_functions(parent_module, parent_id)
     policy_sha = ev.git_blob_sha(parent_path)
     costs = state.get("cost_snapshot_by_symbol") or {}
     boundary_ms = int(state["boundary_ms"])
@@ -382,9 +397,9 @@ def replay_child(parent_id: str, state: Mapping[str, Any], spec: Mapping[str, An
             if int(bars[i]["ts_ms"]) < boundary_ms:
                 continue
             try:
-                parent_feature = parent_compute(bars[: i + 1], symbol=symbol, now_ts_ms=int(bars[i]["ts_ms"]), config=cfg)
-                parent_intent = parent_build(parent_feature, policy_source_sha=policy_sha, verified_round_trip_cost_bps=cost_bps, config=cfg)
                 child_feature = child_compute(bars[: i + 1], symbol=symbol, now_ts_ms=int(bars[i]["ts_ms"]), config=cfg)
+                parent_feature = _parent_feature_from_child(child_feature)
+                parent_intent = parent_build(parent_feature, policy_source_sha=policy_sha, verified_round_trip_cost_bps=cost_bps, config=cfg)
                 child_intent = child_build(child_feature, policy_source_sha=policy_sha, verified_round_trip_cost_bps=cost_bps, config=cfg)
             except ValueError:
                 continue

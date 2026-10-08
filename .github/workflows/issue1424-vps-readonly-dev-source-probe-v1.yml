@@ -1,0 +1,116 @@
+name: Issue1424 bounded read-only DEV source presence
+on:
+  push:
+    branches: ['ci/issue1424-nativeproof-20261009']
+    paths:
+      - '.github/workflows/issue1424-vps-readonly-dev-source-probe-v1.yml'
+permissions:
+  contents: read
+concurrency:
+  group: issue1424-vps-dev-source-presence-only
+  cancel-in-progress: false
+jobs:
+  source-presence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 695c6ae37689d0d07eb934f68b3be21c262c0cf3
+          persist-credentials: false
+      - name: Existing AGENTS required frontend check
+        run: |
+          set -euo pipefail
+          pwd
+          ls -la frontend/z-os-app-source
+          cat frontend/z-os-app-source/package.json
+          npm run --prefix frontend/z-os-app-source validate
+      - name: Read only approved historical source manifests and candidate receipts
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          if [ -z "$VPS_HOST" ] || [ -z "$VPS_USER" ] || [ -z "$VPS_SSH_KEY" ]; then
+            printf '%s\n' '{"state":"HOLD_VPS_SSH_SECRET_NOT_CONNECTED","formally_qualified_source":false,"order_authority":"BLOCKED"}' > out/issue1424-dev-source-presence.json
+            exit 0
+          fi
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/issue1424_key
+          chmod 600 ~/.ssh/issue1424_key
+          ssh-keyscan -T 6 -H "$VPS_HOST" 2>/dev/null > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          if [ ! -s ~/.ssh/known_hosts ]; then
+            printf '%s\n' '{"state":"HOLD_VPS_HOST_KEY_UNREACHABLE","formally_qualified_source":false,"order_authority":"BLOCKED"}' > out/issue1424-dev-source-presence.json
+            exit 0
+          fi
+          if ! timeout 110 ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=12 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -i ~/.ssh/issue1424_key "$VPS_USER@$VPS_HOST" "python3 -" > out/issue1424-dev-source-presence.json <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          # Strictly bounded, READ_ONLY audit. No source material is transferred.
+          root=Path('/home/z/z/runtime/economic7_campaign_20260915')
+          cache=Path('/home/z/z/runtime/scalp7_broad_v2_20260915/candle_cache')
+          target_lo=1787011200000  # 2026-08-18T00:00:00Z
+          target_hi=1787227200000  # 2026-08-20T12:00:00Z
+          fresh_boundary=1787350320000
+          assert 0 < target_lo < target_hi < fresh_boundary
+          result={"schema":"zel.issue1424.dev_source_presence.v1","state":"DEV_ARCHIVE_ABSENT","source_archive_root_exists":root.is_dir(),"candle_cache_root_exists":cache.is_dir(),"period_start_ms":target_lo,"period_end_exclusive_ms":target_hi,"sealed_fresh_boundary_ms":fresh_boundary,"manifests":[],"eligible_receipts":[],"read_only":True,"orders":0,"formal_credit":0,"source_bytes_exported":0,"current_or_fresh_payload_accessed":False}
+          for seg in ('canonical_12m','canonical_postgap_20260213'):
+              path=root/seg/'MANIFEST.json'
+              if path.is_file():
+                  b=path.read_bytes()
+                  m=json.loads(b)
+                  result['manifests'].append({"segment":seg,"sha256":hashlib.sha256(b).hexdigest(),"source":m.get('source'),"source_interval":m.get('source_interval'),"bytes":len(b)})
+                  for symbol in ('BTC-USDT','ETH-USDT'):
+                      d=root/seg/'daily_receipts'/symbol
+                      if not d.is_dir():continue
+                      for rp in sorted(d.glob('*.json')):
+                          try:
+                              r=json.loads(rp.read_bytes())
+                              start,end=int(r['start_ms']),int(r['end_exclusive_ms'])
+                              if end<=target_lo or start>=target_hi:continue
+                              rec={"segment":seg,"symbol":symbol,"receipt_relpath":str(rp.relative_to(root)),"receipt_sha256":hashlib.sha256(rp.read_bytes()).hexdigest(),"start_ms":start,"end_exclusive_ms":end,"artifacts":[]}
+                              for a in r.get('artifacts',[])[:4]:
+                                  p=root/seg/a.get('path','')
+                                  if p.is_file():
+                                      rec['artifacts'].append({"relpath":str(p.relative_to(root)),"bytes":p.stat().st_size,"recorded_sha256":a.get('sha256'),"actual_sha256":hashlib.sha256(p.read_bytes()).hexdigest()})
+                              result['eligible_receipts'].append(rec)
+                          except (KeyError,TypeError,ValueError,json.JSONDecodeError):
+                              continue
+          result['eligible_receipt_count']=len(result['eligible_receipts'])
+          result['eligible_artifact_count']=sum(len(x['artifacts']) for x in result['eligible_receipts'])
+          result['state']="DEV_ARCHIVE_CANDIDATE_PRESENT_NEEDS_LINEAGE_REVIEW" if result['eligible_receipt_count']>0 and result['eligible_artifact_count']>0 else "HOLD_DEV_ARCHIVE_SOURCE_NOT_FOUND"
+          print(json.dumps(result,sort_keys=True,separators=(',',':')))
+          PY
+          then
+            printf '%s\n' '{"state":"HOLD_VPS_READONLY_SSH_OR_SOURCE_PROBE_FAILED","formally_qualified_source":false,"order_authority":"BLOCKED"}' > out/issue1424-dev-source-presence.json
+          fi
+          rm -f ~/.ssh/issue1424_key
+      - name: Validate and record fail closed source presence result
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('out/issue1424-dev-source-presence.json')
+          if p.exists():
+              r=json.loads(p.read_text())
+              assert r.get('orders',0)==0 and r.get('order_authority','BLOCKED')=='BLOCKED'
+              assert r.get('formal_credit',0)==0 and not r.get('current_or_fresh_payload_accessed',False)
+              if r.get('eligible_receipts'):
+                  for x in r['eligible_receipts']:
+                      assert x['end_exclusive_ms'] < 1787350320000
+              print(json.dumps({"state":r.get('state'),"eligible_receipt_count":r.get('eligible_receipt_count',0),"read_only":r.get('read_only'),"formal_credit":0},sort_keys=True))
+          else:
+              raise SystemExit('NO_FAILCLOSED_PROBE_RECEIPT')
+          PY
+      - name: Upload source-only metadata receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue1424-readonly-dev-source-presence
+          path: out/issue1424-dev-source-presence.json
+          retention-days: 7
+          if-no-files-found: error

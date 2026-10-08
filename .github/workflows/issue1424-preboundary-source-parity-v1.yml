@@ -1,0 +1,53 @@
+name: Issue1424 isolated preboundary real-data parity
+on:
+  push:
+    branches: ['ci/issue1424-nativeproof-20261009']
+    paths:
+      - 'qa/issue1424_historical_dev_parity.py'
+      - '.github/workflows/issue1424-preboundary-source-parity-v1.yml'
+permissions:
+  contents: read
+concurrency:
+  group: issue1424-preboundary-source-only
+  cancel-in-progress: false
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout exact PR1424 code (no economic authority)
+        uses: actions/checkout@v4
+        with:
+          ref: a44020cae9f9ec8d15ef38a8ff46310cda6e9e99
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout frozen QA harness to isolated folder
+        uses: actions/checkout@v4
+        with:
+          ref: ci/issue1424-nativeproof-20261009
+          path: qa-harness
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install exact pinned numerical libraries only
+        run: |
+          python -m pip install --no-input --disable-pip-version-check numpy==1.26.4 pandas==2.2.2
+      - name: Verify frontend canonical root (required guard)
+        run: |
+          pwd
+          ls -la frontend/z-os-app-source
+          cat frontend/z-os-app-source/package.json
+          npm run --prefix frontend/z-os-app-source validate
+      - name: Fetch ONLY PUBLIC BingX pre-2026-08-21 DEV candles and compare unmodified trade ledgers
+        run: |
+          python qa-harness/qa/issue1424_historical_dev_parity.py
+      - name: Preserve source + parity evidence (including blockers)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue1424-preboundary-source-parity
+          path: out/issue1424_real_dev_parity/
+          retention-days: 7
+          if-no-files-found: warn

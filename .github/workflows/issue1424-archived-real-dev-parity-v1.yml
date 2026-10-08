@@ -1,0 +1,84 @@
+name: Issue1424 authenticated 1m DEV archived parity
+on:
+  push:
+    branches: [ci/issue1424-nativeproof-20261009]
+    paths:
+      - .github/workflows/issue1424-archived-real-dev-parity-v1.yml
+      - qa/issue1424_archived_preboundary_1m_parity_v1.py
+permissions:
+  contents: read
+concurrency:
+  group: issue1424-authenticated-dev-archive-parity-only
+  cancel-in-progress: false
+jobs:
+  source-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 695c6ae37689d0d07eb934f68b3be21c262c0cf3
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          ref: ci/issue1424-nativeproof-20261009
+          path: qa-harness
+          persist-credentials: false
+      - name: AGENTS mandatory frontend validate
+        run: |
+          set -euo pipefail
+          pwd
+          ls -la frontend/z-os-app-source
+          cat frontend/z-os-app-source/package.json
+          npm run --prefix frontend/z-os-app-source validate
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned numerical libs only for unchanged policy code
+        run: |
+          python -m pip install --no-input --disable-pip-version-check numpy==1.26.4 pandas==2.2.2
+      - name: Read only fixed pre-G5 original source 1m + preserved 60m
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p out/issue1424_archived_real_dev_parity
+          if [ -z "$VPS_HOST" ] || [ -z "$VPS_USER" ] || [ -z "$VPS_SSH_KEY" ]; then
+            echo '{"state":"HOLD_VPS_DEV_SOURCE_SECRETS_UNAVAILABLE","formal_economic_credit":0,"order_authority":"BLOCKED"}' > out/issue1424_archived_real_dev_parity/report.json
+            exit 1
+          fi
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/issue1424_archive_key
+          chmod 600 ~/.ssh/issue1424_archive_key
+          ssh-keyscan -T 5 -H "$VPS_HOST" 2>/dev/null > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          test -s ~/.ssh/known_hosts
+          timeout 180 ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=12 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -i ~/.ssh/issue1424_archive_key "$VPS_USER@$VPS_HOST" "tar -C '/home/z/z/runtime/economic7_campaign_20260915' -czf - 'canonical_postgap_20260213/MANIFEST.json' 'canonical_postgap_20260213/daily_receipts/BTC-USDT/1786752000000_1786838400000.json' 'canonical_postgap_20260213/1m/BTC-USDT/1786752000000_1786838400000.csv.gz' 'canonical_postgap_20260213/60m/BTC-USDT/1786752000000_1786838400000.csv.gz' 'canonical_postgap_20260213/daily_receipts/ETH-USDT/1786752000000_1786838400000.json' 'canonical_postgap_20260213/1m/ETH-USDT/1786752000000_1786838400000.csv.gz' 'canonical_postgap_20260213/60m/ETH-USDT/1786752000000_1786838400000.csv.gz' 'canonical_postgap_20260213/daily_receipts/BTC-USDT/1786838400000_1786924800000.json' 'canonical_postgap_20260213/1m/BTC-USDT/1786838400000_1786924800000.csv.gz' 'canonical_postgap_20260213/60m/BTC-USDT/1786838400000_1786924800000.csv.gz' 'canonical_postgap_20260213/daily_receipts/ETH-USDT/1786838400000_1786924800000.json' 'canonical_postgap_20260213/1m/ETH-USDT/1786838400000_1786924800000.csv.gz' 'canonical_postgap_20260213/60m/ETH-USDT/1786838400000_1786924800000.csv.gz' 'canonical_postgap_20260213/daily_receipts/BTC-USDT/1786924800000_1787011200000.json' 'canonical_postgap_20260213/1m/BTC-USDT/1786924800000_1787011200000.csv.gz' 'canonical_postgap_20260213/60m/BTC-USDT/1786924800000_1787011200000.csv.gz' 'canonical_postgap_20260213/daily_receipts/ETH-USDT/1786924800000_1787011200000.json' 'canonical_postgap_20260213/1m/ETH-USDT/1786924800000_1787011200000.csv.gz' 'canonical_postgap_20260213/60m/ETH-USDT/1786924800000_1787011200000.csv.gz' 'canonical_postgap_20260213/daily_receipts/BTC-USDT/1787011200000_1787097600000.json' 'canonical_postgap_20260213/1m/BTC-USDT/1787011200000_1787097600000.csv.gz' 'canonical_postgap_20260213/60m/BTC-USDT/1787011200000_1787097600000.csv.gz' 'canonical_postgap_20260213/daily_receipts/ETH-USDT/1787011200000_1787097600000.json' 'canonical_postgap_20260213/1m/ETH-USDT/1787011200000_1787097600000.csv.gz' 'canonical_postgap_20260213/60m/ETH-USDT/1787011200000_1787097600000.csv.gz' 'canonical_postgap_20260213/daily_receipts/BTC-USDT/1787097600000_1787184000000.json' 'canonical_postgap_20260213/1m/BTC-USDT/1787097600000_1787184000000.csv.gz' 'canonical_postgap_20260213/60m/BTC-USDT/1787097600000_1787184000000.csv.gz' 'canonical_postgap_20260213/daily_receipts/ETH-USDT/1787097600000_1787184000000.json' 'canonical_postgap_20260213/1m/ETH-USDT/1787097600000_1787184000000.csv.gz' 'canonical_postgap_20260213/60m/ETH-USDT/1787097600000_1787184000000.csv.gz' 'canonical_postgap_20260213/daily_receipts/BTC-USDT/1787184000000_1787270400000.json' 'canonical_postgap_20260213/1m/BTC-USDT/1787184000000_1787270400000.csv.gz' 'canonical_postgap_20260213/60m/BTC-USDT/1787184000000_1787270400000.csv.gz' 'canonical_postgap_20260213/daily_receipts/ETH-USDT/1787184000000_1787270400000.json' 'canonical_postgap_20260213/1m/ETH-USDT/1787184000000_1787270400000.csv.gz' 'canonical_postgap_20260213/60m/ETH-USDT/1787184000000_1787270400000.csv.gz'" > "$RUNNER_TEMP/issue1424-dev-archive.tar.gz"
+          rm -f ~/.ssh/issue1424_archive_key
+          python qa-harness/qa/issue1424_archived_preboundary_1m_parity_v1.py "$RUNNER_TEMP/issue1424-dev-archive.tar.gz"
+      - name: Verify hard-zero authority/selection even when replay parity pass
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('out/issue1424_archived_real_dev_parity/report.json')
+          if not p.exists():raise SystemExit('NO_PERSISTED_SOURCE_VERDICT')
+          r=json.loads(p.read_text())
+          assert r['formal_economic_credit']==0 and r['order_authority']=='BLOCKED'
+          assert r.get('time_end_exclusive_ms',0)<r.get('fresh_boundary_ms',float('inf'))
+          assert r.get('economic_replay_claims',0)==0
+          assert r.get('selection_authority',False) is False
+          print('PASS_READ_ONLY_REAL_SOURCE_DIAGNOSTIC_AUTHORITY',r['state'])
+          PY
+      - name: Upload source hash and outcome comparison evidence only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue1424-authenticated-dev-archive-parity
+          path: out/issue1424_archived_real_dev_parity/report.json
+          if-no-files-found: error
+          retention-days: 7

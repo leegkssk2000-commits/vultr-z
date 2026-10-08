@@ -54,10 +54,10 @@ def test_common_density_end_to_end_cannot_call_economics_or_create_claim(monkeyp
     assert set((tmp_path / "artificial-output").iterdir()) == {tmp_path / "artificial-output" / "DENSITY.json"}
 
 
-def test_density_profile_rejects_economic_activation_before_claim(tmp_path):
+def test_incomplete_profile_rejects_economic_activation_before_claim(tmp_path):
     path = tmp_path / "activation.json"
     screen.write_once(path, {"candidate_id": screen.INVERTED_HAMMER_ID})
-    with pytest.raises(screen.ScreenError, match="DENSITY_ONLY_PROFILE_NO_ECONOMIC_ACTIVATION"):
+    with pytest.raises(screen.ScreenError, match="ACTIVATION_BINDING"):
         screen.validate_activation(path, "a" * 40)
 
 

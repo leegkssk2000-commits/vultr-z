@@ -17,7 +17,7 @@
 
 기존 scout의 15개 bucket은 유지하고 chart/price action·Fibonacci·candlestick·classic chart patterns·multi-timeframe·oscillator context 6개를 추가했다. 문맥과 검색결과는 동일한 정규화를 쓴다. 원문 규칙이 누락되면 SOURCE_RULE_INCOMPLETE, 사후/재량 anchor는 UNIMPLEMENTABLE_DISCRETIONARY다. 완전한 선언도 UNTESTED이며 screening_eligible=false다. 조회수와 수익 주장은 경제권한이 없다.
 
-기존 source/execution/rider/registry fixture 83개와 영상/연결 fixture 26개, 총 **109개 로컬 PASS**. pivot의 오른쪽 확인 봉, 실제 HTF 가용시각, future 수정 prefix 불변, next-open·지연 관측 거부, stop-first·gap·점유, baseline/큰 승리 보존, signed BTC-long funding 경계, 미검증 조회수·주관 anchor·cross-owner 거부를 실제 함수로 확인했다. 0.618와 engulfing 수식은 INTERNAL_TRANSLATION 시험 상수이며 영상 원저자 규칙이나 수익 후보가 아니다.
+기존 source/execution/rider/registry fixture 83개와 영상/연결 fixture 26개, 총 **109개 로컬 PASS**. 실제 [CI run37812688515](https://github.com/leegkssk2000-commits/vultr-z/actions/runs/37812688515)의 verify job113433294204도 **26 fixture PASS**·frontend/self-test/manual-only 정책 PASS, scout job113433295997은 **skipped**였다. pivot의 오른쪽 확인 봉, 실제 HTF 가용시각, future 수정 prefix 불변, next-open·지연 관측 거부, stop-first·gap·점유, baseline/큰 승리 보존, signed BTC-long funding 경계, 미검증 조회수·주관 anchor·cross-owner 거부를 실제 함수로 확인했다. 0.618와 engulfing 수식은 INTERNAL_TRANSLATION 시험 상수이며 영상 원저자 규칙이나 수익 후보가 아니다.
 
 기존 scout.run을 실제 캐시와 함께 실행한 NON_ECONOMIC_DRY_RUN_RAW/RECEIPT를 저장했다. provider 호출을 거부하도록 두었고 request audit는 requests=[], generation_requests=0, cost_usd=0이다. 새 blocker/context hash에 맞는 source-exact 캐시가 없어 HOLD로 반환했다. 역사 신호 밀도나 손익 계산은 아니다.
 

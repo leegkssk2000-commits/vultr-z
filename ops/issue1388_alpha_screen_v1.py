@@ -73,7 +73,7 @@ PROFILES: dict[str, dict[str, Any]] = {
         "timeframe_min": 60,
         "signal_rules": "SOURCE_EXACT_HANSEN_CANDLE_PATTERNS_WITH_SHIFT2_HEIKIN_SMA6_STATE",
         "order_adapter": "INTERNAL_CAUSAL_NEXT_OPEN_SOURCE_ROI1000_STOP10_SINGLE_LONG_NO_END_EXIT",
-        "activation_token": "[issue1388-alpha-screen-9-hansen-1h-v1]",
+        "activation_token": "[issue1388-alpha-screen-10-hansen-1h-v1]",
         "execution_ref": "refs/heads/research-execution-consumptions/issue1388-cheap-hansen-1h-v1",
         "result_ref": "refs/heads/research-results/issue1388-cheap-hansen-1h-v1",
     },

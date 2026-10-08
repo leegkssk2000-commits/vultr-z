@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: a44020cae9f9ec8d15ef38a8ff46310cda6e9e99
+          ref: 695c6ae37689d0d07eb934f68b3be21c262c0cf3
           fetch-depth: 0
           persist-credentials: false
       - name: Required frontend precheck on exact source
@@ -122,6 +122,18 @@ jobs:
           assert len(a["child_trades"])>0,"NO_CHILD_TRADE_IN_SYNTHETIC_FIXTURE"
           assert not a["integrity_defects"],a["integrity_defects"]
           print(json.dumps({"synthetic_fixture_only":True,"strategy":pid,"parent_opportunities":len(a["parent_opportunities"]),"child_trades":len(a["child_trades"]),"first_child_trade_net_bps":b["child_trades"][0]["net_bps"],"old_new_full_trade_ledger_equal":True,"actual_market_economic_credit":0}),flush=True)
+          PY
+      - name: Verify exact current production workflow step-timeout guard
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          src=Path('.github/workflows/a1-external-research-exact8-through-a3-v1.yml').read_text()
+          a='      - name: Collect append-only fresh evidence and route through A3\n        timeout-minutes: 38\n        run: |'
+          b='    timeout-minutes: 45'
+          c='      - name: Preserve completed-lane diagnostic evidence on timeout\n        if: always()'
+          assert src.count(a)==1 and src.count(b)==1 and src.count(c)==1, 'TIMEOUT_OR_ARTIFACT_GUARD_MISMATCH'
+          assert src.find(a)<src.find(c), 'ARTIFACT_PRECEDES_SOURCE_STEP'
+          print('PASS_PROD_38M_STEP_45M_JOB_PARTIAL_ARTIFACT_GUARD')
           PY
       - name: Create strictly nonpromotable interrupted-job checkpoint canary
         run: |

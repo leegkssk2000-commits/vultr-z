@@ -448,7 +448,7 @@ def test_activation_selects_cenderawasih_profile(tmp_path: Path, monkeypatch) ->
 
 def test_hansen_recovery_uses_new_one_shot_token_without_changing_permanent_refs() -> None:
     profile = screen.PROFILES[screen.HANSEN_ID]
-    assert profile["activation_token"] == "[issue1388-alpha-screen-10-hansen-1h-v1]"
+    assert profile["activation_token"] == "[issue1388-alpha-screen-11-hansen-1h-v1]"
     assert profile["execution_ref"] == "refs/heads/research-execution-consumptions/issue1388-cheap-hansen-1h-v1"
     assert profile["result_ref"] == "refs/heads/research-results/issue1388-cheap-hansen-1h-v1"
 

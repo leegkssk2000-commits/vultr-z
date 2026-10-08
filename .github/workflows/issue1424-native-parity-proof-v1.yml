@@ -1,0 +1,122 @@
+name: Issue1424 isolated CPU-only native parity proof
+on:
+  push:
+    branches: [ci/issue1424-nativeproof-20261009]
+    paths:
+      - '.github/workflows/issue1424-native-parity-proof-v1.yml'
+permissions:
+  contents: read
+concurrency:
+  group: issue1424-isolated-native-proof-only
+  cancel-in-progress: false
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: a44020cae9f9ec8d15ef38a8ff46310cda6e9e99
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Required frontend precheck on exact source
+        id: frontend_precheck
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          pwd
+          ls -la frontend/z-os-app-source
+          cat frontend/z-os-app-source/package.json
+          npm run --prefix frontend/z-os-app-source validate
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned numerical libraries only
+        run: |
+          python -m pip install --no-input --disable-pip-version-check numpy==1.26.4 pandas==2.2.2
+      - name: Native static compile and self-tests (NO market or economic replay)
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/architecture_factory/a1_external_research_exact8_through_a3_v1.py backend/research/architecture_factory/a1_external_research_exact8_through_a3_runner_v1.py backend/research/architecture_factory/test_a1_external_research_exact8_parent_reuse_v1.py
+          python -m unittest -v backend.research.architecture_factory.test_a1_external_research_exact8_parent_reuse_v1 backend.research.architecture_factory.test_a1_external_research_exact8_adapters_v1
+          python -m backend.research.architecture_factory.a1_external_research_exact8_through_a3_runner_v1 --self-test
+          python -m backend.research.architecture_factory.a1_external_research_exact8_source_audit_v1 --self-test --output out/exact8_source_audit_selftest.json
+          python -m backend.research.prep.a3_exact25_forward_durability_v3 --self-test
+      - name: Compare original and optimized exact six-lane replay on synthetic bars ONLY
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+          import json
+          from pathlib import Path
+          import subprocess
+          import sys
+          import time
+          import types
+          from backend.research.architecture_factory import a1_external_research_exact8_through_a3_runner_v1 as runner
+          from backend.research.architecture_factory.test_a1_external_research_exact8_adapters_v1 import fixture_bars
+          new = runner.core
+          source_path = "backend/research/architecture_factory/a1_external_research_exact8_through_a3_v1.py"
+          source = subprocess.check_output(["git", "show", "d57993aa4168bb2bf9546fe3af1c6ce7d27a9c23:"+source_path], text=True)
+          old = types.ModuleType("a1_exact8_baseline_20261008")
+          old.__file__ = str(Path.cwd() / source_path)
+          sys.modules[old.__name__] = old
+          exec(compile(source, old.__file__, "exec"), old.__dict__)
+          spec = new.read(new.SPEC_PATH)
+          boundary_ms = int(new.read(new.BOUNDARY_PATH)["boundary_ms"])
+          streams = {}
+          for tf in (300_000, 3_600_000):
+              for symbol in new.SYMBOLS:
+                  key = f"{symbol}|{tf}"
+                  end_ts = boundary_ms + 40 * tf
+                  streams[key] = fixture_bars(100.0 if symbol=="BTC-USDT" else 145.0, count=180, timeframe_ms=tf, end_ts_ms=end_ts)
+          state = {"boundary_ms":boundary_ms, "streams":streams, "cost_snapshot_by_symbol": {sym:{"pretrade_verified_cost_bps":14.0} for sym in new.SYMBOLS}, "integrity_defects":[]}
+          total_old=total_new=0.0
+          for pid in new.SOURCE_READY:
+              t0=time.perf_counter()
+              baseline=old.replay_child(pid,state,spec)
+              old_seconds=time.perf_counter()-t0
+              t1=time.perf_counter()
+              optimized=new.replay_child(pid,state,spec)
+              new_seconds=time.perf_counter()-t1
+              assert new.stable_sha(baseline)==new.stable_sha(optimized),f"REPLAY_LEDGER_PARITY_FAILED:{pid}"
+              total_old+=old_seconds;total_new+=new_seconds
+              print(json.dumps({"identity":pid,"parent_opportunities":len(baseline["parent_opportunities"]),"child_trades":len(baseline["child_trades"]),"integrity_defects":baseline["integrity_defects"][:3],"old_sec":round(old_seconds,4),"new_sec":round(new_seconds,4),"same_replay_hash":True}),flush=True)
+          print(json.dumps({"synthetic_dev_only":True,"six_lanes_equal":True,"old_sec":round(total_old,4),"new_sec":round(total_new,4),"not_real_trading_economics":True}),flush=True)
+          PY
+      - name: Create strictly nonpromotable interrupted-job checkpoint canary
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from backend.research.architecture_factory import a1_external_research_exact8_through_a3_runner_v1 as runner
+          c=runner.core
+          pid="anchor_vwap_trend"
+          spec=c.read(c.SPEC_PATH)
+          c._write_lane_checkpoint(
+              Path("out/exact8_lane_checkpoints"),
+              state={"boundary_utc":c.read(c.BOUNDARY_PATH)["boundary_utc"],"receipt_sha256":"a"*64,"source_audit_receipt_sha256":"b"*64},
+              spec=spec,
+              row={"parent_id":pid,"child_id":spec["specs"][pid]["child_id"],"a1_state":"WAIT_EXACT8_A1_FRESH_SAMPLE","a2_state":"BLOCKED_BEFORE_A2","a3_state":"BLOCKED_BEFORE_A3","completed_child_trades":0},
+          )
+          print("SAVED_NON_ECONOMIC_PARTIAL_CANARY",flush=True)
+          PY
+      - name: Intentionally fail synthetic downstream step (isolated)
+        id: simulated_interruption
+        continue-on-error: true
+        run: exit 75
+      - name: Upload partial canary even after intentional failed step
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue1424-partial-canary
+          path: out/exact8_lane_checkpoints/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Require frontend precheck and intentional failure proof
+        if: always()
+        env:
+          FRONTEND_RESULT: \${{ steps.frontend_precheck.outcome }}
+          INTERRUPTION_RESULT: \${{ steps.simulated_interruption.outcome }}
+        run: |
+          test "$FRONTEND_RESULT" = "success"
+          test "$INTERRUPTION_RESULT" = "failure"
+          echo "ISOLATED_NATIVE_PROOF_DONE_NO_ECONOMIC_CLAIM"

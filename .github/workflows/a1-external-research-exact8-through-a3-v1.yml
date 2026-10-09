@@ -56,7 +56,10 @@ jobs:
           python -m backend.research.prep.a3_exact25_forward_durability_v3 --self-test
 
   live-forward:
-    if: github.event_name != 'pull_request'
+    # A source-code merge must not consume the shared-heavy evaluator slot.
+    # Fresh collection remains owned by the existing hourly schedule or a
+    # separately authorized manual workflow_dispatch.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: contract
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -70,6 +73,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Collect append-only fresh evidence and route through A3
+        timeout-minutes: 38
         run: |
           set -euo pipefail
           mkdir -p out
@@ -77,6 +81,14 @@ jobs:
             --collect-live \
             --state backend/research/prep/a1_external_research_exact8_forward_state_v1.json \
             --output out/a1_external_research_exact8_through_a3_v1.json
+      - name: Preserve completed-lane diagnostic evidence on timeout
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: exact8-partial-diagnostic-${{ github.run_id }}
+          path: out/exact8_lane_checkpoints/
+          retention-days: 7
+          if-no-files-found: ignore
       - name: Verify fail-closed authority and fresh-only identity
         run: |
           set -euo pipefail

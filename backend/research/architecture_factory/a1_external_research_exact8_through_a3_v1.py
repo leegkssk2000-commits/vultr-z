@@ -5,8 +5,10 @@ import hashlib
 import importlib
 import importlib.util
 import json
+import os
 import random
 import sys
+import time
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -346,6 +348,18 @@ def _candidate_bars(state: Mapping[str, Any], symbol: str, timeframe_ms: int) ->
     return [dict(x) for x in (state.get("streams") or {}).get(_stream_key(symbol, timeframe_ms), [])]
 
 
+def _parent_feature_from_child(child_feature: Any) -> Any:
+    """Reuse the native parent snapshot carried by each frozen Exact8 child.
+
+    This changes the calculation path only, not the parent/child rule or window.
+    Missing parent lineage must fail closed, never synthesize a source signal.
+    """
+    parent = getattr(child_feature, "parent", None)
+    if parent is None:
+        raise RuntimeError("EXACT8_CHILD_PARENT_FEATURE_MISSING")
+    return parent
+
+
 def replay_child(parent_id: str, state: Mapping[str, Any], spec: Mapping[str, Any]) -> dict[str, Any]:
     row = spec["specs"][parent_id]
     child_id = str(row["child_id"])
@@ -361,7 +375,10 @@ def replay_child(parent_id: str, state: Mapping[str, Any], spec: Mapping[str, An
         raise RuntimeError(f"CHILD_ADAPTER_ENTRYPOINT_MISSING:{parent_id}")
     parent_path = ROOT / str(row["parent_policy"])
     parent_module = _load_parent(parent_path, parent_id)
-    parent_compute, parent_build = ev.policy_functions(parent_module, parent_id)
+    # Keep the frozen parent policy selection/contract, but avoid computing its
+    # expensive historical indicators twice per completed bar: every preregistered
+    # Exact8 child snapshot already contains the unmodified parent snapshot.
+    _, parent_build = ev.policy_functions(parent_module, parent_id)
     policy_sha = ev.git_blob_sha(parent_path)
     costs = state.get("cost_snapshot_by_symbol") or {}
     boundary_ms = int(state["boundary_ms"])
@@ -382,9 +399,9 @@ def replay_child(parent_id: str, state: Mapping[str, Any], spec: Mapping[str, An
             if int(bars[i]["ts_ms"]) < boundary_ms:
                 continue
             try:
-                parent_feature = parent_compute(bars[: i + 1], symbol=symbol, now_ts_ms=int(bars[i]["ts_ms"]), config=cfg)
-                parent_intent = parent_build(parent_feature, policy_source_sha=policy_sha, verified_round_trip_cost_bps=cost_bps, config=cfg)
                 child_feature = child_compute(bars[: i + 1], symbol=symbol, now_ts_ms=int(bars[i]["ts_ms"]), config=cfg)
+                parent_feature = _parent_feature_from_child(child_feature)
+                parent_intent = parent_build(parent_feature, policy_source_sha=policy_sha, verified_round_trip_cost_bps=cost_bps, config=cfg)
                 child_intent = child_build(child_feature, policy_source_sha=policy_sha, verified_round_trip_cost_bps=cost_bps, config=cfg)
             except ValueError:
                 continue
@@ -645,15 +662,72 @@ def evaluate_a3(a2_result: Mapping[str, Any], replay: Mapping[str, Any]) -> dict
     return result
 
 
-def evaluate_all(state: Mapping[str, Any]) -> dict[str, Any]:
+def _write_lane_checkpoint(
+    checkpoint_dir: Path, *, state: Mapping[str, Any],
+    spec: Mapping[str, Any], row: Mapping[str, Any],
+) -> Path:
+    """Write one fully evaluated lane as diagnostic evidence, NEVER a stage PASS.
+
+    Source-state and candidate hashes bind each immutable partial file to one
+    run's exact input. A different result at the same hash fails closed.
+    """
+    parent_id = str(row["parent_id"])
+    if parent_id not in SOURCE_READY:
+        raise RuntimeError(f"EXACT8_CHECKPOINT_PARENT_UNKNOWN:{parent_id}")
+    if str(row["child_id"]) != str(spec["specs"][parent_id]["child_id"]):
+        raise RuntimeError("EXACT8_CHECKPOINT_CHILD_IDENTITY_DRIFT")
+    source_hash = str(state["receipt_sha256"])
+    if len(source_hash) != 64 or any(x not in "0123456789abcdef" for x in source_hash):
+        raise RuntimeError("EXACT8_CHECKPOINT_SOURCE_HASH_INVALID")
+    evidence = {
+        "schema_version": "zel.exact8_partial_diagnostic.v1",
+        "state": "PARTIAL_DIAGNOSTIC_ONLY_NOT_ECONOMIC_STAGE_RECEIPT",
+        "source_state_sha256": source_hash,
+        "source_audit_receipt_sha256": state.get("source_audit_receipt_sha256"),
+        "spec_sha256": stable_sha(spec),
+        "boundary_utc": state["boundary_utc"],
+        "lane": dict(row),
+        "formal_credit": 0,
+        **AUTH,
+    }
+    evidence["receipt_sha256"] = stable_sha(evidence)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    dest = checkpoint_dir / f"{parent_id}__{source_hash}.json"
+    payload = json.dumps(evidence, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    if dest.exists():
+        if dest.read_text(encoding="utf-8") != payload:
+            raise RuntimeError("EXACT8_CHECKPOINT_CONTENT_DRIFT")
+        return dest
+    tmp = checkpoint_dir / f".{parent_id}__{source_hash}.{os.getpid()}.tmp"
+    try:
+        tmp.write_text(payload, encoding="utf-8")
+        os.replace(tmp, dest)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+    return dest
+
+
+def evaluate_all(
+    state: Mapping[str, Any], *, checkpoint_dir: Path | None = None,
+) -> dict[str, Any]:
     spec = read(SPEC_PATH)
     rows: list[dict[str, Any]] = []
     for parent_id in SOURCE_READY:
+        # Diagnostics only: persisted economics and hashes never use wallclock time.
+        # Flush before replay so a job killed by timeout retains the last begun lane.
+        started = time.monotonic()
+        print(f"EXACT8_LANE_REPLAY_START:{parent_id}", file=sys.stderr, flush=True)
         replay = replay_child(parent_id, state, spec)
+        print(
+            f"EXACT8_LANE_REPLAY_DONE:{parent_id}:seconds={time.monotonic() - started:.3f}",
+            file=sys.stderr,
+            flush=True,
+        )
         a1_result = evaluate_a1(replay, state)
         a2_result = evaluate_a2(a1_result, replay, state)
         a3_result = evaluate_a3(a2_result, replay)
-        rows.append({
+        row = {
             "parent_id": parent_id,
             "child_id": replay["child_id"],
             "completed_child_trades": len(replay["child_trades"]),
@@ -664,7 +738,13 @@ def evaluate_all(state: Mapping[str, Any]) -> dict[str, Any]:
             "a1": a1_result,
             "a2": a2_result,
             "a3": a3_result,
-        })
+        }
+        rows.append(row)
+        if checkpoint_dir is not None:
+            path = _write_lane_checkpoint(
+                checkpoint_dir, state=state, spec=spec, row=row,
+            )
+            print(f"EXACT8_LANE_DIAGNOSTIC_SAVED:{parent_id}:{path}", file=sys.stderr, flush=True)
     a3_pass = sum(x["a3_state"] == "PASS_A3_GLOBAL_DURABILITY" for x in rows)
     a2_pass = sum(x["a2_state"] == "PASS_A2_COST_TURNOVER" for x in rows)
     a1_pass = sum(x["a1_state"] == "PASS_EXACT8_A1_CAUSAL_READY_FOR_A2" for x in rows)
@@ -753,8 +833,15 @@ def main() -> int:
         return self_test()
     if not args.collect_live:
         raise SystemExit("--collect-live required unless --self-test")
+    print("EXACT8_SOURCE_COLLECT_START", file=sys.stderr, flush=True)
+    source_started = time.monotonic()
     state = collect_live(args.state)
-    result = evaluate_all(state)
+    print(
+        f"EXACT8_SOURCE_COLLECT_DONE:seconds={time.monotonic() - source_started:.3f}",
+        file=sys.stderr,
+        flush=True,
+    )
+    result = evaluate_all(state, checkpoint_dir=args.output.parent / "exact8_lane_checkpoints")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps({

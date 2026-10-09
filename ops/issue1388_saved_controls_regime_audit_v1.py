@@ -114,6 +114,13 @@ def main(output):
         first=rows[0]["signal"] if rows else {}
         metadata["entry_signal_keys"]=sorted(first)
         metadata["entry_meta_keys"]=sorted(meta0)
+
+        # Outcome classes are audit labels only; never use them as entry features.
+        metadata["original_entry_price_examples"]=[r.get("entry_prices") for r in rows[:2]]
+        metadata["original_signal_meta_examples"]=[r["signal"]["meta"] for r in rows[:2]]
+        metadata["by_regime_and_window8"]=breakdown(rows, lambda r:r["regime"]+("::rolling8" if r["window_label"]=="rolling_8" else "::other"))
+        metadata["by_2x_cost_outcome_class"]=breakdown(rows, lambda r:("two_x_net_winner" if float(r["gross_bps"])-2*float(r["cost_bps"])>0 else "fragile_1x_winner" if float(r["net_bps"])>0 else "one_x_nonpositive"))
+        metadata["class_by_regime"]=breakdown(rows, lambda r:r["regime"]+"::"+("two_x_net_winner" if float(r["gross_bps"])-2*float(r["cost_bps"])>0 else "fragile_1x_winner" if float(r["net_bps"])>0 else "one_x_nonpositive"))
         metadata["by_entry_regime"]=breakdown(rows, lambda r:r["regime"])
         metadata["by_costed_symbol"]=breakdown(rows, lambda r:r["symbol"])
         metadata["by_rolling_window"]=breakdown(rows, lambda r:r["window_label"])
@@ -132,6 +139,12 @@ def main(output):
         "squeeze":report[IDS[1]]["by_entry_regime"],
         "keltner_signal_keys":report[IDS[0]]["entry_signal_keys"],
         "keltner_meta_keys":report[IDS[0]]["entry_meta_keys"],
+        "entry_price_examples":report[IDS[0]]["original_entry_price_examples"],
+        "entry_meta_examples":report[IDS[0]]["original_signal_meta_examples"],
+        "keltner_regime_window8":report[IDS[0]]["by_regime_and_window8"],
+        "squeeze_regime_window8":report[IDS[1]]["by_regime_and_window8"],
+        "keltner_cost_classes":report[IDS[0]]["by_2x_cost_outcome_class"],
+        "keltner_regime_cost_class":report[IDS[0]]["class_by_regime"],
         "overlap":report["overlap_diagnostic"],
         "no_economic_run":True
     },sort_keys=True),flush=True)

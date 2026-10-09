@@ -1,0 +1,73 @@
+name: Issue1388 saved control source-field proof
+on:
+  push:
+    branches:
+      - ci/issue1388-saved-trade-fields-20261009
+    paths:
+      - '.github/workflows/issue1388-saved-trade-fields-v1.yml'
+permissions:
+  contents: read
+concurrency:
+  group: issue1388-local-saved-fields-only
+  cancel-in-progress: false
+jobs:
+  source-schema:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ee4b4153e5ed1e1a0230d9bbe3d2cb4b85cf2567
+          persist-credentials: false
+      - name: Inspect old saved 109T/25T ledger evidence only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import gzip,hashlib,json, pathlib,datetime
+          from collections import Counter
+          p=pathlib.Path("research/campaigns/scalp7_20260915/broad_rebuild_v2/results")
+          candidates=["scalp7_keltner_hg_parent_utc30m_v2","scalp7_squeeze_panic_cost4_parent_utc30m_v2"]
+          output={"schema":"zel.issue1388.source_fields.v1","mode":"READ_ONLY_NO_ECONOMIC_REPLAY","source_master":"ee4b4153e5ed1e1a0230d9bbe3d2cb4b85cf2567","lanes":[]}
+          for identity in candidates:
+              m=json.loads((p/(identity+".json")).read_text())
+              raw=(p/(identity+".trades.json.gz")).read_bytes()
+              decompressed=gzip.decompress(raw)
+              data=json.loads(decompressed)
+              if isinstance(data,list): 
+                  rows=data;root_keys=[]
+              elif isinstance(data,dict):
+                  root_keys=list(data)
+                  rows=next((data[k] for k in ["trades","rows","completed_trades","events"] if isinstance(data.get(k),list)),[])
+              else: raise RuntimeError("UNEXPECTED_TRADES_FORMAT")
+              if len(rows)!=m["rolling1x"]["T"] and len(rows)!=m["rolling1x"]["T"]+len(m.get("window_receipts",[])):
+                  # Preserve a true shape observation instead of declaring semantic equivalence.
+                  print("SAVED_LEDGER_COUNT_DIFF",identity,len(rows),m["rolling1x"]["T"],flush=True)
+              fields=sorted(set().union(*(r.keys() for r in rows if isinstance(r,dict))))
+              interesting=[f for f in fields if any(x in f.lower() for x in ("symbol","signal","entry","exit","close","gross","net","cost","fee","price","time","reason","regime","feature","decision","risk","atr","ema","side","momentum","window"))]
+              examples=[]
+              for r in rows[:2]:
+                  o={}
+                  for k,v in r.items():
+                      if k in interesting and (v is None or isinstance(v,(str,int,float,bool))):
+                          o[k]=v
+                      elif k in interesting:
+                          o[k]="NONSCALAR:"+type(v).__name__
+                  examples.append(o)
+              sha_gz=hashlib.sha256(raw).hexdigest()
+              sha_plain=hashlib.sha256(decompressed).hexdigest()
+              checked=m.get("ledger_sha256")
+              matched={"gzip":checked==sha_gz,"decompressed":checked==sha_plain}
+              print("LEDGER_SOURCE",json.dumps({"identity":identity,"rows":len(rows),"expected_rolling_T":m["rolling1x"]["T"],"compressed_sha":sha_gz,"uncompressed_sha":sha_plain,"declared_sha":checked,"sha_verified":matched,"root_keys":root_keys,"field_names":fields,"interesting":interesting,"samples":examples},sort_keys=True),flush=True)
+              output["lanes"].append({"identity":identity,"rows":len(rows),"rolling_T":m["rolling1x"]["T"],"declared_sha":checked,"source_sha_gzip":sha_gz,"source_sha_plain":sha_plain,"sha_matches":matched,"root_keys":root_keys,"field_names":fields,"samples":examples})
+          pathlib.Path("out").mkdir(exist_ok=True)
+          pathlib.Path("out/issue1388_saved_trade_schema.json").write_text(json.dumps(output,sort_keys=True,indent=2)+"\n")
+          PY
+      - name: Persist read-only schema receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue1388-saved-trade-schema
+          path: out/issue1388_saved_trade_schema.json
+          if-no-files-found: warn
+          retention-days: 7

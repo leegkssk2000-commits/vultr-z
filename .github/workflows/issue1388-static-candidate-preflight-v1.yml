@@ -1,0 +1,40 @@
+name: Issue1388 static-only candidate admission against saved A5 economic failures
+on:
+  push:
+    branches: [ci/issue1388-executable-candidate-static-20261009]
+    paths:
+      - '.github/workflows/issue1388-static-candidate-preflight-v1.yml'
+      - 'ops/issue1388_candidate_static_preflight_v1.py'
+      - 'tests/test_issue1388_candidate_static_preflight_v1.py'
+permissions:
+  contents: read
+concurrency:
+  group: issue1388-static-candidate-preflight-only
+  cancel-in-progress: false
+jobs:
+  static-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Execute native static fail-fast unit tests
+        run: |
+          set -euo pipefail
+          python -m py_compile ops/issue1388_candidate_static_preflight_v1.py tests/test_issue1388_candidate_static_preflight_v1.py
+          python -m unittest discover -s tests -p test_issue1388_candidate_static_preflight_v1.py -v
+      - name: Inspect saved real five generated candidates without market APIs
+        run: |
+          python ops/issue1388_candidate_static_preflight_v1.py --output out/issue1388_static_candidate_receipt.json
+      - name: Persist fail-fast result with zero economic credit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue1388-static-admission-frozen-five
+          path: out/issue1388_static_candidate_receipt.json
+          if-no-files-found: warn
+          retention-days: 7

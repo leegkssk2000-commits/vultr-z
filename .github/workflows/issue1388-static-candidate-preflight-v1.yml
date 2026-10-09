@@ -18,6 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: 171aabdbcdb3f43fcdad52b70220b98836017b79
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
@@ -27,6 +28,17 @@ jobs:
           set -euo pipefail
           python -m py_compile ops/issue1388_candidate_static_preflight_v1.py tests/test_issue1388_candidate_static_preflight_v1.py
           python -m unittest discover -s tests -p test_issue1388_candidate_static_preflight_v1.py -v
+          python -m py_compile backend/research/architecture_factory/a1_a5_static_admission_v1.py backend/research/architecture_factory/a1_a5_economic_improvement_v3.py tests/test_issue1388_candidate_static_wrapper_v1.py
+          python -m unittest discover -s tests -p test_issue1388_candidate_static_wrapper_v1.py -v
+          python - <<'PY'
+          from pathlib import Path
+          src=Path('backend/research/architecture_factory/a1_a5_economic_improvement_v3.py').read_text()
+          assert src.count('static_admission.evaluate_queue(econ, ') == 4
+          assert 'dev = econ.evaluate_queue(' not in src
+          assert 'repair_dev = econ.evaluate_queue(' not in src
+          print('PASS_ALL_FOUR_A5_STATIC_ADMISSION_CALL_SITES',flush=True)
+          PY
+
       - name: Inspect saved real five generated candidates without market APIs
         run: |
           python ops/issue1388_candidate_static_preflight_v1.py --output out/issue1388_static_candidate_receipt.json

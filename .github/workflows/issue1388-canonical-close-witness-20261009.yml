@@ -19,6 +19,30 @@ concurrency:
   queue: max
 
 jobs:
+  fixtures-only:
+    if: >-
+      github.run_attempt == 1 &&
+      contains(github.event.head_commit.message, '[issue1388-fixtures-only-20261009]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: CPU-only frontend guard and deterministic local fixtures
+        shell: bash
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          set -euo pipefail
+          python --version
+          npm run --prefix frontend/z-os-app-source validate
+          python -B -m unittest discover -s tests -p test_issue1388_canonical_daily_close_audit_v1.py -v
+          python -B -m unittest discover -s tests -p test_issue1388_exact8_storage_persistence_v1.py -v
+          python -m py_compile ops/issue1388_canonical_daily_close_audit_v1.py tests/test_issue1388_canonical_daily_close_audit_v1.py tests/test_issue1388_exact8_storage_persistence_v1.py
+          git diff --check
+          sha256sum ops/issue1388_canonical_daily_close_audit_v1.py tests/test_issue1388_canonical_daily_close_audit_v1.py tests/test_issue1388_exact8_storage_persistence_v1.py
+
   source-witness:
     if: >-
       github.run_attempt == 1 &&

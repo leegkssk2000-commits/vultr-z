@@ -221,8 +221,13 @@ class CanonicalCloseAudit(unittest.TestCase):
             a._csv_rows(gzip.compress(b'x'*(a.MAX_INFLATED_BYTES+1)))
         for value in (True,1.0,'1.0'):
             with self.assertRaises(a.AuditError):a.integer(value,text_allowed=True)
+        with self.assertRaises(a.AuditError):a.integer('9'*5000,text_allowed=True)
         for close in ('NaN','Infinity','0','-1',True):
             with self.assertRaises(a.AuditError):a.normalize_row({**raw_row(a.START_MS),'close':close})
+        with self.assertRaisesRegex(a.AuditError,'SOURCE_NUMBER_EXPANSION_LIMIT'):
+            a.normalize_row({**raw_row(a.START_MS),'close':'1e1000000'})
+        with self.assertRaisesRegex(a.AuditError,'INVALID_GZIP_CSV'):
+            a._csv_rows(gzip.compress(('timestamp_ms,open,high,low,close,volume\n'+str(a.START_MS)+','+'1'*140000+',2,1,1,1\n').encode()))
 
     def test_full_inventory_pin_blocks_rehashed_or_extra_source(self):
         with tempfile.TemporaryDirectory() as tmp:

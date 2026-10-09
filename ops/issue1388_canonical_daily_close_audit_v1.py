@@ -18,6 +18,7 @@ import re
 import stat
 import sys
 import time
+import zlib
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -43,6 +44,7 @@ MANIFEST_HASHES = {
 FIELDS = ("timestamp_ms", "open", "high", "low", "close", "volume")
 MAX_JSON_BYTES, MAX_BODY_BYTES, MAX_GZIP_BYTES = 262_144, 2_097_152, 2_097_152
 MAX_INFLATED_BYTES, MAX_OUTPUT_BYTES = 2_097_152, 2_097_152
+MAX_NUMERIC_TEXT = 256
 PROOF_FIELDS = [
     "daily_receipt_file_sha256", "daily_receipt_self_sha256", "artifact_1m_sha256",
     "terminal_request_receipt_file_sha256", "terminal_http_body_sha256",
@@ -72,7 +74,7 @@ def integer(value: Any, *, text_allowed: bool = False) -> int:
         raise AuditError("BOOLEAN_TIMESTAMP_OR_COUNT")
     if isinstance(value, int):
         return value
-    if text_allowed and isinstance(value, str) and re.fullmatch(r"[0-9]+", value):
+    if text_allowed and isinstance(value, str) and len(value) <= 19 and re.fullmatch(r"[0-9]+", value):
         return int(value)
     raise AuditError("EXACT_INTEGER_REQUIRED_NO_FLOAT_TRUNCATION")
 
@@ -199,12 +201,17 @@ def normalize_row(raw: Any) -> dict[str, Any]:
     for key in FIELDS[1:]:
         if raw[key] is None or isinstance(raw[key], bool):
             raise AuditError("INVALID_SOURCE_NUMBER:" + key)
+        if len(str(raw[key])) > MAX_NUMERIC_TEXT:
+            raise AuditError("SOURCE_NUMBER_TEXT_LIMIT:" + key)
         try:
             number = Decimal(str(raw[key]))
         except InvalidOperation as exc:
             raise AuditError("INVALID_SOURCE_NUMBER:" + key) from exc
         if not number.is_finite() or (number < 0 if key == "volume" else number <= 0):
             raise AuditError("NONFINITE_OR_NONPOSITIVE_SOURCE:" + key)
+        parts = number.as_tuple()
+        if abs(parts.exponent) > MAX_NUMERIC_TEXT or len(parts.digits) > MAX_NUMERIC_TEXT:
+            raise AuditError("SOURCE_NUMBER_EXPANSION_LIMIT:" + key)
         numbers[key] = number
     if numbers["high"] < max(numbers["open"], numbers["low"], numbers["close"]) or numbers["low"] > min(numbers["open"], numbers["high"], numbers["close"]):
         raise AuditError("SOURCE_OHLC_GEOMETRY")
@@ -248,7 +255,7 @@ def _csv_rows(raw: bytes) -> list[dict[str, Any]]:
             row["timestamp_ms"] = integer(row["timestamp_ms"], text_allowed=True)
             rows.append(row)
         return rows
-    except (OSError, EOFError, UnicodeDecodeError) as exc:
+    except (OSError, EOFError, UnicodeDecodeError, csv.Error, zlib.error) as exc:
         raise AuditError("INVALID_GZIP_CSV") from exc
 
 
@@ -538,7 +545,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         result = audit(args.runtime_root)
-    except (AuditError, OSError, KeyError, TypeError, OverflowError) as exc:
+    except (ValueError, OSError, KeyError, TypeError, OverflowError) as exc:
         result = {"schema": SCHEMA, "state": "BLOCKED_CANONICAL_CLOSE_SOURCE_AUDIT",
                   "reason": f"{type(exc).__name__}:{exc}", "strategy_ready": False,
                   "chronology_economic_eligible": False, "network_calls": 0, "remote_writes": 0,

@@ -16,7 +16,7 @@ class CandidatePreflightTests(unittest.TestCase):
 
     def test_valid_roc_one_arg_not_blocked(self):
         r=inspect_spec({"entry_rule":"ema(close,20)>ema(close,50) and roc(3)<0",
-                        "bar_interval":"30m"})
+                        "bar_interval":"30m","side_rule":"long"})
         self.assertEqual(r["hard_issues"],[])
 
     def test_self_inclusive_strict_breakout_cannot_trade(self):
@@ -27,12 +27,12 @@ class CandidatePreflightTests(unittest.TestCase):
                     inspect_spec({"entry_rule":rule,"bar_interval":"1h"})["hard_issues"])
 
     def test_near_breakout_with_greater_equal_is_possible(self):
-        r=inspect_spec({"entry_rule":"close >= highest(close,20)","bar_interval":"1h"})
+        r=inspect_spec({"entry_rule":"close >= highest(close,20)","bar_interval":"1h","side_rule":"long"})
         self.assertEqual(r["hard_issues"],[])
 
     def test_or_fallback_still_possible(self):
         r=inspect_spec({"entry_rule":"close > highest(close,20) or close > ema(close,20)",
-                        "bar_interval":"1h"})
+                        "bar_interval":"1h","side_rule":"long"})
         self.assertEqual(r["hard_issues"],[])
 
     def test_outside_issue_scope_separate_from_bad_dsl(self):

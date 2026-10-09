@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import unittest
+import json
 from backend.research.architecture_factory import a1_a5_static_admission_v1 as admission
-from ops.issue1388_candidate_static_preflight_v1 import audit_saved
+from ops.issue1388_candidate_static_preflight_v1 import SOURCE
 
 
 class FakeEcon:
@@ -21,10 +22,8 @@ class FakeEcon:
 
 class A5StaticEconomicsAdmissionTests(unittest.TestCase):
     def test_saved_failed_five_never_start_an_economic_evaluator(self):
-        saved=audit_saved()
-        original=[{"candidate_id":x["candidate_id"],
-                   "executable_spec":{"entry_rule":x["entry_rule"],"bar_interval":x["bar_interval"]}}
-                  for x in saved["candidates"]]
+        saved=json.loads(SOURCE.read_text(encoding="utf-8"))
+        original=saved["initial_candidates"]
         econ=FakeEcon()
         result=admission.evaluate_queue(econ,original)
         self.assertEqual(econ.calls,[])
@@ -36,7 +35,7 @@ class A5StaticEconomicsAdmissionTests(unittest.TestCase):
 
     def test_valid_pass_through_unchanged_without_extra_fields(self):
         econ=FakeEcon()
-        data=[{"candidate_id":"valid","executable_spec":{"entry_rule":"roc(3)>0","bar_interval":"30m"}}]
+        data=[{"candidate_id":"valid","executable_spec":{"entry_rule":"roc(3)>0","bar_interval":"30m","side_rule":"long","features":[],"exit_rule":"time_stop"}}]
         direct=econ.evaluate_queue(data)
         self.assertEqual(admission.evaluate_queue(econ,data),direct)
         self.assertEqual(econ.calls,[["valid"],["valid"]])
@@ -44,8 +43,8 @@ class A5StaticEconomicsAdmissionTests(unittest.TestCase):
     def test_partial_invalid_remains_in_same_candidate_order(self):
         econ=FakeEcon()
         data=[
-            {"candidate_id":"invalid","executable_spec":{"entry_rule":"close>highest(close,20)","bar_interval":"30m"}},
-            {"candidate_id":"valid","executable_spec":{"entry_rule":"roc(3)>0","bar_interval":"30m"}},
+            {"candidate_id":"invalid","executable_spec":{"entry_rule":"close>highest(close,20)","bar_interval":"30m","side_rule":"long","features":[],"exit_rule":"time_stop"}},
+            {"candidate_id":"valid","executable_spec":{"entry_rule":"roc(3)>0","bar_interval":"30m","side_rule":"long","features":[],"exit_rule":"time_stop"}},
         ]
         result=admission.evaluate_queue(econ,data)
         self.assertEqual(econ.calls,[["valid"]])
@@ -58,7 +57,7 @@ class A5StaticEconomicsAdmissionTests(unittest.TestCase):
     def test_candidate_id_duplicates_fail_closed(self):
         econ=FakeEcon()
         with self.assertRaisesRegex(ValueError,"DUPLICATE"):
-            admission.evaluate_queue(econ,[{"candidate_id":"x","executable_spec":{"entry_rule":"close>open","bar_interval":"30m"}}]*2)
+            admission.evaluate_queue(econ,[{"candidate_id":"x","executable_spec":{"entry_rule":"close>open","bar_interval":"30m","side_rule":"long","features":[],"exit_rule":"time_stop"}}]*2)
         self.assertEqual(econ.calls,[])
 
 

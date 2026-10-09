@@ -4,7 +4,8 @@ on:
     branches: [ci/issue1388-donchian-longcash-proof-20261009]
     paths:
       - '.github/workflows/issue1388-donchian-source-qa-v1.yml'
-      - 'ops/issue1388_bingx_gap_public_probe_v1.py'
+      - 'ops/issue1388_daily_close_only_source_v1.py'
+      - 'tests/test_issue1388_daily_close_only_source_v1.py'
 permissions:
   contents: read
 concurrency:
@@ -58,9 +59,9 @@ jobs:
         run: |
           set -euo pipefail
           PYTHONPATH=donor/src python -m pytest donor/tests/test_single_asset.py donor/tests/test_signals.py -q --disable-warnings | tee source_unit_tests.log
-      - name: Probe four-minute canonical history gap on public BingX only, bounded six requests
+      - name: Test close-only daily source sufficiency without filling missing 1m
         run: |
-          PYTHONPATH=. python ops/issue1388_bingx_gap_public_probe_v1.py --output out/issue1388_gap_probe_v1
+          PYTHONPATH=. python -m unittest discover -s tests -p test_issue1388_daily_close_only_source_v1.py -v
       - name: Carry source test receipt as non-economic diagnostic
         if: always()
         uses: actions/upload-artifact@v4
@@ -69,6 +70,6 @@ jobs:
           path: |
             source_unit_tests.log
             research/campaigns/scalp7_20261009/donor_longcash_source_triage_v1/DECLARATION.json
-            out/issue1388_gap_probe_v1/
+            research/campaigns/scalp7_20261009/donor_longcash_source_triage_v1/DECLARATION.json
           retention-days: 7
           if-no-files-found: warn

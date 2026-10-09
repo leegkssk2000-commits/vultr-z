@@ -51,6 +51,7 @@ jobs:
           python -m json.tool backend/research/architecture_factory/a1_external_research_exact8_boundary_v1.json >/dev/null
           python -m backend.research.architecture_factory.a1_external_research_exact8_through_a3_runner_v1 --self-test
           python -m unittest backend.research.architecture_factory.test_a1_external_research_exact8_adapters_v1
+          python -m unittest discover -s tests -p test_issue1388_exact8_storage_persistence_v1.py -v
           python -m backend.research.architecture_factory.a1_external_research_exact8_source_audit_v1 \
             --self-test --output out/a1_external_research_exact8_source_audit_self_test_v1.json
           python -m backend.research.prep.a3_exact25_forward_durability_v3 --self-test
@@ -115,14 +116,34 @@ jobs:
           set -euo pipefail
           git config user.name 'exact8-forward-collector'
           git config user.email 'actions@users.noreply.github.com'
-          git add backend/research/prep/a1_external_research_exact8_forward_state_v1.json
+          state='backend/research/prep/a1_external_research_exact8_forward_state_v1.json'
+          original_blob=$(git rev-parse "HEAD:$state")
+          generated_sha=$(sha256sum "$state" | cut -d ' ' -f 1)
+          git add "$state"
           if git diff --cached --quiet; then
             echo 'NO_STATE_DELTA'
           else
             git commit -m 'Exact8: persist fresh forward evidence [skip ci]'
-            git push origin HEAD:master
+            for attempt in 1 2 3; do
+              git fetch origin master
+              if [ "$(git rev-parse "origin/master:$state")" != "$original_blob" ]; then
+                echo 'HOLD_EXACT8_REMOTE_STATE_CHANGED'
+                exit 1
+              fi
+              git rebase origin/master
+              if [ "$(sha256sum "$state" | cut -d ' ' -f 1)" != "$generated_sha" ]; then
+                echo 'HOLD_EXACT8_GENERATED_STATE_CHANGED'
+                exit 1
+              fi
+              if git push origin HEAD:master; then
+                exit 0
+              fi
+            done
+            echo 'HOLD_EXACT8_PERSIST_RETRY_EXHAUSTED'
+            exit 1
           fi
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: a1-exact8-through-a3-v1
           path: |

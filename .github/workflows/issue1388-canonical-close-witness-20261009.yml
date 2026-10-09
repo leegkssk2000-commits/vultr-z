@@ -1,0 +1,150 @@
+name: Issue1388 canonical daily-close witness readonly 20261009
+
+# One source-verification receipt. No schedule, evaluator, claim, or remote writes.
+on:
+  push:
+    branches: [codex/issue1388-close-witness-20261009]
+    paths:
+      - '.github/workflows/issue1388-canonical-close-witness-20261009.yml'
+      - 'ops/issue1388_canonical_daily_close_audit_v1.py'
+      - 'tests/test_issue1388_canonical_daily_close_audit_v1.py'
+      - 'tests/test_issue1388_exact8_storage_persistence_v1.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: issue1388-close-witness-readonly-20261009
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  fixtures-only:
+    if: >-
+      github.run_attempt == 1 &&
+      contains(github.event.head_commit.message, '[issue1388-fixtures-only-20261009]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: CPU-only frontend guard and deterministic local fixtures
+        shell: bash
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          set -euo pipefail
+          python --version
+          npm run --prefix frontend/z-os-app-source validate
+          python -B -m unittest discover -s tests -p test_issue1388_canonical_daily_close_audit_v1.py -v
+          python -B -m unittest discover -s tests -p test_issue1388_exact8_storage_persistence_v1.py -v
+          python -m py_compile ops/issue1388_canonical_daily_close_audit_v1.py tests/test_issue1388_canonical_daily_close_audit_v1.py tests/test_issue1388_exact8_storage_persistence_v1.py
+          git diff --check
+          sha256sum ops/issue1388_canonical_daily_close_audit_v1.py tests/test_issue1388_canonical_daily_close_audit_v1.py tests/test_issue1388_exact8_storage_persistence_v1.py
+
+  source-witness:
+    if: >-
+      github.run_attempt == 1 &&
+      contains(github.event.head_commit.message, '[issue1388-close-witness-once-20261009]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.14'
+      - name: Existing canonical frontend guard and deterministic source fixtures
+        run: |
+          npm run --prefix frontend/z-os-app-source validate
+          python -m unittest discover -s tests -p test_issue1388_canonical_daily_close_audit_v1.py -v
+          python -m unittest discover -s tests -p test_issue1388_exact8_storage_persistence_v1.py -v
+          python -m py_compile ops/issue1388_canonical_daily_close_audit_v1.py
+          git diff --check
+      - name: Existing authenticated VPS archive read only
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          OUT="$RUNNER_TEMP/issue1388-close-witness"
+          mkdir -p "$OUT"
+          export OUT
+          python - <<'PY'
+          import datetime, hashlib, json, os, re
+          from pathlib import Path
+          present={k:bool(os.environ.get(k,'').strip()) for k in ('VPS_HOST','VPS_USER','VPS_SSH_KEY')}
+          valid=bool(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.:-]*',os.environ.get('VPS_HOST',''))) and bool(re.fullmatch(r'[A-Za-z_][A-Za-z0-9_-]*',os.environ.get('VPS_USER','')))
+          receipt={
+            'owner':'CLOUD_WORK_COORDINATOR_ISSUE1358_V1',
+            'source_commit':os.environ['GITHUB_SHA'],
+            'run_id':os.environ['GITHUB_RUN_ID'],
+            'observed_at_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            'secret_references_present':present,'endpoint_format_valid':valid,
+            'secret_values_exported':False,'remote_writes':0,'new_bingx_requests':0,
+            'economic_runs':0,'paid_generation':0,'new_schedule':0,
+            'fixed_cutoff_utc':'2026-09-15T00:00:00Z',
+            'hostkey_basis':'CONTINUITY_FROM_AUTHORIZED_RUN_37164129391',
+            'script_sha256':hashlib.sha256(Path('ops/issue1388_canonical_daily_close_audit_v1.py').read_bytes()).hexdigest()}
+          Path(os.environ['OUT'],'TRANSPORT.json').write_text(json.dumps(receipt,indent=2)+'\n')
+          if not all(present.values()) or not valid: raise SystemExit('EXISTING_SSH_CONNECTION_UNAVAILABLE')
+          PY
+          KEY="$RUNNER_TEMP/issue1388-close-key"
+          KNOWN="$RUNNER_TEMP/issue1388-close-known"
+          ERR="$RUNNER_TEMP/issue1388-close-error"
+          trap 'rm -f "$KEY" "$KNOWN" "$ERR"' EXIT
+          printf '%s\n' "$VPS_SSH_KEY" > "$KEY"
+          chmod 600 "$KEY"
+          if ! ssh-keyscan -T 10 -t ed25519 -H "$VPS_HOST" > "$KNOWN" 2>/dev/null; then
+            echo '{"state":"HOLD_HOST_KEY_SCAN","remote_script_started":false}' > "$OUT/FAILURE.json"
+            exit 1
+          fi
+          FP=$(ssh-keygen -lf "$KNOWN" | awk '{print $2}')
+          if [ "$FP" != 'SHA256:pI/PzwvzWLNJDkOfG98IrC/3NLzh0dIOEUgyqEWta/U' ]; then
+            echo '{"state":"HOLD_HOST_IDENTITY_CONTINUITY","remote_script_started":false}' > "$OUT/FAILURE.json"
+            exit 1
+          fi
+          printf '%s\n' "$FP" > "$OUT/HOST_FINGERPRINT.txt"
+          set +e
+          timeout 480 ssh -T -i "$KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 -o ConnectionAttempts=1 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o UserKnownHostsFile="$KNOWN" "$VPS_USER@$VPS_HOST" 'PYTHONDONTWRITEBYTECODE=1 python3 -B - --runtime-root /home/z/z/runtime/economic7_campaign_20260915' < ops/issue1388_canonical_daily_close_audit_v1.py > "$OUT/SOURCE_CLOSE_WITNESS.json" 2> "$ERR"
+          RC=$?
+          set -e
+          export RC
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          out=Path(os.environ['OUT']); p=out/'TRANSPORT.json'; receipt=json.loads(p.read_text())
+          rc=int(os.environ['RC']); err=Path(os.environ['RUNNER_TEMP'],'issue1388-close-error').read_bytes()
+          lower=err.decode(errors='replace').lower()
+          receipt['ssh_exit_code']=rc
+          receipt['stderr_sha256']=hashlib.sha256(err).hexdigest()
+          receipt['failure_class']='NONE' if rc==0 else 'AUTHENTICATION_REJECTED' if 'permission denied' in lower else 'TIMEOUT' if rc==124 or 'timed out' in lower else 'SOURCE_HOLD_OR_REMOTE_ERROR'
+          raw=(out/'SOURCE_CLOSE_WITNESS.json').read_bytes()
+          receipt['projection_sha256']=hashlib.sha256(raw).hexdigest()
+          receipt['projection_bytes']=len(raw)
+          if raw:
+              try:
+                  data=json.loads(raw)
+                  receipt['source_state']=data.get('state')
+                  print('ACTUAL_SOURCE_VERIFICATION',data.get('state'))
+              except ValueError:
+                  receipt['source_state']='HOLD_INVALID_REMOTE_JSON'
+          p.write_text(json.dumps(receipt,indent=2)+'\n')
+          print(json.dumps(receipt,sort_keys=True))
+          PY
+          cp ops/issue1388_canonical_daily_close_audit_v1.py "$OUT/AUDIT_SOURCE.py"
+          cp tests/test_issue1388_canonical_daily_close_audit_v1.py "$OUT/AUDIT_TEST.py"
+          exit "$RC"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: issue1388-canonical-close-witness-20261009
+          path: ${{ runner.temp }}/issue1388-close-witness
+          if-no-files-found: error
+          retention-days: 30
+

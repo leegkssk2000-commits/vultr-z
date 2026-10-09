@@ -79,22 +79,52 @@ def _guaranteed_false(node: ast.AST) -> bool:
     return False
 
 def inspect_spec(spec: Mapping[str, Any], *, issue1388_scope: bool = True) -> dict[str, Any]:
-    entry = str(spec.get("entry_rule") or "")
+    """Check submitted DSL *without* running an evaluator or rewriting rules."""
     issues: list[str] = []
-    parsed = None
-    try:
-        parsed = ast.parse(entry, mode="eval")
-    except SyntaxError:
-        issues.append("UNPARSEABLE_ENTRY_EXPRESSION")
-    if parsed is not None:
+
+    def check_formula(formula: str, slot: str, *, entry: bool = False) -> None:
+        if not formula.strip():
+            issues.append("EMPTY_EXPRESSION:" + slot)
+            return
+        try:
+            parsed = ast.parse(formula, mode="eval")
+        except SyntaxError:
+            issues.append("UNPARSEABLE_EXPRESSION:" + slot)
+            return
         for node in ast.walk(parsed):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
                 if node.func.id in {"roc", "ret"} and len(node.args) > 1:
-                    issues.append("EXECUTOR_FUNCTION_ARITY_MISMATCH:" + node.func.id)
+                    code = "EXECUTOR_FUNCTION_ARITY_MISMATCH:" + node.func.id
+                    issues.append(code if entry else code + "@" + slot)
                 if node.keywords:
-                    issues.append("EXECUTOR_UNSUPPORTED_KEYWORD_CALL")
-        if _guaranteed_false(parsed):
+                    issues.append("EXECUTOR_UNSUPPORTED_KEYWORD_CALL@" + slot)
+        if entry and _guaranteed_false(parsed):
             issues.append("UNREACHABLE_CURRENT_BAR_EXTREME")
+
+    check_formula(str(spec.get("entry_rule") or ""), "ENTRY", entry=True)
+
+    features = spec.get("features") or []
+    if not isinstance(features, list):
+        issues.append("FEATURE_SCHEMA_NOT_LIST")
+    else:
+        for i, item in enumerate(features):
+            if not isinstance(item, Mapping):
+                issues.append("FEATURE_SCHEMA_NOT_OBJECT:" + str(i))
+                continue
+            name = str(item.get("name") or i)
+            check_formula(str(item.get("formula") or ""), "FEATURE:" + name)
+
+    side = str(spec.get("side_rule") or "").strip()
+    import re
+    m = re.fullmatch(r"(?:long|short)\s+if\s+(.+)\s+else\s+(?:short|long)", side, flags=re.I)
+    if m:
+        check_formula(m.group(1), "SIDE")
+    elif side.lower() not in {"long", "long_only", "always_long", "short", "short_only", "always_short"}:
+        issues.append("UNSUPPORTED_SIDE_RULE")
+    exit_rule = str(spec.get("exit_rule") or "time_stop").strip()
+    if exit_rule.lower() not in {"time_stop", "time stop", "max_hold", "max_hold_bars"}:
+        check_formula(exit_rule, "EXIT")
+
     tf = str(spec.get("bar_interval") or "")
     if issue1388_scope and tf not in ISSUE1388_TFS:
         issues.append("OUTSIDE_CURRENT_ISSUE1388_TIMEFRAME:" + tf)
@@ -106,6 +136,7 @@ def inspect_spec(spec: Mapping[str, Any], *, issue1388_scope: bool = True) -> di
         "new_economic_run": False,
         "executable_proved": False,
     }
+
 
 def audit_saved(path: Path = SOURCE) -> dict[str, Any]:
     raw = path.read_bytes()

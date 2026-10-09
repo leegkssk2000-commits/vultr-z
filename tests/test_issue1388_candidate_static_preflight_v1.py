@@ -40,6 +40,21 @@ class CandidatePreflightTests(unittest.TestCase):
             r=inspect_spec({"entry_rule":"ema(close,20)>ema(close,50)","bar_interval":tf})
             self.assertIn("OUTSIDE_CURRENT_ISSUE1388_TIMEFRAME:"+tf,r["hard_issues"])
 
+    def test_invalid_feature_roc_and_invalid_exit_still_block_even_when_entry_works(self):
+        spec={"entry_rule":"close>open","bar_interval":"30m",
+              "features":[{"name":"r","formula":"roc(close,3)"}],
+              "side_rule":"long",
+              "exit_rule":"roc(close,4)>0"}
+        findings=inspect_spec(spec)["hard_issues"]
+        self.assertIn("EXECUTOR_FUNCTION_ARITY_MISMATCH:roc@FEATURE:r",findings)
+        self.assertIn("EXECUTOR_FUNCTION_ARITY_MISMATCH:roc@EXIT",findings)
+
+    def test_invalid_side_formula_blocks_without_market_evaluation(self):
+        spec={"entry_rule":"close>open","bar_interval":"30m",
+              "features":[],"side_rule":"long if roc(close,3)>0 else short",
+              "exit_rule":"time_stop"}
+        self.assertIn("EXECUTOR_FUNCTION_ARITY_MISMATCH:roc@SIDE",inspect_spec(spec)["hard_issues"])
+
     def test_saved_historical_candidate_fingerprint_and_failure_composition(self):
         data=audit_saved()
         self.assertEqual(len(data["candidates"]),5)

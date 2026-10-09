@@ -10,6 +10,7 @@ import gzip
 import hashlib
 import json
 from collections import defaultdict
+from statistics import median
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -118,6 +119,32 @@ def main(output):
         # Outcome classes are audit labels only; never use them as entry features.
         metadata["original_entry_price_examples"]=[r.get("entry_prices") for r in rows[:2]]
         metadata["original_signal_meta_examples"]=[r["signal"]["meta"] for r in rows[:2]]
+
+        # Entry price is only considered at already-modelled next-open admission;
+        # no future MFE/MAE / exit reason enters any candidate decision.
+        def attr_cost_multiple(r):
+            symbol = str(r["symbol"])
+            entry = float(r["entry_prices"][symbol])
+            attr = float(r["signal"]["meta"]["entry_cost_gate"]["atr_price"])
+            frozen_cost = float(r["signal"]["meta"]["frozen_cost_bps"])
+            if min(entry, attr, frozen_cost) <= 0:
+                raise RuntimeError("NONPOSITIVE_ENTRY_GEOMETRY")
+            return (attr / entry) * 10_000 / frozen_cost
+        def cost_class(r):
+            if float(r["gross_bps"]) - 2 * float(r["cost_bps"]) > 0:
+                return "TWO_X_POSITIVE"
+            return "ONE_X_ONLY_POSITIVE" if float(r["net_bps"]) > 0 else "ONE_X_NONPOSITIVE"
+        ratio_groups = defaultdict(list)
+        for r in rows:
+            ratio_groups[cost_class(r)].append(attr_cost_multiple(r))
+        metadata["entry_atr_to_cost_multiple_by_outcome_audit_only"]={
+            k:{"T":len(v),"min":round(min(v),6),"median":round(median(v),6),"max":round(max(v),6)}
+            for k,v in sorted(ratio_groups.items())
+        }
+        metadata["entry_atr_to_cost_multiple_by_window"]={
+            k:{"T":len(v),"median":round(median(v),6)}
+            for k,v in sorted((z,[attr_cost_multiple(r) for r in rows if r["window_label"]==z]) for z in set(r["window_label"] for r in rows))
+        }
         metadata["by_regime_and_window8"]=breakdown(rows, lambda r:r["regime"]+("::rolling8" if r["window_label"]=="rolling_8" else "::other"))
         metadata["by_2x_cost_outcome_class"]=breakdown(rows, lambda r:("two_x_net_winner" if float(r["gross_bps"])-2*float(r["cost_bps"])>0 else "fragile_1x_winner" if float(r["net_bps"])>0 else "one_x_nonpositive"))
         metadata["class_by_regime"]=breakdown(rows, lambda r:r["regime"]+"::"+("two_x_net_winner" if float(r["gross_bps"])-2*float(r["cost_bps"])>0 else "fragile_1x_winner" if float(r["net_bps"])>0 else "one_x_nonpositive"))
@@ -144,6 +171,8 @@ def main(output):
         "keltner_regime_window8":report[IDS[0]]["by_regime_and_window8"],
         "squeeze_regime_window8":report[IDS[1]]["by_regime_and_window8"],
         "keltner_cost_classes":report[IDS[0]]["by_2x_cost_outcome_class"],
+        "keltner_entry_atr_cost_geometry":report[IDS[0]]["entry_atr_to_cost_multiple_by_outcome_audit_only"],
+        "squeeze_entry_atr_cost_geometry":report[IDS[1]]["entry_atr_to_cost_multiple_by_outcome_audit_only"],
         "keltner_regime_cost_class":report[IDS[0]]["class_by_regime"],
         "overlap":report["overlap_diagnostic"],
         "no_economic_run":True

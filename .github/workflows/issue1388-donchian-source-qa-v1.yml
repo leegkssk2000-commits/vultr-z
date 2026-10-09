@@ -1,0 +1,69 @@
+name: Issue1388 Donchian long-cash original-source non-economic test
+on:
+  push:
+    branches: [ci/issue1388-donchian-longcash-proof-20261009]
+    paths:
+      - '.github/workflows/issue1388-donchian-source-qa-v1.yml'
+permissions:
+  contents: read
+concurrency:
+  group: issue1388-public-donchian-source-static-test
+  cancel-in-progress: false
+jobs:
+  source-native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ci/issue1388-donchian-longcash-proof-20261009
+      - uses: actions/checkout@v4
+        with:
+          repository: LineGM/catching_crypto_trends
+          ref: 2a882b79be8fd1c60c2ee49bfc3c4cc83023a353
+          path: donor
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Bounded dependencies for source unit tests only
+        run: |
+          python -m pip install --no-input numpy==1.26.4 pandas==2.2.3 pyarrow==17.0.0 pytest==8.3.5 requests==2.32.3
+      - name: Verify licence, causal long-cash rule, primary source hashes
+        run: |
+          python - <<'PY'
+          import hashlib,json,pathlib
+          base=pathlib.Path('donor')
+          rules=(base/'docs/PAPER_SPEC.md').read_text()
+          license=(base/'LICENSE').read_text()
+          spec=json.loads(pathlib.Path('research/campaigns/scalp7_20261009/donor_longcash_source_triage_v1/DECLARATION.json').read_text())
+          required=[
+              "long-only", "5, 10, 20, 30, 60, 90, 150, 250, 360",
+              "PnL_t = position_{t-1} * return_t",
+              "90-day realized", "25%", "20%", "Costs:"
+          ]
+          assert all(x in rules for x in required),'CAUSAL_SOURCE_SPEC_DRIFT'
+          assert "MIT License" in license, 'SOURCE_LICENSE_UNPROVEN'
+          assert spec['current_G4_READY'] is False
+          print("SOURCE_FINGERPRINTS",json.dumps({
+              "source":spec["source_repo"],"commit":spec["source_sha"],
+              "spec_sha256":hashlib.sha256(rules.encode()).hexdigest(),
+              "license_sha256":hashlib.sha256(license.encode()).hexdigest(),
+              "not_market_verified":True,"new_economic_credit":0
+          }),flush=True)
+          PY
+      - name: Execute original unit tests for source state and next-day timing
+        run: |
+          set -euo pipefail
+          PYTHONPATH=donor/src python -m pytest donor/tests/test_single_asset.py donor/tests/test_signals.py -q --disable-warnings | tee source_unit_tests.log
+      - name: Carry source test receipt as non-economic diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue1388-donchian-public-native-tests
+          path: |
+            source_unit_tests.log
+            research/campaigns/scalp7_20261009/donor_longcash_source_triage_v1/DECLARATION.json
+          retention-days: 7
+          if-no-files-found: warn

@@ -50,6 +50,11 @@ def analyze(source: pathlib.Path):
         "matched_cell_count":len(summary),
         "matched_entries":summary,
         "source_excerpts":matched[:85],
+        "frozen_core_strategy_cells":[
+            {"cell_index":i,"cell_sha256":hashlib.sha256("".join(cells[i].get("source") or []).encode("utf-8")).hexdigest(),
+             "code":"".join(cells[i].get("source") or [])}
+            for i in (4,9,11) if i < len(cells)
+        ],
         "root_LICENSE_file_exists":(root/"LICENSE").exists(),
         "root_pyproject_declared_license":[l for l in (root/"pyproject.toml").read_text().splitlines() if "license" in l.lower()][:7],
         "copied_code_or_executed_notebook":False,

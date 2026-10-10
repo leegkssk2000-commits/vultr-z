@@ -57,6 +57,7 @@ EMA800_THESIS_SHA256 = "666a85e2480b80a9bacb26525d63cadce800a8d87860a9738466501a
 EMA800_ID = "E_FT_EMA800_PRICE_THRESHOLD_1H_V1"
 OVERSOLD_REVERSION_ID = "E_FT_OVERSOLD_REVERSION_1H_V1"
 HANSEN_ID = "E_HANSEN_CANDLE_PATTERN_1H_V1"
+MONDAY_DRIFT_ID = "R_FORVEN_MONDAY_DRIFT_BTC_1H_V1"
 HANSEN_CONTRACT_SHA256 = "82a85e9b8ae9508863d77f7f1cae2bf59ad5cfcf0548959d39170973f834cfc5"
 HANSEN_THESIS_SHA256 = "7d48900594510176a9ee373ce097b97df0e4e0512e6da93c1e0a59baa83ae063"
 ETH_SESSION_ID = "R_ETH_SESSION_REVERSAL_1H_V1"
@@ -65,6 +66,17 @@ ETH_FUNDING_RECEIPT_SHA256 = "3462c99458ef79bb06b6ca7c1ecac887cee0aa1accdc28da55
 BTC_SHOCK_ID = "R_BTC_NEGATIVE_SHOCK_1H_V1"
 OTHER_FUNDING_HASHES = {'XRP-USDT': {'raw': 'ef7aedb09e5d1e86cca81ecb04363aec55c493407ba3103cff246fbc841968dd', 'receipt': 'e1fe53fdad89cd423e541837050cd5d3d30c1558332149534fe2fad276a38072'}, 'SOL-USDT': {'raw': '5e1f1e5fd1a2b75dda96e44dd0bfa22b1ce8a3c47de55f6f22bebffbc5097c3e', 'receipt': '2faa33c4ad610580231d629b86704e2530e03cbdd73b1c1564a7a78a07a537b1'}, 'LINK-USDT': {'raw': '893b570d39b3cff5e278331672688b911ae4dba8bddb5e199258b16965c1a3df', 'receipt': '042e3ecc3a27b8049e20a1328f03e80003200778a94ff5d3e288afb42d87ee84'}, 'DOGE-USDT': {'raw': '07a52994272f35a062799623ebe94d26bfe4b6868512212a9114eebb6cb4b32b', 'receipt': '6d3f77019aadef8553768fcfa957102c82e9605d0807e553155394773924b75f'}}
 PROFILES: dict[str, dict[str, Any]] = {
+    MONDAY_DRIFT_ID: {
+        "candidate_id": MONDAY_DRIFT_ID,
+        "source_commit": "98266984fa85391e58760eb6a1b5e45707504ecd",
+        "source_blob": "84f73bcf0a06c61ffb72d132605e05451c786689",
+        "source_license": "GNU-AGPL-3.0-or-later",
+        "pre_frozen_rule_sha256": "0dcc56f2428485a1fe29d8be47a4e9ac61b6c84aaa38d5d5fbc48122f49cadee",
+        "timeframe_min": 60,
+        "screen_symbols": ("BTC-USDT",),
+        "signal_rules": "SOURCE_EXACT_COMPLETED_MONDAY_00_UTC_CLOSE_LONG_TUESDAY_00_UTC_CLOSE_EXIT",
+        "order_adapter": "INTERNAL_CAUSAL_NEXT_AVAILABLE_OPEN_TAKER_LONG_CASH_FIXED_24H_NO_END_EXIT",
+    },
     HANSEN_ID: {
         "candidate_id": HANSEN_ID,
         "source_commit": "f80d4d8b77c53435e9c0a9045636f1bfb2b8c539",
@@ -812,6 +824,26 @@ def oversold_reversion_entry_signals(frame: pd.DataFrame) -> tuple[pd.Series, pd
     return raw, ready
 
 
+def monday_drift_entry_signals(frame: pd.DataFrame) -> pd.Series:
+    """Source-exact no-PnL census for the frozen BTC 1h Monday entry.
+
+    The decision uses only a completed candle's close timestamp.  It does not
+    inspect prices, the Tuesday exit, later bars, fills, or any outcome.
+    """
+    required = {"open_ts_ms", "close_ts_ms", "available_ts_ms", "segment_id"}
+    if not required.issubset(frame.columns):
+        raise ScreenError("MONDAY_DRIFT_CENSUS_FIELDS_REQUIRED")
+    if frame["segment_id"].isna().any():
+        raise ScreenError("MONDAY_DRIFT_SEGMENT_ID_REQUIRED")
+    duration = frame.close_ts_ms.astype("int64") - frame.open_ts_ms.astype("int64")
+    if not duration.eq(3_600_000).all():
+        raise ScreenError("MONDAY_DRIFT_ONE_HOUR_COMPLETED_BAR_REQUIRED")
+    if frame.available_ts_ms.astype("int64").lt(frame.close_ts_ms.astype("int64")).any():
+        raise ScreenError("MONDAY_DRIFT_PREMATURE_AVAILABILITY")
+    closed = pd.to_datetime(frame.close_ts_ms.astype("int64"), unit="ms", utc=True)
+    return pd.Series((closed.dt.weekday == 0) & (closed.dt.hour == 0), index=frame.index)
+
+
 def ema800_source_decisions(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
     entry, _ = ema800_entry_signals(frame)
     exit_ = pd.Series(False, index=frame.index)
@@ -886,6 +918,10 @@ def density_census(market: Mapping[str, Any], candidate_ids: list[str]) -> dict[
                 in_window &= frame.close_ts_ms.lt(END_MS) & frame.available_ts_ms.lt(END_MS)
                 episodes = _episode_starts(raw, frame)
                 warmup_ready_by_symbol[symbol] = int((ready & in_window).sum())
+            elif candidate_id == MONDAY_DRIFT_ID:
+                raw = monday_drift_entry_signals(frame) if symbol == "BTC-USDT" else pd.Series(False, index=frame.index)
+                in_window &= frame.close_ts_ms.lt(END_MS) & frame.available_ts_ms.lt(END_MS)
+                episodes = raw.copy()
             else:
                 raise ScreenError("DENSITY_CANDIDATE_UNSUPPORTED:" + candidate_id)
             raw_count = int((raw & in_window).sum())
@@ -913,6 +949,15 @@ def density_census(market: Mapping[str, Any], candidate_ids: list[str]) -> dict[
             candidate["six_symbol_application"] = "DENSITY_COMPATIBILITY_ONLY; ECONOMIC_SCREEN_MUST_REMAIN_SOURCE_NATIVE_BTC"
             if candidate_id == BTC_SHOCK_ID:
                 candidate["source_hash_kind"] = "RULE_EVIDENCE_SNAPSHOT_NOT_PDF"
+        elif candidate_id == MONDAY_DRIFT_ID:
+            candidate["source_native_btc"] = by_symbol["BTC-USDT"]
+            candidate["source_license"] = profile["source_license"]
+            candidate["pre_frozen_rule_sha256"] = profile["pre_frozen_rule_sha256"]
+            candidate["source_native_market"] = "BTC_1H_LONG_CASH"
+            candidate["six_symbol_application"] = "SOURCE_NATIVE_BTC_ONLY; NO_ALT_PORTABILITY_CLAIM"
+            candidate["holding_rule"] = "MONDAY_00_UTC_COMPLETED_CLOSE_TO_TUESDAY_00_UTC_COMPLETED_CLOSE"
+            candidate["economic_screen_ready"] = False
+            candidate["economic_next_gate"] = "ADEQUATE_SIGNAL_DENSITY_AND_FROZEN_CAUSAL_FIXED_24H_EXECUTION_ADAPTER"
         elif candidate_id == ETH_SESSION_ID:
             candidate["source_native_eth"] = by_symbol["ETH-USDT"]
             candidate["source_exact_episodes"] = by_symbol["ETH-USDT"]["source_exact_episodes"]

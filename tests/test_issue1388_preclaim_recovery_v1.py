@@ -123,6 +123,33 @@ def test_second_admission_requires_first_add_commit_and_zero_step_prior(tmp_path
     assert len(writes)==1
 
 
+def test_monday_zero_step_cancel_has_one_bounded_admission(tmp_path,monkeypatch):
+    import hashlib,json
+    monkeypatch.chdir(tmp_path);monkeypatch.setenv('GITHUB_RUN_ATTEMPT','1');monkeypatch.setenv('GITHUB_EVENT_NAME','push');monkeypatch.setenv('GITHUB_RUN_ID','1000')
+    activation=r.Path(r.ROOT_PATH+'ACTIVATION_012.json');activation.parent.mkdir(parents=True)
+    raw=b'{"candidate_id":"R_FORVEN_MONDAY_DRIFT_BTC_1H_V1"}\n';activation.write_bytes(raw)
+    document=dict(schema='zel.issue1388.preclaim_admission_recovery.v1',admission_number=1,economic_consumed=0,original_activation_commit=r.MONDAY_ORIGINAL_COMMIT,activation_file_sha256=hashlib.sha256(raw).hexdigest(),order_authority='BLOCKED')
+    recovery=r.Path(r.ROOT_PATH+'RECOVERY_012_1.json');recovery.write_text(json.dumps(document))
+    monkeypatch.setattr(r.subprocess,'check_output',lambda *args,**kwargs:raw)
+    run=dict(id=r.MONDAY_ORIGINAL_RUN,head_sha=r.MONDAY_ORIGINAL_COMMIT,event='push',run_attempt=1,status='completed',conclusion='cancelled')
+    job=dict(id=r.MONDAY_ORIGINAL_JOB,run_id=r.MONDAY_ORIGINAL_RUN,run_attempt=1,name=r.JOB_NAME,status='completed',conclusion='cancelled',runner_id=0,runner_name='',steps=[])
+    calls=[]
+    def get(route,absent=False):
+        calls.append(route)
+        if absent:return None
+        if route.endswith('/1000'):return dict(head_sha='c'*40,event='push',run_attempt=1)
+        if '/jobs?' in route:return dict(jobs=[job])
+        if '/actions/runs/' in route:return run
+        return dict(object=dict(sha='d'*40))
+    monkeypatch.setattr(r,'get',get)
+    writes=[];monkeypatch.setattr(r.screen,'create_record',lambda *args:(writes.append(args) or 'd'*40))
+    assert r.recover(tmp_path,activation,'c'*40,'b'*40,['A\t'+str(recovery)])=='d'*40
+    assert len(writes)==1 and writes[0][2]['economic_consumed']==0
+    assert 'research-execution-consumptions/issue1388-cheap-monday-drift-btc-1h-v1' in ''.join(calls)
+    with pytest.raises(r.screen.ScreenError,match='LIFETIME_CAP'):
+        r.recover(tmp_path,activation,'c'*40,'b'*40,['A\t'+r.ROOT_PATH+'RECOVERY_012_2.json'])
+
+
 def test_common_workflow_keeps_max_queue_at_workflow_and_heavy_job_levels():
     from pathlib import Path
     text=(Path(r.__file__).resolve().parents[1]/'.github/workflows/issue1388-internet-alpha-v1.yml').read_text()

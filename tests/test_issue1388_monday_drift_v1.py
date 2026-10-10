@@ -6,7 +6,9 @@ from ops import issue1388_alpha_screen_v1 as screen
 
 def frame_for(closes: list[str]) -> pd.DataFrame:
     close_ts = pd.to_datetime(closes, utc=True)
-    close_ms = close_ts.astype("int64") // 1_000_000
+    # Timestamp.value is nanoseconds in both pandas 2.x and 3.x; DatetimeIndex
+    # integer storage changed resolution in pandas 3 and is not a stable clock.
+    close_ms = pd.Series([stamp.value // 1_000_000 for stamp in close_ts], dtype="int64")
     return pd.DataFrame({
         "open_ts_ms": close_ms - 3_600_000,
         "close_ts_ms": close_ms,

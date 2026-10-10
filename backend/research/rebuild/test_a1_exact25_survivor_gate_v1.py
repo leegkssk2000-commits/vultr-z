@@ -3,7 +3,12 @@ from __future__ import annotations
 import copy
 import unittest
 
-from backend.research.rebuild.a1_exact25_survivor_gate_v1 import build_survivor_gate
+from backend.research.rebuild.a1_exact25_survivor_gate_v1 import (
+    attach_version_bound_survivor_gate,
+    build_survivor_gate,
+    stable_sha,
+    validate_version_bound_survivor_gate,
+)
 from backend.research.rebuild.a1_exact25_controller_v2 import terminal_disposition
 
 
@@ -120,6 +125,32 @@ class SurvivorGateTests(unittest.TestCase):
         r = valid_receipt(); r0 = copy.deepcopy(r); p0 = copy.deepcopy(POLICY)
         build_survivor_gate(r, valid_hardening(), POLICY)
         self.assertEqual(r, r0); self.assertEqual(POLICY, p0)
+
+    def test_version_bound_gate_matches_final_economics(self):
+        r = valid_receipt()
+        r["candidate_id"] = "liquid6"
+        bound = attach_version_bound_survivor_gate(
+            r,
+            source_receipt_sha256="frozen-source-receipt",
+            source_git_blob_sha1="frozen-source-blob",
+        )
+        binding = validate_version_bound_survivor_gate(bound)
+        self.assertEqual(binding["completed_trades"], 25)
+        self.assertEqual(binding["source_receipt_sha256"], "frozen-source-receipt")
+
+    def test_version_bound_gate_rejects_stale_trade_count(self):
+        r = valid_receipt()
+        r["candidate_id"] = "liquid6"
+        bound = attach_version_bound_survivor_gate(r)
+        stale = copy.deepcopy(bound)
+        trade_check = next(
+            row for row in stale["survivor_gate"]["checks"]
+            if row["name"] == "tier_a_completed_trades"
+        )
+        trade_check["actual"] = 130
+        stale["receipt_sha256"] = stable_sha({k: v for k, v in stale.items() if k != "receipt_sha256"})
+        with self.assertRaisesRegex(RuntimeError, "STALE_GATE_MISMATCH"):
+            validate_version_bound_survivor_gate(stale)
 
 
 if __name__ == "__main__":

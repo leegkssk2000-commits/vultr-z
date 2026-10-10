@@ -8,7 +8,10 @@ from typing import Any
 
 from backend.research.rebuild import a1_top3_profitability_two_lane_router_v2 as v2
 from backend.research.rebuild import a1_top3_profitability_two_lane_router_v4 as v4
-from backend.research.rebuild.a1_exact25_survivor_gate_v1 import stable_sha
+from backend.research.rebuild.a1_exact25_survivor_gate_v1 import (
+    stable_sha,
+    validate_version_bound_survivor_gate,
+)
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -24,6 +27,7 @@ def evaluate(receipt_path: Path, out: Path) -> dict[str, Any]:
     receipt = v2.read(receipt_path)
     if receipt.get("candidate_id") != IDENTITY:
         raise RuntimeError("LIQUID6_RISK_BUDGET_IDENTITY_MISMATCH")
+    gate_binding = validate_version_bound_survivor_gate(receipt)
     budget = receipt.get("portfolio_risk_budget") or {}
     if budget.get("state") != "PASS_FIXED_NON_OUTCOME_FITTED_RISK_BUDGET":
         raise RuntimeError("FIXED_RISK_BUDGET_REQUIRED")
@@ -38,6 +42,7 @@ def evaluate(receipt_path: Path, out: Path) -> dict[str, Any]:
         "a3_pilot_pass_count": int(row["a3_pilot"].get("pass") is True),
         "pilot_survivor_count": int(row["pilot_survivor"] is True),
         "strict_global_gate_mutation": False,
+        "survivor_gate_binding": gate_binding,
         "execution_authority": "NONE",
         "order_authority": "BLOCKED",
         "live_trade_authority": "BLOCKED",

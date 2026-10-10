@@ -11,7 +11,10 @@ from typing import Any, Mapping
 
 from backend.research.rebuild import a1_exact25_generic_evaluator_v1 as v1
 from backend.research.rebuild import a1_exact25_generic_evaluator_v2 as v2
-from backend.research.rebuild.a1_exact25_survivor_gate_v1 import stable_sha
+from backend.research.rebuild.a1_exact25_survivor_gate_v1 import (
+    attach_version_bound_survivor_gate,
+    stable_sha,
+)
 from backend.research.rebuild import trend_rider_first_confirmation_long_only_policy_v1 as policy
 
 
@@ -56,6 +59,10 @@ def _metrics(trades: list[Mapping[str, Any]]) -> dict[str, Any]:
         "net_pnl_bps": sum(values),
         "net_expectancy_bps": sum(values) / len(values) if values else None,
         "net_profit_factor": v1.profit_factor(gp, gl),
+        "net_payoff": (
+            (gp / len(wins)) / (gl / len(losses))
+            if wins and losses and gl > 0.0 else None
+        ),
         "win_rate": len(wins) / len(values) if values else None,
         "max_drawdown_bps": v1.max_drawdown(timeline_values),
     }
@@ -386,7 +393,7 @@ def evaluate(
         "live_trade_authority": "BLOCKED",
         "next": "ACCUMULATE_FRESH_TO_12_THEN_A2_A3" if mode == "prospective" else "PREREGISTER_FUTURE_BOUNDARY_IF_PARETO_PASS",
     })
-    receipt["receipt_sha256"] = stable_sha({k: value for k, value in receipt.items() if k != "receipt_sha256"})
+    receipt = attach_version_bound_survivor_gate(receipt)
     out.write_text(json.dumps(receipt, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
     return receipt
 

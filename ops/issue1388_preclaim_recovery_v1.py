@@ -16,6 +16,11 @@ ORIGINAL_JOB = 112988159998
 JOB_NAME = 'cheap-screen-003'
 EXECUTION_REF = 'refs/heads/research-execution-consumptions/issue1388-cheap-btc-shock-1h-v1'
 RESULT_REF = 'refs/heads/research-results/issue1388-cheap-btc-shock-1h-v1'
+MONDAY_ORIGINAL_COMMIT = 'e6ac32543f081b08b5fc174374b699c01226bc41'
+MONDAY_ORIGINAL_RUN = 38088574872
+MONDAY_ORIGINAL_JOB = 114320355027
+MONDAY_EXECUTION_REF = 'refs/heads/research-execution-consumptions/issue1388-cheap-monday-drift-btc-1h-v1'
+MONDAY_RESULT_REF = 'refs/heads/research-results/issue1388-cheap-monday-drift-btc-1h-v1'
 
 
 def get(route: str, *, absent: bool = False):
@@ -50,31 +55,48 @@ def verify_unstarted(run: dict, job: dict, expected_head: str, run_id: int, job_
 def recover(root: Path, activation_path: Path, head: str, parent: str, changed: list[str]) -> str:
     if os.environ.get('GITHUB_RUN_ATTEMPT') != '1' or os.environ.get('GITHUB_EVENT_NAME') != 'push':
         raise screen.ScreenError('RECOVERY_FIRST_PUSH_ONLY')
-    paths = [ROOT_PATH + 'RECOVERY_004_' + str(n) + '.json' for n in (1, 2)]
+    monday = activation_path.as_posix() == ROOT_PATH + 'ACTIVATION_012.json'
+    if monday:
+        paths = [ROOT_PATH + 'RECOVERY_012_1.json']
+        original_commit, original_run, original_job = (
+            MONDAY_ORIGINAL_COMMIT, MONDAY_ORIGINAL_RUN, MONDAY_ORIGINAL_JOB)
+        activation_name = 'ACTIVATION_012.json'
+        profile_id = screen.MONDAY_DRIFT_ID
+        execution_ref, result_ref = MONDAY_EXECUTION_REF, MONDAY_RESULT_REF
+        admission_slug = 'monday-drift-012-'
+    else:
+        paths = [ROOT_PATH + 'RECOVERY_004_' + str(n) + '.json' for n in (1, 2)]
+        original_commit, original_run, original_job = ORIGINAL_COMMIT, ORIGINAL_RUN, ORIGINAL_JOB
+        activation_name = 'ACTIVATION_004.json'
+        profile_id = screen.BTC_SHOCK_ID
+        execution_ref, result_ref = EXECUTION_REF, RESULT_REF
+        admission_slug = 'btc-shock-004-'
     if len(changed) != 1 or changed[0] not in ['A\t' + p for p in paths]:
         raise screen.ScreenError('RECOVERY_CHANGED_PATH_OR_LIFETIME_CAP')
     path = changed[0][2:]
     number = paths.index(path) + 1
     value = screen.read_json(root / path)
     activation_raw = activation_path.read_bytes()
-    original_raw = subprocess.check_output(['git', 'show', ORIGINAL_COMMIT + ':' + ROOT_PATH + 'ACTIVATION_004.json'], cwd=root)
-    if activation_raw != original_raw or activation_path.as_posix() != ROOT_PATH + 'ACTIVATION_004.json':
+    original_raw = subprocess.check_output(['git', 'show', original_commit + ':' + ROOT_PATH + activation_name], cwd=root)
+    if activation_raw != original_raw:
         raise screen.ScreenError('RECOVERY_ORIGINAL_ACTIVATION_DRIFT')
     if (value.get('schema') != 'zel.issue1388.preclaim_admission_recovery.v1'
             or value.get('admission_number') != number or value.get('economic_consumed') != 0
-            or value.get('original_activation_commit') != ORIGINAL_COMMIT
+            or value.get('original_activation_commit') != original_commit
             or value.get('activation_file_sha256') != hashlib.sha256(original_raw).hexdigest()
             or value.get('order_authority') != 'BLOCKED'):
         raise screen.ScreenError('RECOVERY_BINDING')
     if number == 1:
-        expected_head, prior_run, prior_job = ORIGINAL_COMMIT, ORIGINAL_RUN, ORIGINAL_JOB
+        expected_head, prior_run, prior_job = original_commit, original_run, original_job
     else:
+        if monday:
+            raise screen.ScreenError('RECOVERY_CHANGED_PATH_OR_LIFETIME_CAP')
         commits = subprocess.check_output(['git', 'log', '--diff-filter=A', '--format=%H', parent, '--', paths[0]], cwd=root, text=True).splitlines()
         if len(commits) != 1:
             raise screen.ScreenError('RECOVERY_FIRST_ADMISSION_HISTORY_UNCONFIRMED')
         expected_head = commits[0]
         prior_run, prior_job = value.get('prior_run_id'), value.get('prior_job_id')
-        if type(prior_run) is not int or type(prior_job) is not int or prior_run == ORIGINAL_RUN:
+        if type(prior_run) is not int or type(prior_job) is not int or prior_run == original_run:
             raise screen.ScreenError('RECOVERY_SECOND_PRIOR_BINDING')
     run = get('/actions/runs/' + str(prior_run))
     jobs = get('/actions/runs/' + str(prior_run) + '/jobs?filter=all&per_page=100')['jobs']
@@ -86,15 +108,15 @@ def recover(root: Path, activation_path: Path, head: str, parent: str, changed: 
     current = get('/actions/runs/' + str(current_run_id))
     if current.get('head_sha') != head or current.get('event') != 'push' or current.get('run_attempt') != 1:
         raise screen.ScreenError('RECOVERY_CURRENT_RUN_BINDING')
-    profile = screen.PROFILES[screen.BTC_SHOCK_ID]
-    if (profile['execution_ref'], profile['result_ref']) != (EXECUTION_REF, RESULT_REF):
+    profile = screen.PROFILES[profile_id]
+    if (profile['execution_ref'], profile['result_ref']) != (execution_ref, result_ref):
         raise screen.ScreenError('RECOVERY_ORIGINAL_PERMANENT_REF_DRIFT')
-    for ref in (EXECUTION_REF, RESULT_REF):
+    for ref in (execution_ref, result_ref):
         get('/git/ref/' + ref.removeprefix('refs/'), absent=True)
-    admission_ref = 'refs/heads/research-admission-consumptions/issue1388-btc-shock-004-' + str(number)
+    admission_ref = 'refs/heads/research-admission-consumptions/issue1388-' + admission_slug + str(number)
     get('/git/ref/' + admission_ref.removeprefix('refs/'), absent=True)
     record = {'schema': value['schema'], 'admission_number': number, 'economic_consumed': 0,
-              'original_activation_commit': ORIGINAL_COMMIT, 'activation_file_sha256': value['activation_file_sha256'],
+              'original_activation_commit': original_commit, 'activation_file_sha256': value['activation_file_sha256'],
               'prior_run_id': prior_run, 'prior_job_id': prior_job, 'prior_head': expected_head,
               'current_run_id': current_run_id, 'current_head': head, 'order_authority': 'BLOCKED'}
     commit = screen.create_record(admission_ref, 'ADMISSION.json', record, head)

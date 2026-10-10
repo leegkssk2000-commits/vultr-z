@@ -170,3 +170,84 @@ def attach_survivor_gate(receipt: dict[str, Any], hardening_evidence: Mapping[st
         out["negative_control_gate"] = f"{nc['state']}_H4_NEGATIVE_CONTROL_SUPERIORITY"
     out["receipt_sha256"] = stable_sha({k: v for k, v in out.items() if k != "receipt_sha256"})
     return out
+
+
+def _economic_payload(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the receipt payload whose economics a survivor gate certifies."""
+    excluded = {
+        "negative_control_gate",
+        "receipt_sha256",
+        "survivor_gate",
+        "survivor_gate_binding",
+    }
+    return {key: value for key, value in receipt.items() if key not in excluded}
+
+
+def attach_version_bound_survivor_gate(
+    receipt: Mapping[str, Any],
+    *,
+    source_receipt_sha256: str | None = None,
+    source_git_blob_sha1: str | None = None,
+) -> dict[str, Any]:
+    """Rebuild a gate after derived economics and bind it to that exact payload.
+
+    Derived evaluators may change trades or metrics after the generic evaluator has
+    attached its gate. Keeping that earlier gate silently certifies different
+    economics. This helper intentionally drops the stale gate, rebuilds it from
+    the final payload, and records immutable lineage without granting promotion.
+    """
+    original = json.loads(json.dumps(receipt, allow_nan=False, default=str))
+    source_sha = source_receipt_sha256 or str(original.get("receipt_sha256") or "")
+    payload = _economic_payload(original)
+    out = dict(payload)
+    out["survivor_gate"] = build_survivor_gate(out)
+    nc = next(
+        (row for row in out["survivor_gate"]["checks"] if row["name"] == "negative_control_superiority"),
+        None,
+    )
+    if nc is not None:
+        out["negative_control_gate"] = f"{nc['state']}_H4_NEGATIVE_CONTROL_SUPERIORITY"
+    out["survivor_gate_binding"] = {
+        "schema_version": "zel.a1_exact25.survivor_gate_binding.v1",
+        "state": "PASS_GATE_BOUND_TO_FINAL_ECONOMIC_PAYLOAD",
+        "source_receipt_sha256": source_sha or None,
+        "source_git_blob_sha1": source_git_blob_sha1,
+        "economic_payload_sha256": stable_sha(payload),
+        "completed_trades": int(out.get("completed_trades") or 0),
+        "candidate_id": out.get("candidate_id"),
+        "selection_authority": False,
+        "promotion_authority": False,
+        "execution_authority": "NONE",
+        "order_authority": "BLOCKED",
+        "live_trade_authority": "BLOCKED",
+    }
+    out["receipt_sha256"] = stable_sha(out)
+    return out
+
+
+def validate_version_bound_survivor_gate(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    """Fail closed if a saved gate describes economics other than its receipt."""
+    claimed_receipt_sha = str(receipt.get("receipt_sha256") or "")
+    actual_receipt_sha = stable_sha({key: value for key, value in receipt.items() if key != "receipt_sha256"})
+    if not claimed_receipt_sha or claimed_receipt_sha != actual_receipt_sha:
+        raise RuntimeError("SURVIVOR_GATE_BINDING_RECEIPT_SHA_MISMATCH")
+
+    binding = receipt.get("survivor_gate_binding")
+    if not isinstance(binding, Mapping):
+        raise RuntimeError("SURVIVOR_GATE_BINDING_REQUIRED")
+    if binding.get("schema_version") != "zel.a1_exact25.survivor_gate_binding.v1":
+        raise RuntimeError("SURVIVOR_GATE_BINDING_SCHEMA_INVALID")
+
+    payload = _economic_payload(receipt)
+    payload_sha = stable_sha(payload)
+    if binding.get("economic_payload_sha256") != payload_sha:
+        raise RuntimeError("SURVIVOR_GATE_BINDING_ECONOMIC_PAYLOAD_MISMATCH")
+    if int(binding.get("completed_trades") or 0) != int(receipt.get("completed_trades") or 0):
+        raise RuntimeError("SURVIVOR_GATE_BINDING_TRADE_COUNT_MISMATCH")
+    if binding.get("candidate_id") != receipt.get("candidate_id"):
+        raise RuntimeError("SURVIVOR_GATE_BINDING_CANDIDATE_MISMATCH")
+
+    expected_gate = build_survivor_gate(payload)
+    if stable_sha(receipt.get("survivor_gate")) != stable_sha(expected_gate):
+        raise RuntimeError("SURVIVOR_GATE_BINDING_STALE_GATE_MISMATCH")
+    return dict(binding)

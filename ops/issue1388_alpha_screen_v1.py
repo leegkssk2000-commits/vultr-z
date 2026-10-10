@@ -58,6 +58,7 @@ EMA800_ID = "E_FT_EMA800_PRICE_THRESHOLD_1H_V1"
 OVERSOLD_REVERSION_ID = "E_FT_OVERSOLD_REVERSION_1H_V1"
 HANSEN_ID = "E_HANSEN_CANDLE_PATTERN_1H_V1"
 MONDAY_DRIFT_ID = "R_FORVEN_MONDAY_DRIFT_BTC_1H_V1"
+MONDAY_DRIFT_CONTRACT_SHA256 = "395e940f40dbdcc666a7a7e7fa7d29dfee5f120fb925142dc969c9c5f1f77fcc"
 HANSEN_CONTRACT_SHA256 = "82a85e9b8ae9508863d77f7f1cae2bf59ad5cfcf0548959d39170973f834cfc5"
 HANSEN_THESIS_SHA256 = "7d48900594510176a9ee373ce097b97df0e4e0512e6da93c1e0a59baa83ae063"
 ETH_SESSION_ID = "R_ETH_SESSION_REVERSAL_1H_V1"
@@ -76,6 +77,9 @@ PROFILES: dict[str, dict[str, Any]] = {
         "screen_symbols": ("BTC-USDT",),
         "signal_rules": "SOURCE_EXACT_COMPLETED_MONDAY_00_UTC_CLOSE_LONG_TUESDAY_00_UTC_CLOSE_EXIT",
         "order_adapter": "INTERNAL_CAUSAL_NEXT_AVAILABLE_OPEN_TAKER_LONG_CASH_FIXED_24H_NO_END_EXIT",
+        "activation_token": "[issue1388-alpha-screen-12-monday-drift-1h-v1]",
+        "execution_ref": "refs/heads/research-execution-consumptions/issue1388-cheap-monday-drift-btc-1h-v1",
+        "result_ref": "refs/heads/research-results/issue1388-cheap-monday-drift-btc-1h-v1",
     },
     HANSEN_ID: {
         "candidate_id": HANSEN_ID,
@@ -362,6 +366,18 @@ def validate_activation(path: Path, head: str) -> dict[str, Any]:
                               for symbol in SYMBOLS for kind in ("RAW", "RECEIPT"))
         if not required_files.issubset(files):
             raise ScreenError("HANSEN_ACTIVATION_SOURCE_CLOSURE_REQUIRED")
+    if profile["candidate_id"] == MONDAY_DRIFT_ID:
+        base = "research/campaigns/scalp7_20261007/issue1388_internet_alpha_v1/"
+        required_files = {
+            "ops/issue1388_alpha_screen_v1.py",
+            "ops/issue1388_monday_drift_execution_v1.py",
+            base + "MONDAY_DRIFT_EXECUTION_CONTRACT.json",
+            base + "BTC_FUNDING_RAW.json",
+            base + "BTC_FUNDING_RECEIPT.json",
+        }
+        if not required_files.issubset(files):
+            raise ScreenError("MONDAY_DRIFT_ACTIVATION_SOURCE_CLOSURE_REQUIRED")
+        validate_monday_drift_contract()
     for relative, expected in files.items():
         if file_sha256(ROOT / relative) != expected:
             raise ScreenError("ACTIVATION_SOURCE_FILE_DRIFT:" + relative)
@@ -410,7 +426,7 @@ def load_market(source_root: Path, profile: Mapping[str, Any] | None = None) -> 
     if set(costs) != set(SYMBOLS) or any(float(x) <= 0 for x in costs.values()):
         raise ScreenError("COST_PROFILE")
     market = {"frames": selected, "costs": costs}
-    if profile["candidate_id"] == BTC_SHOCK_ID:
+    if profile["candidate_id"] in (BTC_SHOCK_ID, MONDAY_DRIFT_ID):
         market["btc_funding"] = load_btc_funding()
     if profile["candidate_id"] == ETH_SESSION_ID:
         market["eth_funding"] = load_eth_funding()
@@ -1643,6 +1659,101 @@ def screen_eth_session(market: Mapping[str, Any], profile: Mapping[str, Any]) ->
     return {**value, "result_sha256": digest(value)}
 
 
+def validate_monday_drift_contract() -> None:
+    path = INTAKE_PATH.parent / "MONDAY_DRIFT_EXECUTION_CONTRACT.json"
+    if file_sha256(path) != MONDAY_DRIFT_CONTRACT_SHA256:
+        raise ScreenError("MONDAY_DRIFT_FROZEN_EXECUTION_CONTRACT_DRIFT")
+    contract = read_json(path)
+    profile = PROFILES[MONDAY_DRIFT_ID]
+    required = {
+        "candidate_id": MONDAY_DRIFT_ID,
+        "source_commit": profile["source_commit"],
+        "source_blob": profile["source_blob"],
+        "source_license": profile["source_license"],
+        "pre_frozen_rule_sha256": profile["pre_frozen_rule_sha256"],
+        "order_authority": "BLOCKED",
+        "source_replication": False,
+    }
+    if any(contract.get(key) != value for key, value in required.items()):
+        raise ScreenError("MONDAY_DRIFT_EXECUTION_CONTRACT_BINDING")
+
+
+def validate_monday_drift_preflight(activation: Mapping[str, Any], receipt: Mapping[str, Any]) -> None:
+    proof = activation.get("density_preflight")
+    pinned = "5b97eaa91f9d92cea46800f5a8a43c71c26150109517077eec1b001a4c3d6e1a"
+    if (not isinstance(proof, dict) or proof.get("result_sha256") != pinned
+            or digest({key: value for key, value in proof.items() if key != "result_sha256"}) != pinned):
+        raise ScreenError("MONDAY_DRIFT_PINNED_PREFLIGHT_HASH")
+    candidate = proof.get("candidates", {}).get(MONDAY_DRIFT_ID, {})
+    profile = PROFILES[MONDAY_DRIFT_ID]
+    native = candidate.get("source_native_btc", {})
+    if (proof.get("period_ms") != [START_MS, END_MS]
+            or proof.get("source_inventory_sha256") != SOURCE_INVENTORY_SHA256
+            or proof.get("economic_screen_consumed") != 0 or proof.get("order_authority") != "BLOCKED"
+            or any(candidate.get(key) != value for key, value in source_binding(profile).items())
+            or candidate.get("pre_frozen_rule_sha256") != profile["pre_frozen_rule_sha256"]
+            or candidate.get("source_license") != profile["source_license"]
+            or candidate.get("signal_rules") != profile["signal_rules"]
+            or candidate.get("timeframe_min") != 60
+            or native.get("source_exact_episodes") != 22):
+        raise ScreenError("MONDAY_DRIFT_PREFLIGHT_SOURCE_RULE_DENSITY")
+    saved, expected = dict(proof.get("receipts", {}).get("60", {})), dict(receipt)
+    for value in (saved, expected):
+        value.pop("receipt_sha256", None)
+        value.pop("order_adapter", None)
+    if (saved != expected or activation.get("execution_contract_sha256") != MONDAY_DRIFT_CONTRACT_SHA256
+            or activation.get("funding_raw_sha256") != BTC_FUNDING_RAW_SHA256
+            or activation.get("funding_receipt_sha256") != BTC_FUNDING_RECEIPT_SHA256):
+        raise ScreenError("MONDAY_DRIFT_PREFLIGHT_INPUT_FUNDING_CONTRACT")
+
+
+def screen_monday_drift(market: Mapping[str, Any], profile: Mapping[str, Any]) -> dict[str, Any]:
+    from ops.issue1388_monday_drift_execution_v1 import replay_monday_drift
+    validate_monday_drift_contract()
+    if "btc_funding" not in market:
+        raise ScreenError("MONDAY_DRIFT_BTC_FUNDING_REQUIRED_BEFORE_MODEL")
+    funding = validate_btc_funding({"code": 0, "data": market["btc_funding"]})
+    rows = market["frames"]["BTC-USDT"].to_dict("records")
+    accounting = replay_monday_drift(
+        rows, funding, start_ms=START_MS, end_ms=END_MS,
+        roundtrip_cost_bps=float(market["costs"]["BTC-USDT"]),
+    )
+    trades = sorted(accounting["trades"], key=lambda row: row["exit_ts_ms"])
+    one, two = summarize(trades, 1), summarize(trades, 2)
+    gaps = int(accounting["gap_quarantine"] is not None)
+    unresolved = int(accounting["unresolved_end"])
+    disposition = ("BLOCKED_INPUT_GAP_WITH_OPEN_STATE" if gaps else
+                   "BLOCKED_TERMINAL_OUTCOME_UNRESOLVED" if unresolved else
+                   "SCREEN_SURVIVOR_PENDING_FULL" if one["T"] > 0 and one["Net_bps"] > 0 and two["Net_bps"] > 0
+                   else "REJECT_ECONOMIC_EARLY")
+    value = {
+        "schema": "zel.issue1388.cheap_screen_result.v1", "issue": 1388,
+        "candidate_id": MONDAY_DRIFT_ID, **source_binding(profile),
+        "source_license": profile["source_license"],
+        "pre_frozen_rule_sha256": profile["pre_frozen_rule_sha256"],
+        "execution_contract_sha256": MONDAY_DRIFT_CONTRACT_SHA256,
+        "density_result_sha256": "5b97eaa91f9d92cea46800f5a8a43c71c26150109517077eec1b001a4c3d6e1a",
+        "period_ms": [START_MS, END_MS], "timeframe_min": 60,
+        "classification": "DEVELOPMENT_ONLY_NOT_FRESH_NOT_OOS",
+        "signal_rules": profile["signal_rules"], "order_adapter": profile["order_adapter"],
+        "source_replication": False, "donor_live_fill_equivalence": False,
+        "trades": trades, "cost_1x": one, "cost_2x": two,
+        "census": {"signals_or_attempts": accounting["signals"], "completed": len(trades),
+                   "occupied_rejections": accounting["occupied_rejections"],
+                   "missed_entries": len(accounting["missed_entries"]),
+                   "gap_quarantined": gaps, "unresolved_end": unresolved,
+                   "missing_fill_evidence": gaps},
+        "symbol_accounting": {"BTC-USDT": accounting},
+        "funding_source_sha256": BTC_FUNDING_RAW_SHA256,
+        "funding_receipt_sha256": BTC_FUNDING_RECEIPT_SHA256,
+        "funding_model": "ARCHIVED_SIGNED_RATE_MARK_FIXED_QUANTITY_ADVERSE_BOUNDARY",
+        "mark_account_NAV": None, "funding_actual_account_debit_certified": False,
+        "disposition": disposition, "full_consumed": 0,
+        "order_authority": "BLOCKED", "exchange_order_submitted": False, "promotion": False,
+    }
+    return {**value, "result_sha256": digest(value)}
+
+
 def validate_inverted_contract() -> None:
     base = INTAKE_PATH.parent
     if (file_sha256(base / "INVERTED_HAMMER_PRE_SCREEN_THESIS.json") != PROFILES[INVERTED_HAMMER_ID]["source_sha256"]
@@ -1761,6 +1872,8 @@ def audit_inverted_result(result: Mapping[str, Any], market: Mapping[str, Any]) 
 
 def screen(market: Mapping[str, Any], profile: Mapping[str, Any] | None = None) -> dict[str, Any]:
     profile = profile or PROFILES[CANDIDATE_ID]
+    if profile["candidate_id"] == MONDAY_DRIFT_ID:
+        return screen_monday_drift(market, profile)
     if profile["candidate_id"] == HANSEN_ID:
         return screen_hansen(market, profile)
     if profile["candidate_id"] == EMA800_ID:
@@ -2386,6 +2499,53 @@ def validate_ema800_preflight(activation: Mapping[str, Any], receipt: Mapping[st
         raise ScreenError("EMA800_PREFLIGHT_INPUT_FUNDING_CONTRACT")
 
 
+def audit_monday_drift_result(result: Mapping[str, Any], market: Mapping[str, Any]) -> None:
+    """Rebuild the complete causal ledger from authenticated raw inputs."""
+    from ops.issue1388_monday_drift_execution_v1 import replay_monday_drift
+    validate_monday_drift_contract()
+    profile = PROFILES[MONDAY_DRIFT_ID]
+    required = {
+        "candidate_id": MONDAY_DRIFT_ID,
+        **source_binding(profile),
+        "source_license": profile["source_license"],
+        "pre_frozen_rule_sha256": profile["pre_frozen_rule_sha256"],
+        "execution_contract_sha256": MONDAY_DRIFT_CONTRACT_SHA256,
+        "density_result_sha256": "5b97eaa91f9d92cea46800f5a8a43c71c26150109517077eec1b001a4c3d6e1a",
+        "period_ms": [START_MS, END_MS], "timeframe_min": 60,
+        "signal_rules": profile["signal_rules"], "order_adapter": profile["order_adapter"],
+        "order_authority": "BLOCKED", "exchange_order_submitted": False,
+        "promotion": False, "full_consumed": 0,
+    }
+    if any(result.get(key) != value for key, value in required.items()):
+        raise ScreenError("MONDAY_DRIFT_SAVED_SOURCE_RULE_CONTRACT_BINDING")
+    rows = market["frames"]["BTC-USDT"].to_dict("records")
+    funding = validate_btc_funding({"code": 0, "data": market["btc_funding"]})
+    rebuilt = replay_monday_drift(
+        rows, funding, start_ms=START_MS, end_ms=END_MS,
+        roundtrip_cost_bps=float(market["costs"]["BTC-USDT"]),
+    )
+    saved = result.get("symbol_accounting", {}).get("BTC-USDT")
+    if saved != rebuilt:
+        raise ScreenError("MONDAY_DRIFT_SAVED_LEDGER_REBUILD_AUDIT")
+    trades = sorted(rebuilt["trades"], key=lambda row: row["exit_ts_ms"])
+    gaps = int(rebuilt["gap_quarantine"] is not None)
+    unresolved = int(rebuilt["unresolved_end"])
+    one, two = summarize(trades, 1), summarize(trades, 2)
+    census = {"signals_or_attempts": rebuilt["signals"], "completed": len(trades),
+              "occupied_rejections": rebuilt["occupied_rejections"],
+              "missed_entries": len(rebuilt["missed_entries"]),
+              "gap_quarantined": gaps, "unresolved_end": unresolved,
+              "missing_fill_evidence": gaps}
+    disposition = ("BLOCKED_INPUT_GAP_WITH_OPEN_STATE" if gaps else
+                   "BLOCKED_TERMINAL_OUTCOME_UNRESOLVED" if unresolved else
+                   "SCREEN_SURVIVOR_PENDING_FULL" if one["T"] > 0 and one["Net_bps"] > 0 and two["Net_bps"] > 0
+                   else "REJECT_ECONOMIC_EARLY")
+    if (result.get("trades") != trades or result.get("cost_1x") != one
+            or result.get("cost_2x") != two or result.get("census") != census
+            or result.get("disposition") != disposition):
+        raise ScreenError("MONDAY_DRIFT_SAVED_AGGREGATE_DISPOSITION_AUDIT")
+
+
 def execute(source_root: Path, activation_path: Path, output_dir: Path) -> dict[str, Any]:
     head = current_head()
     activation = validate_activation(activation_path, head)
@@ -2394,6 +2554,9 @@ def execute(source_root: Path, activation_path: Path, output_dir: Path) -> dict[
         raise ScreenError("OUTPUT_DIRECTORY_ALREADY_EXISTS_NO_RETRY")
     market = load_market(source_root, profile)
     receipt = source_receipt(market, profile)
+    if profile["candidate_id"] == MONDAY_DRIFT_ID:
+        validate_monday_drift_preflight(activation, receipt)
+        validate_btc_funding({"code": 0, "data": market.get("btc_funding")})
     if profile["candidate_id"] == BTC_SHOCK_ID:
         validate_btc_preflight(activation, receipt)
         if activation.get("funding_raw_sha256") != BTC_FUNDING_RAW_SHA256 or activation.get("funding_receipt_sha256") != BTC_FUNDING_RECEIPT_SHA256:
@@ -2429,7 +2592,7 @@ def execute(source_root: Path, activation_path: Path, output_dir: Path) -> dict[
         "activation_sha256": digest(activation), "period_ms": [START_MS, END_MS],
         "global_heavy_group": GLOBAL_HEAVY_GROUP, "order_authority": "BLOCKED",
     }
-    if profile["candidate_id"] == BTC_SHOCK_ID:
+    if profile["candidate_id"] in (BTC_SHOCK_ID, MONDAY_DRIFT_ID):
         start.update(funding_raw_sha256=BTC_FUNDING_RAW_SHA256, funding_receipt_sha256=BTC_FUNDING_RECEIPT_SHA256)
     if profile["candidate_id"] == ETH_SESSION_ID:
         start.update(funding_raw_sha256=ETH_FUNDING_RAW_SHA256, funding_receipt_sha256=ETH_FUNDING_RECEIPT_SHA256)
@@ -2439,7 +2602,7 @@ def execute(source_root: Path, activation_path: Path, output_dir: Path) -> dict[
     output_dir.mkdir(parents=True)
     write_once(output_dir / "SOURCE_RECEIPT.json", receipt)
     write_once(output_dir / "STARTED.json", {**start, "execution_commit_sha": start_commit})
-    if profile["candidate_id"] == BTC_SHOCK_ID:
+    if profile["candidate_id"] in (BTC_SHOCK_ID, MONDAY_DRIFT_ID):
         for filename in ("BTC_FUNDING_RAW.json", "BTC_FUNDING_RECEIPT.json"):
             with (output_dir / filename).open("xb") as handle:
                 handle.write((INTAKE_PATH.parent / filename).read_bytes())
@@ -2476,6 +2639,8 @@ def execute(source_root: Path, activation_path: Path, output_dir: Path) -> dict[
     if profile["candidate_id"] == EMA800_ID:
         from ops.issue1388_ema800_audit_v1 import audit_ema800_result
         audit_ema800_result(audited, market)
+    if profile["candidate_id"] == MONDAY_DRIFT_ID:
+        audit_monday_drift_result(audited, market)
     envelope = {"schema": "zel.issue1388.persisted_result.v1", "issue": 1388, "execution_commit_sha": start_commit, "result": result, "order_authority": "BLOCKED"}
     envelope = {**envelope, "envelope_sha256": digest(envelope)}
     result_commit = create_record(profile["result_ref"], "RESULT.json", envelope, start_commit)

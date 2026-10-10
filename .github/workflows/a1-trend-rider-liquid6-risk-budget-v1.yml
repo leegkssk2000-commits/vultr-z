@@ -36,8 +36,10 @@ permissions:
   contents: write
 
 concurrency:
-  group: a1-trend-rider-liquid6-risk-budget-${{ github.ref }}${{ (github.event_name == 'pull_request' || github.event_name == 'push') && '-code-ci' || '' }}
-  cancel-in-progress: true
+  # CI only verifies saved receipts; scheduled/manual runs do actual expensive replay.
+  group: ${{ (github.event_name == 'pull_request' || github.event_name == 'push') && format('a1-trend-rider-liquid6-risk-budget-{0}-code-ci', github.ref) || 'a1-global-heavy-economic-evaluator-v1' }}
+  cancel-in-progress: false
+  queue: max
 
 jobs:
   liquid6-risk-budget:
@@ -131,6 +133,7 @@ jobs:
           python -m backend.research.rebuild.a1_trend_rider_liquid6_risk_budget_two_lane_v1 \
             --receipt out/child.json --out out/two_lane.json
       - name: Verify economic comparison and authority
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
           python - <<'PY'

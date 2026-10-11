@@ -58,6 +58,29 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Audit every global-heavy sender against pending-run eviction
+        if: github.event_name == 'pull_request'
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          GROUP = 'a1-global-heavy-economic-evaluator-v1'
+          checked = []
+          missing = []
+          for path in sorted(Path('.github/workflows').glob('*.yml')):
+              lines = path.read_text(encoding='utf-8').splitlines()
+              for index, line in enumerate(lines):
+                  if line.lstrip().startswith('group:') and GROUP in line:
+                      checked.append(str(path))
+                      following = lines[index+1:index+8]
+                      if not any(s.strip() == 'queue: max' for s in following):
+                          missing.append(f'{path}:{index+1}')
+          result = {'group': GROUP, 'shared_sender_sites': len(checked),
+                    'missing_queue_max_count': len(missing), 'missing_queue_max': missing}
+          print('GLOBAL_HEAVY_QUEUE_AUDIT ' + json.dumps(result, sort_keys=True), flush=True)
+          if missing:
+              raise SystemExit('GLOBAL_HEAVY_QUEUE_MAX_MISSING')
+          PY
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'

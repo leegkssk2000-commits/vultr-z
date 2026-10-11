@@ -58,6 +58,9 @@ EMA800_ID = "E_FT_EMA800_PRICE_THRESHOLD_1H_V1"
 OVERSOLD_REVERSION_ID = "E_FT_OVERSOLD_REVERSION_1H_V1"
 HANSEN_ID = "E_HANSEN_CANDLE_PATTERN_1H_V1"
 MONDAY_DRIFT_ID = "R_FORVEN_MONDAY_DRIFT_BTC_1H_V1"
+INTERNAL_THREE_RED_ID = "IB_THREE_RED_REVERSAL_1H_24H_V1"
+INTERNAL_THREE_RED_CONTRACT_SHA256 = "62f3605f5eef01fe80ea680ec76ff8d04515178bd557738da9abefdc08134925"
+INTERNAL_THREE_RED_RECEIPT_SHA256 = "d89293a41aa77e84f0dc8a4cf45486446fd4f46c91eaa10843b62283edf90e3d"
 MONDAY_DRIFT_CONTRACT_SHA256 = "395e940f40dbdcc666a7a7e7fa7d29dfee5f120fb925142dc969c9c5f1f77fcc"
 HANSEN_CONTRACT_SHA256 = "82a85e9b8ae9508863d77f7f1cae2bf59ad5cfcf0548959d39170973f834cfc5"
 HANSEN_THESIS_SHA256 = "7d48900594510176a9ee373ce097b97df0e4e0512e6da93c1e0a59baa83ae063"
@@ -67,6 +70,18 @@ ETH_FUNDING_RECEIPT_SHA256 = "3462c99458ef79bb06b6ca7c1ecac887cee0aa1accdc28da55
 BTC_SHOCK_ID = "R_BTC_NEGATIVE_SHOCK_1H_V1"
 OTHER_FUNDING_HASHES = {'XRP-USDT': {'raw': 'ef7aedb09e5d1e86cca81ecb04363aec55c493407ba3103cff246fbc841968dd', 'receipt': 'e1fe53fdad89cd423e541837050cd5d3d30c1558332149534fe2fad276a38072'}, 'SOL-USDT': {'raw': '5e1f1e5fd1a2b75dda96e44dd0bfa22b1ce8a3c47de55f6f22bebffbc5097c3e', 'receipt': '2faa33c4ad610580231d629b86704e2530e03cbdd73b1c1564a7a78a07a537b1'}, 'LINK-USDT': {'raw': '893b570d39b3cff5e278331672688b911ae4dba8bddb5e199258b16965c1a3df', 'receipt': '042e3ecc3a27b8049e20a1328f03e80003200778a94ff5d3e288afb42d87ee84'}, 'DOGE-USDT': {'raw': '07a52994272f35a062799623ebe94d26bfe4b6868512212a9114eebb6cb4b32b', 'receipt': '6d3f77019aadef8553768fcfa957102c82e9605d0807e553155394773924b75f'}}
 PROFILES: dict[str, dict[str, Any]] = {
+    INTERNAL_THREE_RED_ID: {
+        "candidate_id": INTERNAL_THREE_RED_ID,
+        "source_version": "INTERNAL_BASELINE_DEV_ONLY_V1",
+        "source_sha256": INTERNAL_THREE_RED_CONTRACT_SHA256,
+        "pre_frozen_rule_sha256": INTERNAL_THREE_RED_CONTRACT_SHA256,
+        "timeframe_min": 60,
+        "signal_rules": "INTERNAL_THREE_BEARISH_DESCENDING_CLOSE_NEXT_OPEN_LONG",
+        "order_adapter": "INTERNAL_NEXT_OPEN_TAKER_THREE_BAR_LOW_STOP_FIRST_FIXED24H_SINGLE_LONG",
+        "activation_token": "[issue1388-alpha-screen-13-internal-three-red-1h-v1]",
+        "execution_ref": "refs/heads/research-execution-consumptions/issue1388-cheap-internal-three-red-1h-v1",
+        "result_ref": "refs/heads/research-results/issue1388-cheap-internal-three-red-1h-v1",
+    },
     MONDAY_DRIFT_ID: {
         "candidate_id": MONDAY_DRIFT_ID,
         "source_commit": "98266984fa85391e58760eb6a1b5e45707504ecd",
@@ -378,6 +393,21 @@ def validate_activation(path: Path, head: str) -> dict[str, Any]:
         if not required_files.issubset(files):
             raise ScreenError("MONDAY_DRIFT_ACTIVATION_SOURCE_CLOSURE_REQUIRED")
         validate_monday_drift_contract()
+    if profile["candidate_id"] == INTERNAL_THREE_RED_ID:
+        from ops.issue1388_internal_three_red_v1 import validate_contract
+        base = "research/campaigns/scalp7_20261011/issue1388_internal_three_red_reversal_v1/"
+        required_files = {
+            "ops/issue1388_alpha_screen_v1.py",
+            "ops/issue1388_internal_three_red_v1.py",
+            base + "PREFLIGHT_CONTRACT.json",
+            base + "PREFLIGHT_RECEIPT.json",
+        }
+        if not required_files.issubset(files):
+            raise ScreenError("THREE_RED_ACTIVATION_SOURCE_CLOSURE_REQUIRED")
+        validate_contract(ROOT)
+        if (value.get("pre_frozen_rule_sha256") != INTERNAL_THREE_RED_CONTRACT_SHA256
+                or value.get("density_receipt_sha256") != INTERNAL_THREE_RED_RECEIPT_SHA256):
+            raise ScreenError("THREE_RED_ACTIVATION_CONTRACT_PREFLIGHT_BINDING")
     for relative, expected in files.items():
         if file_sha256(ROOT / relative) != expected:
             raise ScreenError("ACTIVATION_SOURCE_FILE_DRIFT:" + relative)
@@ -1754,6 +1784,86 @@ def screen_monday_drift(market: Mapping[str, Any], profile: Mapping[str, Any]) -
     return {**value, "result_sha256": digest(value)}
 
 
+def screen_internal_three_red(market: Mapping[str, Any], profile: Mapping[str, Any]) -> dict[str, Any]:
+    from ops.issue1388_internal_three_red_v1 import replay_symbol, validate_contract
+
+    validate_contract(ROOT)
+    all_trades: list[dict[str, Any]] = []
+    accounting: dict[str, Any] = {}
+    totals = {
+        "signals_or_attempts": 0, "admitted_entries": 0, "completed": 0,
+        "occupied_rejections": 0, "missed_gap_invalid": 0,
+        "missing_fill_evidence": 0, "gap_quarantined": 0, "unresolved_end": 0,
+    }
+    for symbol in SYMBOLS:
+        result = replay_symbol(
+            symbol, market["frames"][symbol], float(market["costs"][symbol]),
+            start_ms=START_MS, end_ms=END_MS,
+        )
+        all_trades.extend(result["trades"])
+        accounting[symbol] = {key: value for key, value in result.items() if key != "trades"}
+        totals["signals_or_attempts"] += int(result["raw_signals"])
+        totals["admitted_entries"] += int(result["admitted_entries"])
+        totals["completed"] += int(result["completed"])
+        totals["occupied_rejections"] += int(result["missed_occupied"])
+        totals["missed_gap_invalid"] += int(result["missed_gap_invalid"])
+        totals["missing_fill_evidence"] += int(result["missing_fill_evidence"])
+        totals["gap_quarantined"] += int(result["gap_quarantined"])
+        totals["unresolved_end"] += int(result["censored"])
+    all_trades.sort(key=lambda row: (row["exit_ts_ms"], row["symbol"]))
+    one, two = summarize(all_trades, 1), summarize(all_trades, 2)
+    if totals["gap_quarantined"] or totals["missing_fill_evidence"]:
+        disposition = "BLOCKED_INPUT_GAP_OR_FILL_EVIDENCE"
+    else:
+        disposition = (
+            "SCREEN_SURVIVOR_PENDING_FULL"
+            if one["T"] > 0 and one["Net_bps"] > 0 and two["Net_bps"] > 0
+            else "REJECT_ECONOMIC_EARLY"
+        )
+    winner_nets = sorted(
+        (float(trade["gross_bps"]) - float(trade["cost_bps"]) for trade in all_trades
+         if float(trade["gross_bps"]) - float(trade["cost_bps"]) > 0),
+        reverse=True,
+    )
+    by_month: dict[str, float] = {}
+    for trade in all_trades:
+        month = pd.Timestamp(int(trade["exit_ts_ms"]), unit="ms", tz="UTC").strftime("%Y-%m")
+        by_month[month] = by_month.get(month, 0.0) + float(trade["gross_bps"]) - float(trade["cost_bps"])
+    positive = sum(winner_nets)
+    value = {
+        "schema": "zel.issue1388.cheap_screen_result.v1", "issue": 1388,
+        "candidate_id": INTERNAL_THREE_RED_ID, **source_binding(profile),
+        "pre_frozen_rule_sha256": INTERNAL_THREE_RED_CONTRACT_SHA256,
+        "density_receipt_sha256": INTERNAL_THREE_RED_RECEIPT_SHA256,
+        "period_ms": [START_MS, END_MS], "timeframe_min": 60,
+        "classification": "INTERNAL_BASELINE_DEVELOPMENT_ONLY_NOT_FRESH_NOT_OOS",
+        "source_replication": False, "donor_attribution": None,
+        "signal_rules": profile["signal_rules"], "order_adapter": profile["order_adapter"],
+        "trades": all_trades, "cost_1x": one, "cost_2x": two,
+        "census": totals, "symbol_accounting": accounting,
+        "funding_model": "THREE_SETTLEMENT_P95_RESERVE_EMBEDDED_IN_ROUNDTRIP_COST",
+        "funding_reserve_bps_per_trade": 3.0,
+        "historical_funding_reconstruction": False,
+        "concentration_detail": {
+            "top5_positive_net_share": sum(winner_nets[:5]) / positive if positive else None,
+            "by_exit_month_net1_bps": by_month,
+        },
+        "mark_account_NAV": None,
+        "DD_interpretation": "REALIZED_EQUAL_TRADE_CLOSE_BPS_NOT_ACCOUNT_NAV",
+        "disposition": disposition, "full_consumed": 0,
+        "order_authority": "BLOCKED", "exchange_order_submitted": False, "promotion": False,
+    }
+    return {**value, "result_sha256": digest(value)}
+
+
+def audit_internal_three_red_result(result: Mapping[str, Any], market: Mapping[str, Any]) -> None:
+    expected = screen_internal_three_red(market, PROFILES[INTERNAL_THREE_RED_ID])
+    expected = dict(expected)
+    expected.pop("result_sha256")
+    if result != expected:
+        raise ScreenError("THREE_RED_SAVED_RESULT_AUDIT")
+
+
 def validate_inverted_contract() -> None:
     base = INTAKE_PATH.parent
     if (file_sha256(base / "INVERTED_HAMMER_PRE_SCREEN_THESIS.json") != PROFILES[INVERTED_HAMMER_ID]["source_sha256"]
@@ -1874,6 +1984,8 @@ def screen(market: Mapping[str, Any], profile: Mapping[str, Any] | None = None) 
     profile = profile or PROFILES[CANDIDATE_ID]
     if profile["candidate_id"] == MONDAY_DRIFT_ID:
         return screen_monday_drift(market, profile)
+    if profile["candidate_id"] == INTERNAL_THREE_RED_ID:
+        return screen_internal_three_red(market, profile)
     if profile["candidate_id"] == HANSEN_ID:
         return screen_hansen(market, profile)
     if profile["candidate_id"] == EMA800_ID:
@@ -2557,6 +2669,9 @@ def execute(source_root: Path, activation_path: Path, output_dir: Path) -> dict[
     if profile["candidate_id"] == MONDAY_DRIFT_ID:
         validate_monday_drift_preflight(activation, receipt)
         validate_btc_funding({"code": 0, "data": market.get("btc_funding")})
+    if profile["candidate_id"] == INTERNAL_THREE_RED_ID:
+        from ops.issue1388_internal_three_red_v1 import validate_contract
+        validate_contract(ROOT)
     if profile["candidate_id"] == BTC_SHOCK_ID:
         validate_btc_preflight(activation, receipt)
         if activation.get("funding_raw_sha256") != BTC_FUNDING_RAW_SHA256 or activation.get("funding_receipt_sha256") != BTC_FUNDING_RECEIPT_SHA256:
@@ -2641,6 +2756,8 @@ def execute(source_root: Path, activation_path: Path, output_dir: Path) -> dict[
         audit_ema800_result(audited, market)
     if profile["candidate_id"] == MONDAY_DRIFT_ID:
         audit_monday_drift_result(audited, market)
+    if profile["candidate_id"] == INTERNAL_THREE_RED_ID:
+        audit_internal_three_red_result(audited, market)
     envelope = {"schema": "zel.issue1388.persisted_result.v1", "issue": 1388, "execution_commit_sha": start_commit, "result": result, "order_authority": "BLOCKED"}
     envelope = {**envelope, "envelope_sha256": digest(envelope)}
     result_commit = create_record(profile["result_ref"], "RESULT.json", envelope, start_commit)

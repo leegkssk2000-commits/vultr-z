@@ -155,7 +155,11 @@ def replay_symbol(
                 gap_quarantined += 1
                 active_until = timeout_i
                 continue
-            exit_i, exit_price, exit_reason = timeout_i, float(timeout["open"]), "FIXED_24H_TIMEOUT"
+            timeout_open = float(timeout["open"])
+            if timeout_open <= stop:
+                exit_i, exit_price, exit_reason = timeout_i, timeout_open, "ADVERSE_GAP_STOP"
+            else:
+                exit_i, exit_price, exit_reason = timeout_i, timeout_open, "FIXED_24H_TIMEOUT"
 
         assert exit_price is not None and exit_reason is not None
         gross_bps = (exit_price / entry_price - 1.0) * 10_000.0

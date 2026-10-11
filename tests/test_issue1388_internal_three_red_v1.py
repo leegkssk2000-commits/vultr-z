@@ -73,6 +73,18 @@ def test_timeout_is_exactly_24_hours_after_entry() -> None:
     assert trade["holding_hours"] == 24.0
 
 
+def test_adverse_gap_stop_has_priority_at_timeout_open() -> None:
+    data = bars()
+    signal_at(data)
+    data.loc[5:28, "low"] = 97.0
+    data.loc[29, ["open", "high", "low", "close"]] = [95.0, 96.0, 94.0, 95.0]
+    result = model.replay_symbol("ETH-USDT", data, 14.0, start_ms=0, end_ms=len(data) * HOUR)
+    trade = result["trades"][0]
+    assert trade["exit_ts_ms"] - trade["entry_ts_ms"] == 24 * HOUR
+    assert trade["exit_reason"] == "ADVERSE_GAP_STOP"
+    assert trade["exit_price"] == 95.0
+
+
 def test_signal_while_occupied_is_not_queued() -> None:
     data = bars(60)
     signal_at(data, 4)

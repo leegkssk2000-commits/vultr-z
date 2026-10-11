@@ -1,0 +1,70 @@
+{
+  "schema": "issue1388.internal_baseline.contract.v1",
+  "created_at_utc": "2026-10-11T13:21:23Z",
+  "owner": "CLOUD_WORK_COORDINATOR_ISSUE1358_V1",
+  "strategy_id": "IB_THREE_RED_REVERSAL_1H_24H_V1",
+  "classification": "INTERNAL_BASELINE_DEV_ONLY",
+  "donor_attribution": null,
+  "rationale": "One distinct OHLC-only price-action mean-reversion mechanism selected after source-native ADX/SMA terminal. No external-author performance claim and no result-driven parameter search.",
+  "scope": {
+    "venue_model": "BingX USDT perpetual historical-reference only",
+    "symbols": [
+      "BTC-USDT",
+      "ETH-USDT",
+      "SOL-USDT",
+      "XRP-USDT",
+      "DOGE-USDT",
+      "LINK-USDT"
+    ],
+    "timeframe": "1h",
+    "direction": "long_only",
+    "live_paper_order_deploy": "BLOCKED",
+    "fresh_or_oos_claim": false
+  },
+  "data_contract": {
+    "artifact_id": 11305382754,
+    "price_input_gzip_sha256": "732ef1c9667b5aadb984e07466a9cd35bcfbcc781a3bc6df6bf0de0e07dfa555",
+    "primary_input_sha256": "9ae88eb5f51fa796c52f61ed51e2aec084691290baf3c5bfc85ef150926b1efb",
+    "source_identity_sha256": "a5c2d7d6888b1cbf5e5c851c66b11127736fda94fd58f0484e19381c7e1efca9",
+    "source_window": "2026-09-15..2026-10-04 existing consumed DEV; density-only preflight, no economic reuse claim",
+    "bar_build": "UTC-aligned complete 1h bars aggregated from verified 1m OHLCV; incomplete terminal bar excluded"
+  },
+  "causal_rule": {
+    "observation": "Only after completed 1h bar t.",
+    "entry_signal": "Bars t-2,t-1,t are each bearish (close<open) and strictly descending by close (close[t-2]>close[t-1]>close[t]).",
+    "entry_fill": "Enter long at next available complete bar t+1 open only if that open is strictly above the frozen stop; otherwise record gap-invalid missed signal and do not trade.",
+    "stop": "Frozen at min(low[t-2],low[t-1],low[t]). For each held bar, adverse opening gap exits at that bar open; otherwise low<=stop exits at stop. Stop has priority over timeout.",
+    "exit": "If not stopped, exit at the open exactly 24 hours after entry (bar t+25 open). No take-profit, trailing stop, indicator filter, symbol filter, month filter, or parameter sweep.",
+    "occupancy": "At most one position per symbol; signals while occupied or on the same close that releases a position are recorded missed and never queued.",
+    "unresolved_terminal_gap": "If the required timeout open is absent at dataset end, mark censored and exclude from closed-T while reporting it."
+  },
+  "cost_contract": {
+    "authority_snapshot_sha256": "cb9c337d95aa9eb65c32776ca68c63390350c501de4df8024b5416ed778dbe73",
+    "source_costs_bps_one_settlement": {
+      "BTC-USDT": 14,
+      "ETH-USDT": 14,
+      "SOL-USDT": 14.019991840065801,
+      "XRP-USDT": 15.2464337863639,
+      "DOGE-USDT": 16.73064726730116,
+      "LINK-USDT": 15.705017808034006
+    },
+    "funding_bound": "24h maximum hold may cross up to three 8h settlements. Add two extra 1bp reserves to the frozen one-settlement reference cost for cost1x; cost2x doubles the resulting full per-symbol round-trip cost. This is a conservative historical-reference scenario, not actual historical funding reconstruction.",
+    "cost1x_formula": "source_costs_bps_one_settlement[symbol]+2.0",
+    "cost2x_formula": "2*(source_costs_bps_one_settlement[symbol]+2.0)"
+  },
+  "preflight_gates": {
+    "duplicate_mechanism": "Must not share exact causal entry/exit/time/occupancy fingerprint with a consumed identity; broad mean-reversion label alone is insufficient.",
+    "syntax_clock": "past-only completed bars; next-open entry; no current-bar close fill",
+    "minimum_density": "At least 20 closed trades on designated DEV before economic cheap",
+    "global_heavy": "Do not launch while any other economic heavy is active or pending; one owner claim only",
+    "economic_terminal": "Gross<=0 economic reject; Gross>0 and Net1<=0 cost reject; no same identity retune",
+    "promotion": "Development positive is HOLD; formal Survivor remains 0 until genuine W1/W2/W3/H4/H5/future evidence"
+  },
+  "negative_control": {
+    "id": "IB_THREE_GREEN_LONG_CONTROL_1H_24H_V1",
+    "rule_delta": "Replace the three bearish descending bars with three bullish ascending-close bars; identical fill/stop/timeout/occupancy.",
+    "role": "Direction-specific diagnostic only; not a second selectable strategy and not authorized for a separate heavy launch in this stage."
+  },
+  "outcome_visibility_at_freeze": "NO_DENSITY_OR_PNL_COMPUTED_FOR_THIS_IDENTITY_BEFORE_THIS_CONTRACT",
+  "next_stage": "Run read-only syntax/clock/duplicate/density preflight only. If eligible, wait for a clear shared heavy slot and create exactly one permanent claim before cost1x/2x cheap."
+}

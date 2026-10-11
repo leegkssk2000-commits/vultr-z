@@ -22,8 +22,11 @@ permissions:
   contents: write
 
 concurrency:
-  group: a1-global-heavy-economic-evaluator-v1
+  # Retired economic identities: PR/push only check saved evidence and frozen code.
+  # Manual historic replay, if independently authorized, shares the sole global lock.
+  group: ${{ github.event_name == 'workflow_dispatch' && 'a1-global-heavy-economic-evaluator-v1' || format('a1-trendma-retired-code-check-{0}-{1}', github.workflow, github.ref) }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   cumulative-fresh-to-hardening:
@@ -79,7 +82,26 @@ jobs:
           python backend/research/rebuild/trend_ma_macd_chase_atr_up_long_good_child_policy_v1.py
           python backend/research/rebuild/a1_trendma_chase_atr_up_long_h4_h5_hardening_v1.py --self-test
           python backend/research/rebuild/a1_trendma_chase_atr_up_long_fresh25_v1.py --self-test
+      - name: Verify archived terminal-negative 25T cohort without new market fetch
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          path=Path('backend/research/rebuild/a1_trendma_chase_atr_up_long_fresh25_latest.json')
+          x=json.loads(path.read_text(encoding='utf-8'))
+          assert x['receipt_sha256']=='bd17b9ccfa6f859c2271b7901ec0c5ccd08d31727346c1eee9834657f394ba4d', 'ARCHIVED_TERMINAL_RECEIPT_CHANGED'
+          assert x['completed_trades']==x['exact_first_completed_trades']==25, 'TERMINAL_COHORT_COUNT_DRIFT'
+          assert x['state']=='HOLD_FRESH_25_ECONOMICS_NONPOSITIVE', 'COHORT_NOW_ALIVE_RECHECK_REQUIRED'
+          assert x['net_pnl_bps']<0 and x['profit_factor']<1, 'UNEXPECTED_ECONOMIC_SIGN'
+          assert x['post_25_outcomes_ignored'] is True, 'COHORT_NOT_FROZEN'
+          assert x['selection_authority'] is False and x['promotion_authority'] is False
+          assert x['execution_authority']=='NONE' and x['order_authority']==x['live_trade_authority']=='BLOCKED'
+          print('PASS_TERMINAL_COHORT_CONFIRMED_NO_ECONOMIC_REPLAY',x['candidate_identity'],x['net_pnl_bps'])
+          PY
       - name: Collect exact fresh25 and auto-run marginal H4 H5 at 25
+        if: github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
           mkdir -p out
@@ -99,6 +121,7 @@ jobs:
           done
           cat out/a1_trendma_chase_atr_up_long_fresh25_latest.json
       - name: Verify cumulative fail-closed contract
+        if: github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -126,14 +149,14 @@ jobs:
           print(json.dumps({'state':r['state'],'completed':r['completed_trades'],'gap':r['sample_gap_to_25'],'wr':r.get('win_rate'),'pnl':r.get('net_pnl_bps'),'h4':r['h4_state'],'h5':r['h5_state'],'next':r['next']},sort_keys=True))
           PY
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: github.event_name == 'workflow_dispatch'
         with:
           name: a1-trendma-chase-atr-up-long-fresh25-${{ github.run_id }}-${{ github.run_attempt }}
           path: out/a1_trendma_chase_atr_up_long_fresh25_latest.json
           if-no-files-found: warn
           retention-days: 30
       - name: Persist latest cumulative fresh25 on master
-        if: github.ref == 'refs/heads/master' && (github.event_name == 'schedule' || github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        if: github.ref == 'refs/heads/master' && github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
           target=backend/research/rebuild/a1_trendma_chase_atr_up_long_fresh25_latest.json

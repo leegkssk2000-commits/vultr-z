@@ -312,7 +312,7 @@ def _bind_observation_outcomes(
         record["cost_admitted"] = False
         record["entry_ts_ms"] = None
         record["occupancy_accepted"] = key in accepted_keys
-        record["fill_observed"] = key in accepted_keys
+        record["modeled_next_open_fill"] = key in accepted_keys
         record["completed_trade"] = key in completed_keys
         record["first_rejection"] = _source_rejection(record)
         if signal is not None:
@@ -381,6 +381,15 @@ def _bind_observation_outcomes(
         "cost_admitted_count": sum(row["cost_admitted"] for row in rolling),
         "occupancy_accepted_count": sum(row["occupancy_accepted"] for row in rolling),
         "completed_trade_count": sum(row["completed_trade"] for row in rolling),
+        "execution_first_rejections": dict(
+            sorted(
+                Counter(
+                    str(row["first_rejection"])
+                    for row in rolling
+                    if row["signal_generated"] and row["first_rejection"] is not None
+                ).items()
+            )
+        ),
     }
     if identity == positive.KELTNER_PARENT:
         consumed = [row for row in rolling if row["episode_consumed_without_entry"]]
@@ -522,6 +531,8 @@ def run(source_root: Path, output: Path) -> dict[str, Any]:
             raise ValueError("OBSERVATION_SIGNAL_COUNT_PARITY_FAILED:" + identity)
         if observation_summary["completed_trade_count"] != len(rolling_rows):
             raise ValueError("OBSERVATION_TRADE_COUNT_PARITY_FAILED:" + identity)
+        if observation_summary["execution_first_rejections"] != dict(sorted(rejections.items())):
+            raise ValueError("OBSERVATION_EXECUTION_REJECTION_PARITY_FAILED:" + identity)
         lanes[identity] = {
             "lane": EXPECTED[identity]["lane"],
             "parent_ledger_path": str(saved_path.relative_to(ROOT)),

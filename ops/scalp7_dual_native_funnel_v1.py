@@ -76,14 +76,52 @@ def _daily_summary(timestamps: list[int]) -> dict[str, Any]:
     }
 
 
+def _signal_id(identity: str, symbol: str, signal_ts: int, signal_open_ts: int) -> str:
+    value = f"{identity}|{symbol}|{signal_ts}|{signal_open_ts}".encode()
+    return hashlib.sha256(value).hexdigest()
+
+
+def _state(state: positive.HolyGrailState) -> dict[str, Any]:
+    return {
+        "side": int(state.side),
+        "episode_traded": bool(state.episode_traded),
+        "stage": int(state.stage),
+        "pull_low": float(state.pull_low) if math.isfinite(state.pull_low) else None,
+        "pull_high": float(state.pull_high) if math.isfinite(state.pull_high) else None,
+    }
+
+
+def _hg_release_reason(
+    before: Mapping[str, Any], after: Mapping[str, Any], row: Mapping[str, Any]
+) -> str | None:
+    if not before["episode_traded"] or after["episode_traded"]:
+        return None
+    values = [float(row[f"g{n}"]) for n in positive.LONG_GMMA]
+    long = all(a > z for a, z in zip(values, values[1:]))
+    short = all(a < z for a, z in zip(values, values[1:]))
+    side = 1 if long else -1 if short else 0
+    renewed = (
+        float(row["high"]) > float(row["hi20"])
+        if side == 1
+        else float(row["low"]) < float(row["lo20"])
+        if side == -1
+        else False
+    )
+    if renewed and int(before["side"]) == side and int(after["side"]) == side:
+        return "RENEWED_BREAKOUT_REARM"
+    return "WEAK_OR_SIDE_RESET"
+
+
 def _native_stage_events(
     frames: Mapping[str, pd.DataFrame], identity: str
-) -> dict[str, list[dict[str, Any]]]:
+) -> tuple[dict[str, list[dict[str, Any]]], list[dict[str, Any]], list[dict[str, Any]]]:
     stages: dict[str, list[dict[str, Any]]] = {
         "raw_setup": [],
         "source_condition": [],
         "regime_eligible": [],
     }
+    observations: list[dict[str, Any]] = []
+    releases: list[dict[str, Any]] = []
     for symbol, frame in sorted(frames.items()):
         for segment in positive.enriched_segments(frame):
             rows = segment.to_dict("records")
@@ -91,16 +129,57 @@ def _native_stage_events(
                 state = positive.HolyGrailState()
                 for i in range(1, len(rows)):
                     row, previous = rows[i], rows[i - 1]
+                    before = _state(state)
                     event = positive._hg_event(state, row, previous) if i >= 121 else None
+                    after = _state(state)
+                    released = _hg_release_reason(before, after, row)
+                    if released:
+                        releases.append(
+                            {
+                                "symbol": symbol,
+                                "segment_id": str(row["segment_id"]),
+                                "release_ts_ms": int(row["feature_available_ts_ms"]),
+                                "release_open_ts_ms": int(row["open_ts_ms"]),
+                                "reason": released,
+                            }
+                        )
                     if not event:
                         continue
                     stamp = int(max(row["feature_available_ts_ms"], row.get("regime_available_ts_ms", 0)))
-                    record = {"symbol": symbol, "signal_ts_ms": stamp, "signal_open_ts_ms": int(row["open_ts_ms"])}
+                    opened = int(row["open_ts_ms"])
+                    regime, regime_available = positive._regime(row, None)
+                    record = {
+                        "symbol": symbol,
+                        "signal_ts_ms": stamp,
+                        "signal_open_ts_ms": opened,
+                    }
                     stages["raw_setup"].append(record)
                     stages["source_condition"].append(record)
-                    regime, _ = positive._regime(row, None)
-                    if regime in {"PANIC_DISPERSION", "TREND_DISPERSED"}:
+                    eligible = regime in {"PANIC_DISPERSION", "TREND_DISPERSED"}
+                    if eligible:
                         stages["regime_eligible"].append(record)
+                    observations.append(
+                        {
+                            "signal_id": _signal_id(identity, symbol, stamp, opened),
+                            "strategy_id": identity,
+                            "lane": "KELTNER_HG_30M",
+                            "utc_day": _day(stamp),
+                            "symbol": symbol,
+                            "signal_open_ts_ms": opened,
+                            "feature_available_ts_ms": int(row["feature_available_ts_ms"]),
+                            "regime_available_ts_ms": int(regime_available),
+                            "signal_ts_ms": stamp,
+                            "segment_id": str(row["segment_id"]),
+                            "warmup_ok": i >= 121,
+                            "raw_setup": True,
+                            "source_condition": True,
+                            "source_condition_components": {"hg_turn_event": True},
+                            "regime": regime,
+                            "regime_eligible": eligible,
+                            "episode_before": before,
+                            "episode_after": after,
+                        }
+                    )
             else:
                 for i in range(1, len(rows)):
                     row, previous = rows[i], rows[i - 1]
@@ -108,22 +187,47 @@ def _native_stage_events(
                     if not first_fire:
                         continue
                     stamp = int(max(row["feature_available_ts_ms"], row.get("regime_available_ts_ms", 0)))
-                    record = {"symbol": symbol, "signal_ts_ms": stamp, "signal_open_ts_ms": int(row["open_ts_ms"])}
+                    opened = int(row["open_ts_ms"])
+                    record = {"symbol": symbol, "signal_ts_ms": stamp, "signal_open_ts_ms": opened}
                     stages["raw_setup"].append(record)
-                    conditioned = (
-                        math.isfinite(float(row["momentum"]))
-                        and float(row["momentum"]) > 0
-                        and float(row["momentum"]) > float(previous["momentum"])
-                        and float(row["close"]) > float(row["g34"])
-                        and float(row["g8"]) > float(row["g21"]) > float(row["g34"])
+                    components = {
+                        "momentum_finite": math.isfinite(float(row["momentum"])),
+                        "momentum_positive": float(row["momentum"]) > 0,
+                        "momentum_accelerating": float(row["momentum"]) > float(previous["momentum"]),
+                        "close_above_g34": float(row["close"]) > float(row["g34"]),
+                        "ma_stack_g8_gt_g21_gt_g34": float(row["g8"]) > float(row["g21"]) > float(row["g34"]),
+                    }
+                    conditioned = all(components.values())
+                    regime, regime_available = positive._regime(row, None)
+                    eligible = conditioned and regime == "PANIC_DISPERSION"
+                    observations.append(
+                        {
+                            "signal_id": _signal_id(identity, symbol, stamp, opened),
+                            "strategy_id": identity,
+                            "lane": "SQUEEZE_PANIC_30M",
+                            "utc_day": _day(stamp),
+                            "symbol": symbol,
+                            "signal_open_ts_ms": opened,
+                            "feature_available_ts_ms": int(row["feature_available_ts_ms"]),
+                            "regime_available_ts_ms": int(regime_available),
+                            "signal_ts_ms": stamp,
+                            "segment_id": str(row["segment_id"]),
+                            "warmup_ok": i >= 80,
+                            "raw_setup": True,
+                            "source_condition": conditioned,
+                            "source_condition_components": components,
+                            "regime": regime,
+                            "regime_eligible": eligible,
+                            "episode_before": {"squeeze_on": bool(previous["squeeze_on"])},
+                            "episode_after": {"squeeze_on": bool(row["squeeze_on"])},
+                        }
                     )
                     if not conditioned:
                         continue
                     stages["source_condition"].append(record)
-                    regime, _ = positive._regime(row, None)
                     if regime == "PANIC_DISPERSION":
                         stages["regime_eligible"].append(record)
-    return stages
+    return stages, observations, releases
 
 
 def _entry_gate(
@@ -146,6 +250,166 @@ def _entry_gate(
         return False, None, "LATE_OBSERVATION_NOT_HISTORICAL_OPEN_FILL"
     result = positive.entry_admission(signal, float(entry_bar["open"]))
     return bool(result["allowed"]), int(entry_bar["open_ts_ms"]), str(result["reason"])
+
+
+def _key(row: Mapping[str, Any]) -> tuple[str, int, int]:
+    return (
+        str(row["symbol"]),
+        int(row["signal_ts_ms"]),
+        int(row["signal_open_ts_ms"]),
+    )
+
+
+def _source_rejection(record: Mapping[str, Any]) -> str | None:
+    if not record["source_condition"]:
+        ordered = (
+            ("momentum_finite", "SOURCE_MOMENTUM_NONFINITE"),
+            ("momentum_positive", "SOURCE_MOMENTUM_NOT_POSITIVE"),
+            ("momentum_accelerating", "SOURCE_MOMENTUM_NOT_ACCELERATING"),
+            ("close_above_g34", "SOURCE_CLOSE_NOT_ABOVE_G34"),
+            ("ma_stack_g8_gt_g21_gt_g34", "SOURCE_MA_NOT_STACKED"),
+        )
+        values = record["source_condition_components"]
+        for name, reason in ordered:
+            if not values.get(name, False):
+                return reason
+        return "SOURCE_CONDITION_FAILED"
+    if not record["regime_eligible"]:
+        return "REGIME_NOT_ALLOWED:" + str(record["regime"])
+    return None
+
+
+def _bind_observation_outcomes(
+    identity: str,
+    observations: list[dict[str, Any]],
+    releases: list[dict[str, Any]],
+    signals: list[dict[str, Any]],
+    frames: Mapping[str, pd.DataFrame],
+    rows: list[dict[str, Any]],
+    unresolved: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    rolling = [row for row in observations if START <= int(row["signal_ts_ms"]) < END]
+    by_key = {_key(row): row for row in rolling}
+    signal_by_key = {
+        _key(row): row for row in signals if START <= int(row["signal_ts_ms"]) < END
+    }
+    completed_keys = {
+        _key(row) for row in rows if row.get("partition") == "rolling"
+    }
+    accepted_keys = set(completed_keys)
+    for row in unresolved:
+        signal = row.get("position", {}).get("signal", {})
+        if signal and START <= int(signal["signal_ts_ms"]) < END:
+            accepted_keys.add(_key(signal))
+    releases_by_symbol: dict[str, list[dict[str, Any]]] = {}
+    for row in releases:
+        releases_by_symbol.setdefault(str(row["symbol"]), []).append(row)
+    for values in releases_by_symbol.values():
+        values.sort(key=lambda row: int(row["release_ts_ms"]))
+    for key, record in by_key.items():
+        signal = signal_by_key.get(key)
+        record["signal_generated"] = signal is not None
+        record["fill_clock_eligible"] = False
+        record["cost_admitted"] = False
+        record["entry_ts_ms"] = None
+        record["occupancy_accepted"] = key in accepted_keys
+        record["modeled_next_open_fill"] = key in accepted_keys
+        record["completed_trade"] = key in completed_keys
+        record["first_rejection"] = _source_rejection(record)
+        if signal is not None:
+            allowed, entry_ts, reason = _entry_gate(signal, frames)
+            record["fill_clock_eligible"] = entry_ts is not None
+            record["cost_admitted"] = allowed
+            record["entry_ts_ms"] = entry_ts
+            gate = signal["meta"]["entry_cost_gate"]
+            record["cost_gate_min_ratio"] = float(gate["min_ratio"])
+            record["frozen_cost_bps"] = float(signal["meta"]["frozen_cost_bps"])
+            if entry_ts is not None:
+                entry_rows = frames[str(signal["symbol"])].loc[
+                    frames[str(signal["symbol"])]["open_ts_ms"] == entry_ts,
+                    "open",
+                ]
+                if len(entry_rows) != 1:
+                    raise ValueError("OBSERVATION_ENTRY_PRICE_BINDING_FAILED")
+                entry_price = float(entry_rows.iloc[0])
+                record["entry_atr_cost_ratio"] = (
+                    float(gate["atr_price"])
+                    / entry_price
+                    * 10_000
+                    / float(signal["meta"]["frozen_cost_bps"])
+                )
+            if not allowed:
+                record["first_rejection"] = reason
+            elif key not in accepted_keys:
+                record["first_rejection"] = "POSITION_ALREADY_OWNED"
+            else:
+                record["first_rejection"] = None
+        if identity == positive.KELTNER_PARENT:
+            consumed = bool(record["episode_after"]["episode_traded"]) and key not in accepted_keys
+            record["episode_consumed_without_entry"] = consumed
+            if consumed:
+                release = next(
+                    (
+                        item
+                        for item in releases_by_symbol.get(str(record["symbol"]), [])
+                        if str(item["segment_id"]) == str(record["segment_id"])
+                        and int(item["release_ts_ms"]) > int(record["signal_ts_ms"])
+                    ),
+                    None,
+                )
+                record["episode_release"] = release
+                record["episode_release_delay_bars"] = (
+                    None
+                    if release is None
+                    else (
+                        int(release["release_open_ts_ms"])
+                        - int(record["signal_open_ts_ms"])
+                    )
+                    // positive.TIMEFRAME_MS
+                )
+    first_rejections = Counter(
+        str(row["first_rejection"])
+        for row in rolling
+        if row["first_rejection"] is not None
+    )
+    source_regimes = Counter(
+        str(row["regime"]) for row in rolling if row["source_condition"]
+    )
+    summary: dict[str, Any] = {
+        "observation_count": len(rolling),
+        "first_rejections": dict(sorted(first_rejections.items())),
+        "source_conditioned_by_regime": dict(sorted(source_regimes.items())),
+        "generated_signal_count": sum(row["signal_generated"] for row in rolling),
+        "cost_admitted_count": sum(row["cost_admitted"] for row in rolling),
+        "occupancy_accepted_count": sum(row["occupancy_accepted"] for row in rolling),
+        "completed_trade_count": sum(row["completed_trade"] for row in rolling),
+        "execution_first_rejections": dict(
+            sorted(
+                Counter(
+                    str(row["first_rejection"])
+                    for row in rolling
+                    if row["signal_generated"] and row["first_rejection"] is not None
+                ).items()
+            )
+        ),
+    }
+    if identity == positive.KELTNER_PARENT:
+        consumed = [row for row in rolling if row["episode_consumed_without_entry"]]
+        summary["episode_consumed_without_entry_count"] = len(consumed)
+        summary["episode_consumed_without_entry_by_rejection"] = dict(
+            sorted(Counter(str(row["first_rejection"]) for row in consumed).items())
+        )
+        summary["episode_release_reason"] = dict(
+            sorted(
+                Counter(
+                    "UNRELEASED_IN_OBSERVED_SOURCE"
+                    if row.get("episode_release") is None
+                    else str(row["episode_release"]["reason"])
+                    for row in consumed
+                ).items()
+            )
+        )
+    return rolling, summary
 
 
 def _load_saved(identity: str) -> tuple[Path, dict[str, Any]]:
@@ -214,7 +478,7 @@ def run(source_root: Path, output: Path) -> dict[str, Any]:
     for identity in EXPECTED:
         saved_path, saved = _load_saved(identity)
         signals = positive.generate_signals(bound, costs=costs, identities=(identity,))
-        stage_events = _native_stage_events(bound, identity)
+        stage_events, observations, releases = _native_stage_events(bound, identity)
         expected_keys = Counter(
             (row["symbol"], int(row["signal_ts_ms"]), int(row["signal_open_ts_ms"]))
             for row in stage_events["regime_eligible"]
@@ -256,21 +520,40 @@ def run(source_root: Path, output: Path) -> dict[str, Any]:
         )
         rolling_signals = [row for row in signals if START <= int(row["signal_ts_ms"]) < END]
         same_time = Counter(int(row["signal_ts_ms"]) for row in rolling_signals)
+        observation_records, observation_summary = _bind_observation_outcomes(
+            identity,
+            observations,
+            releases,
+            signals,
+            bound,
+            rows,
+            unresolved,
+        )
+        if observation_summary["generated_signal_count"] != len(rolling_signals):
+            raise ValueError("OBSERVATION_SIGNAL_COUNT_PARITY_FAILED:" + identity)
+        if observation_summary["completed_trade_count"] != len(rolling_rows):
+            raise ValueError("OBSERVATION_TRADE_COUNT_PARITY_FAILED:" + identity)
+        if observation_summary["execution_first_rejections"] != dict(sorted(rejections.items())):
+            raise ValueError("OBSERVATION_EXECUTION_REJECTION_PARITY_FAILED:" + identity)
         lanes[identity] = {
             "lane": EXPECTED[identity]["lane"],
             "parent_ledger_path": str(saved_path.relative_to(ROOT)),
             "parent_ledger_sha256": EXPECTED[identity]["ledger_sha256"],
             "rolling_T_exact": len(rolling_rows),
+            "exact_generated_signal_parity": True,
             "exact_saved_trade_and_unresolved_parity": True,
+            "exact_gross_cost_net_pnl_parity": True,
             "stages": stages,
             "preoccupancy_rejections": dict(sorted(preoccupancy_rejections.items())),
             "execution_rejections": dict(sorted(rejections.items())),
             "same_signal_time_multi_symbol_groups": sum(value > 1 for value in same_time.values()),
             "max_same_signal_time_count": max(same_time.values(), default=0),
+            "observation_summary": observation_summary,
+            "observation_records": observation_records,
         }
     report = {
-        "schema": "zel.scalp7.dual_native_daily_funnel.v1",
-        "state": "NATIVE_DAILY_FUNNEL_COMPLETE_PARENT_PARITY_PASS",
+        "schema": "zel.scalp7.dual_native_observer.v2",
+        "state": "NATIVE_DAILY_OBSERVER_COMPLETE_PARENT_SIGNAL_TRADE_PNL_PARITY_PASS",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "used_dev_only": True,
         "fresh_or_oos": False,
@@ -283,6 +566,7 @@ def run(source_root: Path, output: Path) -> dict[str, Any]:
         "raw_price_bodies_exported": False,
         "market_requests": 0,
         "economic_runs": 0,
+        "observer_changes_parent_state": False,
         "order_live_paper_deploy": "BLOCKED_UNSURE_HOLD",
     }
     unsigned = (json.dumps(report, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode()

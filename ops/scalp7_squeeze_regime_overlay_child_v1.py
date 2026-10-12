@@ -337,6 +337,18 @@ def run(source_root: Path, output: Path) -> dict[str, Any]:
     ]
     if len(parent_rolling) != common.EXPECTED[positive.SQUEEZE_PARENT]["rolling_T"]:
         raise ValueError("ROLLING_PARENT_T_PARITY_FAILED")
+    frozen_parent_signal_count = int(
+        child_contract["source_basis"][
+            "observed_rolling_source_conditioned_by_regime"
+        ]["PANIC_DISPERSION"]
+    )
+    parent_rolling_signal_count = sum(
+        _window_for(windows, int(signal["signal_ts_ms"])) is not None
+        and common.START <= int(signal["signal_ts_ms"]) < common.END
+        for signal in parent_signals
+    )
+    if parent_rolling_signal_count != frozen_parent_signal_count:
+        raise ValueError("ROLLING_PARENT_SIGNAL_COUNT_PARITY_FAILED")
 
     added_signals, source_census = _added_trend_disperse_signals(bound, costs)
     child = _run_child(
@@ -420,7 +432,13 @@ def run(source_root: Path, output: Path) -> dict[str, Any]:
         "context_fit_sha256": hashlib.sha256(
             json.dumps(fits, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest(),
-        "parent_exact_signal_trade_unresolved_pnl_parity": True,
+        "parent_completed_trade_unresolved_pnl_parity": True,
+        "parent_signal_count_parity": {
+            "status": "COUNT_ONLY_AGAINST_FROZEN_NATIVE_CENSUS",
+            "rolling_count": parent_rolling_signal_count,
+            "frozen_expected_rolling_count": frozen_parent_signal_count,
+            "exact_signal_key_receipt_available": False,
+        },
         "source_census": source_census,
         "parent_signal_count_by_partition": _partition_signal_count(
             parent_signals, windows
@@ -488,3 +506,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

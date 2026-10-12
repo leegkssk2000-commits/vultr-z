@@ -157,13 +157,16 @@ jobs:
           umask 077
           OUT="$RUNNER_TEMP/kp-access-diagnosis"
           ARCHIVE="$RUNNER_TEMP/scalp7-used-dev-source.tar.gz"
-          STAGE="$RUNNER_TEMP/scalp7-used-dev-source"
+          STAGE="/home/z/z/runtime/economic7_campaign_20260915"
           KEY="$RUNNER_TEMP/kp-source-key"
           KNOWN="$RUNNER_TEMP/kp-source-known-hosts"
           COMPRESSED_LIMIT=$((4 * 1024 * 1024 * 1024))
           cleanup() {
             rm -f "$KEY" "$KNOWN" "$ARCHIVE"
-            rm -rf -- "$STAGE"
+            if [ -f "$STAGE/.kp-used-dev-runner-stage" ]; then
+              sudo rm -rf -- "$STAGE"
+            fi
+            sudo rmdir --ignore-fail-on-non-empty /home/z/z/runtime /home/z/z /home/z 2>/dev/null || true
           }
           trap cleanup EXIT
           printf '%s\n' "$VPS_SSH_KEY" > "$KEY"
@@ -195,7 +198,9 @@ jobs:
             'set -euo pipefail; test -d /home/z/z/runtime/economic7_campaign_20260915/canonical_12m; test -d /home/z/z/runtime/economic7_campaign_20260915/canonical_gapday_prefix; test -d /home/z/z/runtime/economic7_campaign_20260915/canonical_postgap_20260213; exec tar -C /home/z/z/runtime/economic7_campaign_20260915 -czf - canonical_12m canonical_gapday_prefix canonical_postgap_20260213' \
             | python3 "$RUNNER_TEMP/bounded_source_copy.py" "$ARCHIVE" "$COMPRESSED_LIMIT"
           test -s "$ARCHIVE"
-          mkdir "$STAGE"
+          test ! -e "$STAGE"
+          sudo install -d -o "$(id -u)" -g "$(id -g)" "$STAGE"
+          printf '%s\n' kp-used-dev-runner-stage > "$STAGE/.kp-used-dev-runner-stage"
           export ARCHIVE STAGE OUT
           python3 - <<'PY'
           import os, tarfile

@@ -1,0 +1,79 @@
+name: A1 Other Finalists Fixed Axis Surgery V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_other_finalists_fixed_axis_surgery_v1.py'
+      - '.github/workflows/a1-other-finalists-fixed-axis-surgery-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and self test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_other_finalists_fixed_axis_surgery_v1.py
+          python -m backend.research.rebuild.a1_other_finalists_fixed_axis_surgery_v1 --self-test
+      - name: Rebuild authoritative development parents
+        run: |
+          set -euo pipefail
+          mkdir -p out/parents
+          SYMBOLS='BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,1INCH-USDT,ETHFI-USDT,HYPE-USDT,BCH-USDT,APE-USDT,1000PEPE-USDT,DOGE-USDT,LINK-USDT'
+          for SID in break_and_continue supertrend_pullback trend_ma_macd; do
+            python -m backend.research.rebuild.a1_exact25_generic_evaluator_v2 \
+              --terminal-replay --strategy-id "$SID" --symbols "$SYMBOLS" \
+              --out "out/parents/${SID}.json"
+          done
+      - name: Run fixed categorical loss surgery
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_other_finalists_fixed_axis_surgery_v1 \
+            --break-parent out/parents/break_and_continue.json \
+            --supertrend-parent out/parents/supertrend_pullback.json \
+            --trendma-parent out/parents/trend_ma_macd.json \
+            --out out/a1_other_finalists_fixed_axis_surgery_latest.json
+          cat out/a1_other_finalists_fixed_axis_surgery_latest.json
+      - name: Verify blocked authority and one-axis contract
+        run: |
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_other_finalists_fixed_axis_surgery_latest.json'))
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          assert r['exchange_order_submitted'] is False and r['protected_mutations']==0
+          assert r['policy']['one_axis_per_strategy'] is True
+          assert r['policy']['numeric_threshold_sweep_forbidden'] is True
+          assert r['policy']['post_outcome_threshold_fit_forbidden'] is True
+          for sid,row in r['strategies'].items():
+              assert row['changed_axis_count']==1 and row['numeric_threshold_sweep'] is False
+              assert row['fresh_oos_required'] is True
+          print(json.dumps({'state':r['state'],'pass_count':r['pass_count'],'passed':r['passed_strategies']},sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-other-finalists-fixed-axis-surgery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/a1_other_finalists_fixed_axis_surgery_latest.json
+            out/parents/*.json
+          if-no-files-found: warn
+          retention-days: 30

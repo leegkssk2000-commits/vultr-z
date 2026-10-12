@@ -5,7 +5,6 @@ on:
       - ci/issue1388-saved-trade-fields-20261009
     paths:
       - '.github/workflows/issue1388-saved-trade-fields-v1.yml'
-      - 'ops/issue1388_saved_controls_regime_audit_v1.py'
 permissions:
   contents: read
 concurrency:
@@ -18,63 +17,118 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ci/issue1388-saved-trade-fields-20261009
+          ref: 4956307b5f7c2307629c44c6b91943338c7cde39
           persist-credentials: false
-      - name: Inspect old saved 109T/25T ledger evidence only
+      - name: Required source validation without trading or model calls
+        run: |
+          set -euo pipefail
+          pwd
+          ls -la frontend/z-os-app-source
+          cat frontend/z-os-app-source/package.json
+          npm run --prefix frontend/z-os-app-source validate
+      - name: Calculate daily opportunity coverage and realized costed outcome calendar
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
-          import gzip,hashlib,json, pathlib,datetime
-          from collections import Counter
-          p=pathlib.Path("research/campaigns/scalp7_20260915/broad_rebuild_v2/results")
-          candidates=["scalp7_keltner_hg_parent_utc30m_v2","scalp7_squeeze_panic_cost4_parent_utc30m_v2"]
-          output={"schema":"zel.issue1388.source_fields.v1","mode":"READ_ONLY_NO_ECONOMIC_REPLAY","source_master":"ee4b4153e5ed1e1a0230d9bbe3d2cb4b85cf2567","lanes":[]}
-          for identity in candidates:
-              m=json.loads((p/(identity+".json")).read_text())
-              raw=(p/(identity+".trades.json.gz")).read_bytes()
-              decompressed=gzip.decompress(raw)
-              data=json.loads(decompressed)
-              if isinstance(data,list): 
-                  rows=data;root_keys=[]
-              elif isinstance(data,dict):
-                  root_keys=list(data)
-                  rows=next((data[k] for k in ["trades","rows","completed_trades","events"] if isinstance(data.get(k),list)),[])
-              else: raise RuntimeError("UNEXPECTED_TRADES_FORMAT")
-              if len(rows)!=m["rolling1x"]["T"] and len(rows)!=m["rolling1x"]["T"]+len(m.get("window_receipts",[])):
-                  # Preserve a true shape observation instead of declaring semantic equivalence.
-                  print("SAVED_LEDGER_COUNT_DIFF",identity,len(rows),m["rolling1x"]["T"],flush=True)
-              fields=sorted(set().union(*(r.keys() for r in rows if isinstance(r,dict))))
-              interesting=[f for f in fields if any(x in f.lower() for x in ("symbol","signal","entry","exit","close","gross","net","cost","fee","price","time","reason","regime","feature","decision","risk","atr","ema","side","momentum","window"))]
-              examples=[]
-              for r in rows[:2]:
-                  o={}
-                  for k,v in r.items():
-                      if k in interesting and (v is None or isinstance(v,(str,int,float,bool))):
-                          o[k]=v
-                      elif k in interesting:
-                          o[k]="NONSCALAR:"+type(v).__name__
-                  examples.append(o)
-              sha_gz=hashlib.sha256(raw).hexdigest()
-              sha_plain=hashlib.sha256(decompressed).hexdigest()
-              checked=m.get("ledger_sha256")
-              matched={"gzip":checked==sha_gz,"decompressed":checked==sha_plain}
-              print("LEDGER_SOURCE",json.dumps({"identity":identity,"rows":len(rows),"expected_rolling_T":m["rolling1x"]["T"],"compressed_sha":sha_gz,"uncompressed_sha":sha_plain,"declared_sha":checked,"sha_verified":matched,"root_keys":root_keys,"field_names":fields,"interesting":interesting,"samples":examples},sort_keys=True),flush=True)
-              output["lanes"].append({"identity":identity,"rows":len(rows),"rolling_T":m["rolling1x"]["T"],"declared_sha":checked,"source_sha_gzip":sha_gz,"source_sha_plain":sha_plain,"sha_matches":matched,"root_keys":root_keys,"field_names":fields,"samples":examples})
-          pathlib.Path("out").mkdir(exist_ok=True)
-          pathlib.Path("out/issue1388_saved_trade_schema.json").write_text(json.dumps(output,sort_keys=True,indent=2)+"\n")
+          mkdir -p out
+          cat > out/daily_frequency_audit.py <<'PY'
+          """New daily metrics on unchanged saved DEV trades; no strategy replay.
+          Realized outcome sums are trade-bps, NOT daily account or mark-to-market PnL.
+          Counts describe entries for the recorded closed cohort, NOT a full signal census.
+          """
+          import gzip, hashlib, json, math, statistics
+          from collections import Counter, defaultdict
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          DAY=86400000
+          ROOT=Path('research/campaigns/scalp7_20260915/broad_rebuild_v2/results')
+          IDS=['scalp7_keltner_hg_parent_utc30m_v2','scalp7_squeeze_panic_cost4_parent_utc30m_v2']
+          EXPECTED={IDS[0]:(109,'8863caa8231282fbd7dfd5660811b74e007c018c9cdafdaa52c24830cddfd989'),IDS[1]:(25,'5f1af277aefb4e0887d723ef7a59311385551abf500cd4308693f9cbf6000e52')}
+          def digest(raw): return hashlib.sha256(raw).hexdigest()
+          def daystr(n): return datetime.fromtimestamp(n*DAY/1000,timezone.utc).strftime('%Y-%m-%d')
+          def longest(xs,predicate):
+              top=run=0
+              for x in xs:
+                  run=run+1 if predicate(x) else 0
+                  top=max(top,run)
+              return top
+          def assess(rows,days):
+              keys=set(); entries=Counter(); outcomes=Counter(); net1=defaultdict(float);net2=defaultdict(float)
+              for t in rows:
+                  key=(t['identity'],t['symbol'],t['side'],t['signal_ts_ms'],t['entry_ts_ms'])
+                  if key in keys: raise ValueError('DUPLICATE_TRADE_IDENTITY')
+                  keys.add(key)
+                  a=int(t['entry_ts_ms'])//DAY;b=int(t['outcome_available_ts_ms'])//DAY
+                  if a not in days or b not in days: raise ValueError('COHORT_DAY_OUTSIDE_FROZEN_CALENDAR')
+                  if int(t['signal_ts_ms'])>int(t['entry_ts_ms']) or int(t['exit_ts_ms'])>int(t['outcome_available_ts_ms']): raise ValueError('CLOCK_ORDER_INVALID')
+                  g=float(t['gross_bps']);c=float(t['cost_bps']);n=float(t['net_bps'])
+                  if not all(math.isfinite(x) for x in (g,c,n)) or abs(g-c-n)>1e-7: raise ValueError('COST_NET_DRIFT')
+                  entries[a]+=1;outcomes[b]+=1;net1[b]+=n;net2[b]+=g-2*c
+              ec=[entries[d] for d in days]
+              def pnl(net):
+                  xs=[net[d] for d in days]
+                  return {'realized_trade_bps_sum':sum(xs),'realized_trade_bps_per_calendar_day':sum(xs)/len(days),'positive_realized_days':sum(x>1e-8 for x in xs),'negative_realized_days':sum(x< -1e-8 for x in xs),'zero_realized_days':sum(abs(x)<=1e-8 for x in xs),'worst_realized_day_bps':min(xs),'best_realized_day_bps':max(xs),'longest_consecutive_calendar_loss_days':longest(xs,lambda x:x< -1e-8),'mark_to_market_or_account_profit_proven':False}
+              return {'closed_cohort_T':len(rows),'calendar_days':len(days),'closed_cohort_entries_per_calendar_day':len(rows)/len(days),'median_closed_cohort_entries_per_day':statistics.median(ec),'maximum_closed_cohort_entries_per_day':max(ec),'no_recorded_closed_cohort_entry_days':sum(n==0 for n in ec),'no_recorded_closed_cohort_entry_days_pct':100*sum(n==0 for n in ec)/len(days),'days_with_ge3_recorded_entries':sum(n>=3 for n in ec),'days_with_ge4_recorded_entries':sum(n>=4 for n in ec),'longest_no_recorded_entry_calendar_days':longest(ec,lambda x:x==0),'entry_count_histogram':dict(sorted(Counter(ec).items())),'cost1x_daily':pnl(net1),'cost2x_daily':pnl(net2),'daily_rows':[{'date_utc':daystr(d),'closed_cohort_entries':entries[d],'outcomes_available':outcomes[d],'realized_net1_trade_bps':net1[d],'realized_net2_trade_bps':net2[d]} for d in days]}
+          def run():
+              report={'schema':'zel.dual_parent.daily_frequency_costed_calendar.v1','source_master':'4956307b5f7c2307629c44c6b91943338c7cde39','analysis':'SAVED_COHORT_NEW_DAILY_METRICS_ONLY','timezone':'UTC_FIXED_SOURCE_CALENDAR','new_strategy_simulations':0,'paid_model_calls':0,'formal_survivor_credit':0,'execution_authority':'NONE','order_authority':'BLOCKED','lanes':{}}
+              combined=[]; shared_days=None
+              for ident in IDS:
+                  mb=(ROOT/(ident+'.json')).read_bytes(); meta=json.loads(mb)
+                  raw=(ROOT/(ident+'.trades.json.gz')).read_bytes()
+                  if digest(raw)!=EXPECTED[ident][1] or digest(raw)!=meta['ledger_sha256']: raise ValueError('IMMUTABLE_LEDGER_SHA_MISMATCH')
+                  ledger=json.loads(gzip.decompress(raw)); windows=[w for w in meta['window_receipts'] if w['window']['partition']=='rolling']
+                  if len(windows)!=9: raise ValueError('ROLLING_WINDOW_COUNT_DRIFT')
+                  labels={w['window']['label'] for w in windows};ds=set();bounds=[]
+                  for w in windows:
+                      c=w['cost1x'];start=int(c['start_ms']);end=int(c['end_ms'])
+                      if start%DAY or end%DAY or end<=start: raise ValueError('CALENDAR_NOT_COMPLETE_UTC_DAYS')
+                      dd=set(range(start//DAY,end//DAY))
+                      if ds & dd: raise ValueError('OVERLAPPING_WINDOW_DENOMINATOR')
+                      ds |= dd;bounds.append([start,end])
+                  days=sorted(ds)
+                  if len(days)!=245 or any(b-a!=1 for a,b in zip(days,days[1:])): raise ValueError('245D_CONTIGUOUS_DENOMINATOR_DRIFT')
+                  if shared_days is not None and days!=shared_days: raise ValueError('DIFFERENT_LANE_CALENDARS')
+                  shared_days=days
+                  rows=[t for t in ledger['trades'] if t['window_label'] in labels]
+                  if len(rows)!=EXPECTED[ident][0]: raise ValueError('ROLLING_T_DRIFT')
+                  if any(t['identity']!=ident for t in rows): raise ValueError('IDENTITY_MISMATCH')
+                  stats=assess(rows,days)
+                  for amount,key in [(sum(float(t['gross_bps']) for t in rows),'Gross_bps'),(sum(float(t['cost_bps']) for t in rows),'Cost_bps'),(stats['cost1x_daily']['realized_trade_bps_sum'],'Net_bps')]:
+                      if abs(amount-meta['rolling1x'][key])>1e-6: raise ValueError('PARENT_ECONOMIC_PARITY_FAILED:'+key)
+                  if abs(stats['cost2x_daily']['realized_trade_bps_sum']-meta['rolling2x']['Net_bps'])>1e-6: raise ValueError('COST2_PARITY_FAILED')
+                  un=ledger.get('unresolved',[])
+                  stats.update({'ledger_sha256':digest(raw),'result_file_sha256':digest(mb),'preserved_parent_T':meta['rolling1x']['T'],'first_day_utc':daystr(days[0]),'last_day_utc':daystr(days[-1]),'unresolved_source_rows':len(un) if isinstance(un,list) else None,'unresolved_shape':type(un).__name__,'source_window_bounds':bounds,'raw_setup_count':None,'filter_drop_counts':None,'actual_total_opened_entries':None,'new_economic_improvement':False,'source_funnel_state':'NEEDS_CANONICAL_PRICE_CLOCK_AND_ORIGINAL_REPLAY_DIAGNOSTICS'})
+                  report['lanes'][ident]=stats;combined.extend(rows)
+              report['combined_descriptive_only']=assess(combined,shared_days)
+              report['combined_descriptive_only']['NOT_A_PORTFOLIO']=True
+              report['combined_descriptive_only']['independent_opportunities_not_verified']=True
+              stamps=Counter(t['entry_ts_ms'] for t in combined)
+              report['combined_descriptive_only']['same_entry_timestamp_groups_gt1']=sum(n>1 for n in stamps.values())
+              report['limitations']=['Previously consumed 245d DEV, not fresh or OOS certification','All daily PnL is completed-outcome attribution, not account NAV/MTM; open losses and fee timing are not reconstructed','Entry counts refer only to included completed cohort; carry-in/exact-window-end/censored opportunities are not silently assumed zero','No parent condition, entry, exit, cost, leverage, capital or occupancy changed','Two separately replayed strategies are not an executable combined portfolio; same-clock alt entries may be correlated','No guarantee of profitable days, and 3-4/day is a development objective not an order quota']
+              report['receipt_sha256']=digest(json.dumps(report,sort_keys=True,separators=(',',':'),allow_nan=False).encode())
+              Path('out/daily_frequency_result.json').write_text(json.dumps(report,sort_keys=True,indent=2,allow_nan=False)+'\n')
+              console={'lanes':{k:{a:b for a,b in v.items() if a!='daily_rows'} for k,v in report['lanes'].items()},'combined':{a:b for a,b in report['combined_descriptive_only'].items() if a!='daily_rows'},'receipt_sha256':report['receipt_sha256']}
+              print('DAILY_FREQUENCY_ECONOMIC_AUDIT',json.dumps(console,sort_keys=True),flush=True)
+          if __name__=='__main__':run()
           PY
-      - name: Forensic rolling trade economics by causal at-entry regime
+          python out/daily_frequency_audit.py
+      - name: Validate unchanged checkout and preserve audit source
         run: |
           set -euo pipefail
-          python ops/issue1388_saved_controls_regime_audit_v1.py --output out/issue1388_regime_attribution.json
-      - name: Persist read-only schema receipt
+          npm run --prefix frontend/z-os-app-source validate
+          git diff --exit-code
+      - name: Persist actual daily metrics and exact source ledgers
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: issue1388-saved-trade-schema
+          name: issue1388-dual-parent-daily-frequency
           path: |
-            out/issue1388_saved_trade_schema.json
-            out/issue1388_regime_attribution.json
-          if-no-files-found: warn
+            out/daily_frequency_audit.py
+            out/daily_frequency_result.json
+            research/campaigns/scalp7_20260915/broad_rebuild_v2/results/scalp7_keltner_hg_parent_utc30m_v2.json
+            research/campaigns/scalp7_20260915/broad_rebuild_v2/results/scalp7_keltner_hg_parent_utc30m_v2.trades.json.gz
+            research/campaigns/scalp7_20260915/broad_rebuild_v2/results/scalp7_squeeze_panic_cost4_parent_utc30m_v2.json
+            research/campaigns/scalp7_20260915/broad_rebuild_v2/results/scalp7_squeeze_panic_cost4_parent_utc30m_v2.trades.json.gz
+          if-no-files-found: error
           retention-days: 7

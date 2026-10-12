@@ -137,6 +137,7 @@ def _native_stage_events(
                         releases.append(
                             {
                                 "symbol": symbol,
+                                "segment_id": str(row["segment_id"]),
                                 "release_ts_ms": int(row["feature_available_ts_ms"]),
                                 "release_open_ts_ms": int(row["open_ts_ms"]),
                                 "reason": released,
@@ -351,7 +352,8 @@ def _bind_observation_outcomes(
                     (
                         item
                         for item in releases_by_symbol.get(str(record["symbol"]), [])
-                        if int(item["release_ts_ms"]) > int(record["signal_ts_ms"])
+                        if str(item["segment_id"]) == str(record["segment_id"])
+                        and int(item["release_ts_ms"]) > int(record["signal_ts_ms"])
                     ),
                     None,
                 )

@@ -288,6 +288,39 @@ def _partition_result(
     }
 
 
+def _economic_summary(
+    rows: list[dict[str, Any]],
+    start_ms: int,
+    end_ms: int,
+    cost_multiplier: float,
+) -> dict[str, Any]:
+    report = metrics.summarize(rows, start_ms, end_ms, cost_multiplier)
+    selected, _ = metrics.partition_rows(rows, start_ms, end_ms)
+    gross = [float(row["gross_bps"]) for row in selected]
+    costs = [float(row["cost_bps"]) * cost_multiplier for row in selected]
+    nets = [g - c for g, c in zip(gross, costs)]
+    wins = [value for value in nets if value > 0]
+    losses = [value for value in nets if value < 0]
+    days = (end_ms - start_ms) / metrics.DAY_MS
+    trades = len(nets)
+    average_win = sum(wins) / len(wins) if wins else None
+    average_loss = sum(losses) / len(losses) if losses else None
+    report["Gross_bps_per_T"] = sum(gross) / trades if trades else None
+    report["Cost_bps_per_T"] = sum(costs) / trades if trades else None
+    report["Net_bps_per_T"] = sum(nets) / trades if trades else None
+    report["Gross_bps_per_day"] = sum(gross) / days
+    report["Cost_bps_per_day"] = sum(costs) / days
+    report["Net_bps_per_day"] = sum(nets) / days
+    report["average_win_bps"] = average_win
+    report["average_loss_bps"] = average_loss
+    report["payoff"] = (
+        average_win / abs(average_loss)
+        if average_win is not None and average_loss is not None
+        else None
+    )
+    return report
+
+
 def run(source_root: Path, output: Path) -> dict[str, Any]:
     contract = json.loads(
         (common.REPORT / "CAMPAIGN_PREREGISTERED_V2.json").read_text()
@@ -351,6 +384,17 @@ def run(source_root: Path, output: Path) -> dict[str, Any]:
         raise ValueError("ROLLING_PARENT_SIGNAL_COUNT_PARITY_FAILED")
 
     added_signals, source_census = _added_trend_disperse_signals(bound, costs)
+    frozen_rolling_census = {
+        str(name): int(count)
+        for name, count in child_contract["source_basis"][
+            "observed_rolling_source_conditioned_by_regime"
+        ].items()
+    }
+    if (
+        source_census["source_conditioned_by_regime_rolling"]
+        != frozen_rolling_census
+    ):
+        raise ValueError("ROLLING_SOURCE_REGIME_CENSUS_PARITY_FAILED")
     child = _run_child(
         bound,
         costs,
@@ -371,20 +415,20 @@ def run(source_root: Path, output: Path) -> dict[str, Any]:
     ]
 
     parent_metrics = {
-        "cost1x": metrics.summarize(
+        "cost1x": _economic_summary(
             parent_rolling, common.START, common.END, 1.0
         ),
-        "cost2x": metrics.summarize(
+        "cost2x": _economic_summary(
             parent_rolling, common.START, common.END, 2.0
         ),
         "daily_cost1x": common._daily_economics(parent_rolling, 1.0),
         "daily_cost2x": common._daily_economics(parent_rolling, 2.0),
     }
     child_metrics = {
-        "cost1x": metrics.summarize(
+        "cost1x": _economic_summary(
             child_rolling, common.START, common.END, 1.0
         ),
-        "cost2x": metrics.summarize(
+        "cost2x": _economic_summary(
             child_rolling, common.START, common.END, 2.0
         ),
         "daily_cost1x": common._daily_economics(child_rolling, 1.0),

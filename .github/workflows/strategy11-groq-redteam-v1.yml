@@ -43,6 +43,7 @@ jobs:
           cache: pip
 
       - name: Verify GROQ_API_KEY secret exists
+        if: github.event_name == 'workflow_dispatch'
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: |
@@ -54,6 +55,7 @@ jobs:
           echo 'PASS_GROQ_API_KEY_PRESENT'
 
       - name: Install Groq Python SDK
+        if: github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
@@ -86,6 +88,7 @@ jobs:
           PY
 
       - name: Run live Groq connection and JSON-schema smoke
+        if: github.event_name == 'workflow_dispatch'
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: |
@@ -94,7 +97,7 @@ jobs:
             --output artifacts/strategy11_groq_redteam_smoke.json
 
       - name: Assert safety contract
-        if: always()
+        if: github.event_name == 'workflow_dispatch' && always()
         run: |
           python - <<'PY'
           import json
@@ -124,7 +127,7 @@ jobs:
           PY
 
       - name: Upload Groq smoke artifact
-        if: always()
+        if: github.event_name == 'workflow_dispatch' && always()
         uses: actions/upload-artifact@v4
         with:
           name: strategy11-groq-redteam-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}

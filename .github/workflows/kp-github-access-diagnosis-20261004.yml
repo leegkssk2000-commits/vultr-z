@@ -171,13 +171,29 @@ jobs:
           ssh-keyscan -T 10 -t ed25519 -H "$VPS_HOST" > "$KNOWN" 2>/dev/null
           FP=$(ssh-keygen -lf "$KNOWN" | awk '{print $2}')
           test "$FP" = 'SHA256:pI/PzwvzWLNJDkOfG98IrC/3NLzh0dIOEUgyqEWta/U'
+          cat > "$RUNNER_TEMP/bounded_source_copy.py" <<'PY'
+          import pathlib,sys
+          path=pathlib.Path(sys.argv[1])
+          limit=int(sys.argv[2])
+          count=0
+          with path.open('wb') as output:
+              while True:
+                  block=sys.stdin.buffer.read(1024*1024)
+                  if not block:
+                      break
+                  count+=len(block)
+                  if count>limit:
+                      raise SystemExit('COMPRESSED_SOURCE_ARCHIVE_BOUND_EXCEEDED')
+                  output.write(block)
+          print('COMPRESSED_SOURCE_BYTES='+str(count))
+          PY
           timeout 900 ssh -T -i "$KEY" \
             -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 \
             -o ConnectionAttempts=1 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 \
             -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 \
             -o UserKnownHostsFile="$KNOWN" "$VPS_USER@$VPS_HOST" \
             'set -euo pipefail; test -d /home/z/z/runtime/economic7_campaign_20260915/canonical_12m; test -d /home/z/z/runtime/economic7_campaign_20260915/canonical_gapday_prefix; test -d /home/z/z/runtime/economic7_campaign_20260915/canonical_postgap_20260213; exec tar -C /home/z/z/runtime/economic7_campaign_20260915 -czf - canonical_12m canonical_gapday_prefix canonical_postgap_20260213' \
-            | python3 -c 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); limit=int(sys.argv[2]); n=0; f=p.open("wb"); while True:  b=sys.stdin.buffer.read(1024*1024);  if not b: break;  n+=len(b);  if n>limit: raise SystemExit("COMPRESSED_SOURCE_ARCHIVE_BOUND_EXCEEDED");  f.write(b); f.close(); print("COMPRESSED_SOURCE_BYTES="+str(n))' "$ARCHIVE" "$COMPRESSED_LIMIT"
+            | python3 "$RUNNER_TEMP/bounded_source_copy.py" "$ARCHIVE" "$COMPRESSED_LIMIT"
           test -s "$ARCHIVE"
           mkdir "$STAGE"
           export ARCHIVE STAGE OUT

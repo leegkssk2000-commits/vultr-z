@@ -562,9 +562,16 @@ def _accepted_episode_child(
             prepared[(str(window["label"]), symbol)] = (sliced, records, index)
     rows: list[dict[str, Any]] = []
     unresolved: list[dict[str, Any]] = []
+    boundary_excluded: list[dict[str, Any]] = []
     rejections: Counter[str] = Counter()
+    rejections_by_partition: dict[str, Counter[str]] = {
+        "validation": Counter(),
+        "rolling": Counter(),
+    }
     candidate_count = 0
     admitted_count = 0
+    candidate_count_by_partition: Counter[str] = Counter()
+    admitted_count_by_partition: Counter[str] = Counter()
     ownership: dict[tuple[str, str], int] = {}
     seen: set[tuple[str, str, int]] = set()
     ordered_windows = sorted(windows, key=lambda item: int(item["start_ms"]))
@@ -591,9 +598,6 @@ def _accepted_episode_child(
                 if stamp < first_start:
                     continue
                 state.episode_traded = False
-                if regime not in {"PANIC_DISPERSION", "TREND_DISPERSED"}:
-                    rejections["REGIME_NOT_ALLOWED:" + str(regime)] += 1
-                    continue
                 window = next(
                     (
                         item
@@ -604,7 +608,14 @@ def _accepted_episode_child(
                 )
                 if window is None:
                     continue
+                partition = str(window["partition"])
+                if regime not in {"PANIC_DISPERSION", "TREND_DISPERSED"}:
+                    reason = "REGIME_NOT_ALLOWED:" + str(regime)
+                    rejections[reason] += 1
+                    rejections_by_partition[partition][reason] += 1
+                    continue
                 candidate_count += 1
+                candidate_count_by_partition[partition] += 1
                 signal = _keltner_parent_signal(
                     symbol, row, int(event[0]), float(event[1]), regime,
                     int(regime_available), cost,
@@ -612,11 +623,13 @@ def _accepted_episode_child(
                 duplicate = (str(window["label"]), symbol, stamp)
                 if duplicate in seen:
                     rejections["DUPLICATE_SIGNAL"] += 1
+                    rejections_by_partition[partition]["DUPLICATE_SIGNAL"] += 1
                     continue
                 seen.add(duplicate)
                 owner = (str(window["label"]), symbol)
                 if stamp < ownership.get(owner, -1):
                     rejections["POSITION_ALREADY_OWNED"] += 1
+                    rejections_by_partition[partition]["POSITION_ALREADY_OWNED"] += 1
                     continue
                 sliced, records, index = prepared[(str(window["label"]), symbol)]
                 trade, open_position, until, reason = execution._single(
@@ -630,18 +643,28 @@ def _accepted_episode_child(
                 )
                 if reason is not None:
                     rejections[str(reason)] += 1
+                    rejections_by_partition[partition][str(reason)] += 1
                     continue
                 admitted_count += 1
+                admitted_count_by_partition[partition] += 1
                 state.episode_traded = True
                 ownership[owner] = int(until)
                 if trade is not None:
                     child = _relabel_child(trade)
                     child["window_label"] = str(window["label"])
-                    child["partition"] = str(window["partition"])
-                    rows.append(child)
+                    child["partition"] = partition
+                    if int(child["outcome_available_ts_ms"]) >= int(window["end_ms"]):
+                        child["boundary_exclusion_reason"] = (
+                            "OUTCOME_AT_OR_AFTER_WINDOW_END_UNAVAILABLE"
+                        )
+                        child["window_end_ms"] = int(window["end_ms"])
+                        boundary_excluded.append(child)
+                    else:
+                        rows.append(child)
                 if open_position is not None:
                     child_open = _relabel_child(open_position)
                     child_open["window_label"] = str(window["label"])
+                    child_open["partition"] = partition
                     child_open["window_end_ms"] = int(window["end_ms"])
                     unresolved.append(child_open)
     rows.sort(
@@ -654,9 +677,16 @@ def _accepted_episode_child(
     return {
         "trades": rows,
         "unresolved": unresolved,
+        "boundary_excluded": boundary_excluded,
         "rejections": dict(sorted(rejections.items())),
+        "rejections_by_partition": {
+            name: dict(sorted(values.items()))
+            for name, values in rejections_by_partition.items()
+        },
         "candidate_count": candidate_count,
         "admitted_count": admitted_count,
+        "candidate_count_by_partition": dict(candidate_count_by_partition),
+        "admitted_count_by_partition": dict(admitted_count_by_partition),
     }
 
 
@@ -843,6 +873,12 @@ def run(source_root: Path, output: Path) -> dict[str, Any]:
     child_trade_rows = [
         row for row in child["trades"] if row["partition"] == "rolling"
     ]
+    child_unresolved = [
+        row for row in child["unresolved"] if row["partition"] == "rolling"
+    ]
+    child_boundary_excluded = [
+        row for row in child["boundary_excluded"] if row["partition"] == "rolling"
+    ]
     parent_metrics = {
         "cost1x": metrics.summarize(parent_trade_rows, START, END, 1.0),
         "cost2x": metrics.summarize(parent_trade_rows, START, END, 2.0),
@@ -865,17 +901,36 @@ def run(source_root: Path, output: Path) -> dict[str, Any]:
         "parent_lifecycle_adapter_scope": (
             "internal callback identity only; output remains separate child"
         ),
-        "candidate_count": child["candidate_count"],
-        "admitted_count": child["admitted_count"],
-        "rejections": child["rejections"],
-        "unresolved_count": len(child["unresolved"]),
+        "candidate_count": child["candidate_count_by_partition"].get("rolling", 0),
+        "admitted_count": child["admitted_count_by_partition"].get("rolling", 0),
+        "rejections": child["rejections_by_partition"].get("rolling", {}),
+        "unresolved_count": len(child_unresolved),
+        "boundary_excluded_count": len(child_boundary_excluded),
+        "partition_census": {
+            name: {
+                "candidate_count": child["candidate_count_by_partition"].get(name, 0),
+                "admitted_count": child["admitted_count_by_partition"].get(name, 0),
+                "rejections": child["rejections_by_partition"].get(name, {}),
+                "completed_trade_count": sum(
+                    row["partition"] == name for row in child["trades"]
+                ),
+                "unresolved_count": sum(
+                    row["partition"] == name for row in child["unresolved"]
+                ),
+                "boundary_excluded_count": sum(
+                    row["partition"] == name for row in child["boundary_excluded"]
+                ),
+            }
+            for name in ("validation", "rolling")
+        },
         "parent": parent_metrics,
         "child": child_metrics,
         "opportunity_comparison": _opportunity_comparison(
             parent_trade_rows, child_trade_rows
         ),
         "trade_rows": child_trade_rows,
-        "unresolved": child["unresolved"],
+        "unresolved": child_unresolved,
+        "boundary_excluded": child_boundary_excluded,
         "promotion": False,
         "survivor_count_delta": 0,
     }

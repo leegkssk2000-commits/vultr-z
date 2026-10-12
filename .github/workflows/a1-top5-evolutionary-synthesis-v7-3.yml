@@ -37,6 +37,8 @@ jobs:
           python -m py_compile backend/research/architecture_factory/a1_top5_evolutionary_synthesis_v7_3.py
           python -m backend.research.architecture_factory.a1_top5_evolutionary_synthesis_v7_3 --self-test
       - name: Execute and terminalize only official remaining Break axis
+        # Gemini/OpenAI calls are never triggered by push, only explicit manual research.
+        if: github.event_name == 'workflow_dispatch'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
@@ -87,7 +89,7 @@ jobs:
           },sort_keys=True))
           PY
       - name: Persist canonical synthesis receipt on master only
-        if: github.ref == 'refs/heads/master'
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master'
         run: |
           set -euo pipefail
           cp out/a1_top5_evolutionary_synthesis_v7_3.json backend/research/architecture_factory/a1_top5_evolutionary_synthesis_latest.json
@@ -102,7 +104,7 @@ jobs:
           done
           exit 1
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: github.event_name == 'workflow_dispatch' && always()
         with:
           name: a1-top5-evolutionary-synthesis-v7-3-${{ github.run_id }}-${{ github.run_attempt }}
           path: out/a1_top5_evolutionary_synthesis_v7_3.json

@@ -17,9 +17,7 @@ on:
       - 'backend/production/zel_production_ai_admission_executor_v3.py'
       - 'config/zel_production_ai_admission_template_registry_v1.json'
       - '.github/workflows/zel-production-ai-proposal-repair-v1.yml'
-  workflow_run:
-    workflows: ['ZEL Production AI Proposal Explore V1']
-    types: [completed]
+  # No automatic chaining from proposal jobs into paid Gemini repair.
   workflow_dispatch:
 
 permissions:
@@ -31,7 +29,7 @@ concurrency:
 
 jobs:
   verify:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -75,7 +73,8 @@ jobs:
           PY
 
   repair-on-vps:
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    # VPS Gemini call requires explicitly initiated manual research.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:

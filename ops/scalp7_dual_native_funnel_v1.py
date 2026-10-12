@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 
 from backend.research.rebuild import scalp7_execution_v2 as execution
+from backend.research.rebuild import scalp7_metrics_v2 as metrics
 from backend.research.rebuild import scalp7_positive_lanes_v2 as positive
 from backend.research.rebuild import scalp7_rolling_context_v2 as context
 from backend.research.rebuild import scalp7_source_data_v2 as source
@@ -48,6 +49,11 @@ EXPECTED = {
         "lane": "SQUEEZE_PANIC_30M",
     },
 }
+KELTNER_CHILD = "scalp7_keltner_hg_entry_accepted_episode_utc30m_v1"
+KELTNER_CHILD_CONTRACT = ROOT / (
+    "research/campaigns/scalp7_20261012/dual_frequency_v1/"
+    "KELTNER_ENTRY_ACCEPTED_EPISODE_STATE_CHILD_V1.json"
+)
 
 
 def _sha(path: Path) -> str:
@@ -463,8 +469,279 @@ def _replay_parent(
     return all_rows, unresolved, rejections, accepted_entry_ts
 
 
+def _keltner_parent_signal(
+    symbol: str,
+    row: Mapping[str, Any],
+    side: int,
+    reference: float,
+    regime: str,
+    regime_available: int,
+    cost: float,
+) -> dict[str, Any]:
+    """Reproduce the frozen parent signal exactly for the one-axis adapter."""
+    stamp = max(int(row["feature_available_ts_ms"]), int(regime_available))
+    return {
+        "symbol": symbol,
+        "timeframe_min": positive.TIMEFRAME_MIN,
+        "signal_open_ts_ms": int(row["open_ts_ms"]),
+        "signal_ts_ms": stamp,
+        "segment_id": row["segment_id"],
+        "take_profit_r": None,
+        # The common engine must see the parent identity so the exact frozen
+        # entry/exit callbacks remain byte-for-byte unchanged.  Result rows are
+        # relabelled only after execution as the separately frozen child.
+        "identity": positive.KELTNER_PARENT,
+        "lane": "keltner_holygrail",
+        "side": int(side),
+        "stop_price": float(reference) - int(side) * 0.10 * float(row["atr"]),
+        "invalidation_price": float(reference),
+        "max_hold_bars": 25,
+        "exit_policy": "KELTNER_HG_FEE_BE_PARTIAL_RUNNER",
+        "partial_take_profit_r": 2.0,
+        "partial_fraction": 0.10,
+        "meta": {
+            "spec_sha256": positive.SPEC_SHA256,
+            "regime": regime,
+            "feature_available_ts_ms": stamp,
+            "frozen_cost_bps": float(cost),
+            "historical_parity_claim": False,
+            "atr_price": float(row["atr"]),
+            "entry_cost_gate": {"atr_price": float(row["atr"]), "min_ratio": 4.5},
+            "fallback_stop_atr_mult": 1.2,
+            "be_arm_r": 1.0,
+            "event_trace": [
+                "HG_GMMA",
+                "FIRST_OR_RENEWED_EPISODE",
+                "20EMA_PULLBACK",
+                "TURN_TRIGGER",
+            ],
+        },
+    }
+
+
+def _relabel_child(value: dict[str, Any]) -> dict[str, Any]:
+    out = json.loads(json.dumps(value))
+    out["identity"] = KELTNER_CHILD
+    signal = out.get("signal")
+    if isinstance(signal, dict):
+        signal["identity"] = KELTNER_CHILD
+        signal.setdefault("meta", {})["lifecycle_adapter_parent_identity"] = (
+            positive.KELTNER_PARENT
+        )
+    position = out.get("position")
+    if isinstance(position, dict) and isinstance(position.get("signal"), dict):
+        position["signal"]["identity"] = KELTNER_CHILD
+        position["signal"].setdefault("meta", {})[
+            "lifecycle_adapter_parent_identity"
+        ] = positive.KELTNER_PARENT
+    return out
+
+
+def _accepted_episode_child(
+    frames: Mapping[str, pd.DataFrame],
+    costs: Mapping[str, float],
+    windows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Replay one frozen axis: consume an HG episode only after entry accepts.
+
+    Signal state remains continuous across preregistered windows.  Execution
+    ownership remains flat and independent per window, matching the parent
+    campaign contract.  Before the first validation boundary the unchanged
+    parent state machine is used only to warm continuous signal state.
+    """
+    first_start = min(int(window["start_ms"]) for window in windows)
+    prepared: dict[tuple[str, str], tuple[pd.DataFrame, list[dict[str, Any]], dict[int, int]]] = {}
+    for window in windows:
+        start, end = int(window["start_ms"]), int(window["end_ms"])
+        prefix_start = start - 200 * positive.TIMEFRAME_MS
+        for symbol, frame in frames.items():
+            sliced = frame[
+                (frame["open_ts_ms"] >= prefix_start) & (frame["close_ts_ms"] <= end)
+            ].reset_index(drop=True)
+            records, index = execution._frame_records(sliced, positive.TIMEFRAME_MIN)
+            prepared[(str(window["label"]), symbol)] = (sliced, records, index)
+    rows: list[dict[str, Any]] = []
+    unresolved: list[dict[str, Any]] = []
+    rejections: Counter[str] = Counter()
+    candidate_count = 0
+    admitted_count = 0
+    ownership: dict[tuple[str, str], int] = {}
+    seen: set[tuple[str, str, int]] = set()
+    ordered_windows = sorted(windows, key=lambda item: int(item["start_ms"]))
+
+    for symbol, frame in sorted(frames.items()):
+        cost = float(costs.get(symbol, float("nan")))
+        if not math.isfinite(cost) or cost <= 0:
+            raise ValueError("KELTNER_CHILD_COST_UNBOUND:" + symbol)
+        for segment in positive.enriched_segments(frame):
+            source_rows = segment.to_dict("records")
+            state = positive.HolyGrailState()
+            for i in range(1, len(source_rows)):
+                row, previous = source_rows[i], source_rows[i - 1]
+                event = positive._hg_event(state, row, previous) if i >= 121 else None
+                if not event:
+                    continue
+                regime, regime_available = positive._regime(row, None)
+                stamp = max(
+                    int(row["feature_available_ts_ms"]), int(regime_available)
+                )
+                # Preserve the exact parent warm state before evaluation.  From
+                # the first validation boundary onward only accepted modeled
+                # entries may consume the episode.
+                if stamp < first_start:
+                    continue
+                state.episode_traded = False
+                if regime not in {"PANIC_DISPERSION", "TREND_DISPERSED"}:
+                    rejections["REGIME_NOT_ALLOWED:" + str(regime)] += 1
+                    continue
+                window = next(
+                    (
+                        item
+                        for item in ordered_windows
+                        if int(item["start_ms"]) <= stamp < int(item["end_ms"])
+                    ),
+                    None,
+                )
+                if window is None:
+                    continue
+                candidate_count += 1
+                signal = _keltner_parent_signal(
+                    symbol, row, int(event[0]), float(event[1]), regime,
+                    int(regime_available), cost,
+                )
+                duplicate = (str(window["label"]), symbol, stamp)
+                if duplicate in seen:
+                    rejections["DUPLICATE_SIGNAL"] += 1
+                    continue
+                seen.add(duplicate)
+                owner = (str(window["label"]), symbol)
+                if stamp < ownership.get(owner, -1):
+                    rejections["POSITION_ALREADY_OWNED"] += 1
+                    continue
+                sliced, records, index = prepared[(str(window["label"]), symbol)]
+                trade, open_position, until, reason = execution._single(
+                    signal,
+                    sliced,
+                    records,
+                    index,
+                    cost,
+                    positive.exit_update,
+                    positive.entry_update,
+                )
+                if reason is not None:
+                    rejections[str(reason)] += 1
+                    continue
+                admitted_count += 1
+                state.episode_traded = True
+                ownership[owner] = int(until)
+                if trade is not None:
+                    child = _relabel_child(trade)
+                    child["window_label"] = str(window["label"])
+                    child["partition"] = str(window["partition"])
+                    rows.append(child)
+                if open_position is not None:
+                    child_open = _relabel_child(open_position)
+                    child_open["window_label"] = str(window["label"])
+                    child_open["window_end_ms"] = int(window["end_ms"])
+                    unresolved.append(child_open)
+    rows.sort(
+        key=lambda item: (
+            int(item["outcome_available_ts_ms"]),
+            str(item["identity"]),
+            str(item["symbol"]),
+        )
+    )
+    return {
+        "trades": rows,
+        "unresolved": unresolved,
+        "rejections": dict(sorted(rejections.items())),
+        "candidate_count": candidate_count,
+        "admitted_count": admitted_count,
+    }
+
+
+def _daily_economics(
+    rows: list[dict[str, Any]], cost_multiplier: float
+) -> dict[str, Any]:
+    days = [_day(START + i * DAY) for i in range((END - START) // DAY)]
+    entries = Counter(_day(int(row["entry_ts_ms"])) for row in rows)
+    pnl: Counter[str] = Counter()
+    for row in rows:
+        pnl[_day(int(row["outcome_available_ts_ms"]))] += (
+            float(row["gross_bps"])
+            - float(row["cost_bps"]) * float(cost_multiplier)
+        )
+    values = [float(pnl.get(day, 0.0)) for day in days]
+    losing_run = longest_losing_run = 0
+    for value in values:
+        losing_run = losing_run + 1 if value < 0 else 0
+        longest_losing_run = max(longest_losing_run, losing_run)
+    return {
+        "basis": "realized_equal_notional_trade_bps_by_outcome_available_utc_day",
+        "calendar_days": len(days),
+        "entries_total": sum(entries.values()),
+        "entries_per_calendar_day": sum(entries.values()) / len(days),
+        "no_entry_days": sum(entries.get(day, 0) == 0 for day in days),
+        "days_ge_3_entries": sum(entries.get(day, 0) >= 3 for day in days),
+        "days_ge_4_entries": sum(entries.get(day, 0) >= 4 for day in days),
+        "profit_days": sum(value > 0 for value in values),
+        "loss_days": sum(value < 0 for value in values),
+        "zero_realized_days": sum(value == 0 for value in values),
+        "worst_day_bps": min(values),
+        "max_consecutive_losing_days": longest_losing_run,
+        "net_bps_per_calendar_day": sum(values) / len(days),
+        "account_nav_or_mtm": None,
+    }
+
+
+def _opportunity_comparison(
+    parent_rows: list[dict[str, Any]], child_rows: list[dict[str, Any]]
+) -> dict[str, Any]:
+    def key(row: Mapping[str, Any]) -> tuple[str, int, int]:
+        return (
+            str(row["symbol"]),
+            int(row["signal_ts_ms"]),
+            int(row["signal_open_ts_ms"]),
+        )
+
+    parents, children = {key(row): row for row in parent_rows}, {
+        key(row): row for row in child_rows
+    }
+    common = parents.keys() & children.keys()
+    added = children.keys() - parents.keys()
+    removed = parents.keys() - children.keys()
+
+    def net(rows: list[dict[str, Any]], multiplier: float) -> float:
+        return sum(
+            float(row["gross_bps"]) - multiplier * float(row["cost_bps"])
+            for row in rows
+        )
+
+    parent_positive = [row for row in parent_rows if float(row["net_bps"]) > 0]
+    biggest = max(parent_positive, key=lambda row: float(row["net_bps"]), default=None)
+    return {
+        "common_T": len(common),
+        "added_T": len(added),
+        "removed_T": len(removed),
+        "added_net_bps_cost1x": net([children[item] for item in added], 1.0),
+        "added_net_bps_cost2x": net([children[item] for item in added], 2.0),
+        "removed_parent_net_bps_cost1x": net([parents[item] for item in removed], 1.0),
+        "removed_parent_net_bps_cost2x": net([parents[item] for item in removed], 2.0),
+        "parent_positive_profit_retained_cost1x": (
+            net([row for item, row in parents.items() if item in common and float(row["net_bps"]) > 0], 1.0)
+            / net(parent_positive, 1.0)
+            if net(parent_positive, 1.0) > 0
+            else None
+        ),
+        "largest_parent_winner_retained": (
+            key(biggest) in common if biggest is not None else None
+        ),
+    }
+
+
 def run(source_root: Path, output: Path) -> dict[str, Any]:
     contract = json.loads((REPORT / "CAMPAIGN_PREREGISTERED_V2.json").read_text())
+    child_contract = json.loads(KELTNER_CHILD_CONTRACT.read_text())
     windows = contract["windows"]
     frames = source.load_candles(source_root, 30, cache_dir=None)
     if set(frames) != {"BTC-USDT", "DOGE-USDT", "ETH-USDT", "LINK-USDT", "SOL-USDT", "XRP-USDT"}:
@@ -551,21 +828,73 @@ def run(source_root: Path, output: Path) -> dict[str, Any]:
             "observation_summary": observation_summary,
             "observation_records": observation_records,
         }
+    if child_contract["child_identity"] != KELTNER_CHILD:
+        raise ValueError("KELTNER_CHILD_CONTRACT_IDENTITY_MISMATCH")
+    child = _accepted_episode_child(bound, costs, windows)
+    parent_signals = positive.generate_signals(
+        bound, costs=costs, identities=(positive.KELTNER_PARENT,)
+    )
+    parent_trade_rows, _, _, _ = _replay_parent(
+        positive.KELTNER_PARENT, bound, costs, windows, parent_signals
+    )
+    parent_trade_rows = [
+        row for row in parent_trade_rows if row["partition"] == "rolling"
+    ]
+    child_trade_rows = [
+        row for row in child["trades"] if row["partition"] == "rolling"
+    ]
+    parent_metrics = {
+        "cost1x": metrics.summarize(parent_trade_rows, START, END, 1.0),
+        "cost2x": metrics.summarize(parent_trade_rows, START, END, 2.0),
+        "daily_cost1x": _daily_economics(parent_trade_rows, 1.0),
+        "daily_cost2x": _daily_economics(parent_trade_rows, 2.0),
+    }
+    child_metrics = {
+        "cost1x": metrics.summarize(child_trade_rows, START, END, 1.0),
+        "cost2x": metrics.summarize(child_trade_rows, START, END, 2.0),
+        "daily_cost1x": _daily_economics(child_trade_rows, 1.0),
+        "daily_cost2x": _daily_economics(child_trade_rows, 2.0),
+    }
+    child_result = {
+        "state": "USED_DEV_COSTED_SINGLE_AXIS_RESULT_NOT_FRESH_NOT_SURVIVOR",
+        "contract_path": str(KELTNER_CHILD_CONTRACT.relative_to(ROOT)),
+        "contract_sha256": _sha(KELTNER_CHILD_CONTRACT),
+        "parent_identity": positive.KELTNER_PARENT,
+        "child_identity": KELTNER_CHILD,
+        "parent_lifecycle_adapter": True,
+        "parent_lifecycle_adapter_scope": (
+            "internal callback identity only; output remains separate child"
+        ),
+        "candidate_count": child["candidate_count"],
+        "admitted_count": child["admitted_count"],
+        "rejections": child["rejections"],
+        "unresolved_count": len(child["unresolved"]),
+        "parent": parent_metrics,
+        "child": child_metrics,
+        "opportunity_comparison": _opportunity_comparison(
+            parent_trade_rows, child_trade_rows
+        ),
+        "trade_rows": child_trade_rows,
+        "unresolved": child["unresolved"],
+        "promotion": False,
+        "survivor_count_delta": 0,
+    }
     report = {
-        "schema": "zel.scalp7.dual_native_observer.v2",
-        "state": "NATIVE_DAILY_OBSERVER_COMPLETE_PARENT_SIGNAL_TRADE_PNL_PARITY_PASS",
+        "schema": "zel.scalp7.dual_native_observer_and_keltner_child.v3",
+        "state": "PARENT_PARITY_AND_KELTNER_SINGLE_AXIS_COSTED_RESULT_COMPLETE",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "used_dev_only": True,
         "fresh_or_oos": False,
-        "economic_improvement": False,
+        "economic_improvement": None,
         "source_root": str(source_root),
         "source_inventory_sha256": EXPECTED_INVENTORY,
         "window": {"start_ms": START, "end_exclusive_ms": END, "calendar_days": 245, "timeframe_min": 30},
         "context_fit_sha256": hashlib.sha256(json.dumps(fits, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
         "lanes": lanes,
+        "keltner_single_axis_result": child_result,
         "raw_price_bodies_exported": False,
         "market_requests": 0,
-        "economic_runs": 0,
+        "economic_runs": 1,
         "observer_changes_parent_state": False,
         "order_live_paper_deploy": "BLOCKED_UNSURE_HOLD",
     }

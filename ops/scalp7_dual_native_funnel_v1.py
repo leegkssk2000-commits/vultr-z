@@ -194,7 +194,8 @@ def _replay_parent(
             accepted_entry_ts.append(int(position["entry_ts_ms"]))
         all_rows.extend(out["trades"])
         unresolved.extend(out["unresolved"])
-        rejections.update(out["rejections"])
+        if window["partition"] == "rolling":
+            rejections.update(out["rejections"])
     return all_rows, unresolved, rejections, accepted_entry_ts
 
 
@@ -233,7 +234,7 @@ def run(source_root: Path, output: Path) -> dict[str, Any]:
                 fill_clock_ts.append(entry_ts)
             if allowed and entry_ts is not None:
                 cost_admitted_ts.append(entry_ts)
-            else:
+            elif START <= int(signal["signal_ts_ms"]) < END:
                 preoccupancy_rejections[reason] += 1
         rows, unresolved, rejections, accepted_entry_ts = _replay_parent(
             identity, bound, costs, windows, signals

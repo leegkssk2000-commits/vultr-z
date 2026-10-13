@@ -144,6 +144,7 @@ def _reject_generated(
         "rejection_reason": reason,
         "reset_state_before": before,
         "reset_state_after": after,
+        "rejected_side": int(after["side"]),
         "new_touch_ts_ms": None,
         "new_turn_ts_ms": None,
         "accepted_entry_ts_ms": None,
@@ -202,6 +203,15 @@ def _fresh_touch_successor(
                 event = positive._hg_event(state, row, previous) if i >= 121 else None
                 after = _state(state)
                 row_available = int(row["feature_available_ts_ms"])
+                if (
+                    pending is not None
+                    and int(after["side"]) != int(pending["rejected_side"])
+                ):
+                    pending["next_decision"] = (
+                        "NATIVE_SIDE_OR_WEAK_RESET_BEFORE_NEW_TOUCH"
+                    )
+                    traces.append(pending)
+                    pending = None
                 if (
                     pending is not None
                     and before["stage"] == 0

@@ -1,4 +1,4 @@
-"""Experimental research-only policies; NOT wired into live or native replay yet.
+"""Experimental research-only policies; Keltner is wired to a bounded native research adapter.
 
 One new structural axis per lane. No fee/risk threshold, indicator period or
 streak-count optimization. Use only with the frozen original execution callbacks.

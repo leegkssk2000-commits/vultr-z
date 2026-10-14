@@ -1,5 +1,5 @@
 name: Scalp7 economic development saved verification
-# Temporary branch-only repair driver. The original workflow is restored before tests/publication.
+# Branch-only source-isolation repair; original workflow restored before publication.
 on:
   push:
     branches: [repair/scalp7-mr-frozen-source-isolation-20261014]
@@ -14,128 +14,88 @@ jobs:
     if: github.ref == 'refs/heads/repair/scalp7-mr-frozen-source-isolation-20261014' && github.run_attempt == 1
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      BASE_SHA: a2361cd859f150951ec5d815073eaf57f291c9cd
+      REPAIR_DRIVER_SHA: 419f31bee3b8febb90f3c2673e26e76d2a11c5b7
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          # Match original unchanged saved-publication verification runtime exactly.
+          python-version: '3.11'
       - name: Required canonical checkout precheck
         run: |
           pwd
           ls -la frontend/z-os-app-source
           cat frontend/z-os-app-source/package.json
           npm run --prefix frontend/z-os-app-source validate
-      - name: Restore frozen source and isolate already-existing extension
-        env:
-          BASE_SHA: a2361cd859f150951ec5d815073eaf57f291c9cd
+      - name: Install original deterministic verification dependencies
+        run: python -m pip install numpy==2.4.3 pandas==3.0.1 pytest==9.0.2 websockets==15.0.1 requests==2.32.5 pre-commit==4.6.0 pyyaml==6.0.3
+      - name: Reuse exact source-isolation code from previous verified patch
         run: |
           python - <<'PY'
-          import hashlib, json, os, subprocess
+          import os, subprocess, sys, yaml
           from pathlib import Path
-          def git(*args):
-              return subprocess.check_output(['git', *args])
-          base = os.environ['BASE_SHA']
-          original = '95af7914a01b24e9077ffcb28bd8f2233bca5541'
-          old = 'backend/research/rebuild/scalp7_mr_formation_v2.py'
-          new = 'backend/research/rebuild/issue1377_mr_formation_cost2_v1.py'
-          frozen = git('show', original+':'+old)
-          expected = '1674f245d57ed8b6d2b7ddd1984c1dade37af49172ef8fdd4341b8bbb873e6e5'
-          if hashlib.sha256(frozen).hexdigest() != expected:
-              raise SystemExit('ORIGINAL_FROZEN_BYTE_SHA_MISMATCH')
-          if git('rev-parse', base+':'+old).decode().strip() != '63ca72bd3bddd5a883cdde20637df285893a8f1f':
-              raise SystemExit('BASE_EXTENSION_CHANGED_REVIEW_AGAIN')
-          extended = git('show', base+':'+old)
-          if Path(new).exists():
-              raise SystemExit('EXTENSION_PATH_ALREADY_EXISTS')
-          Path(new).write_bytes(extended)
-          Path(old).write_bytes(frozen)
-          testold = 'tests/test_scalp7_mr_formation_v2.py'
-          testnew = 'tests/test_scalp7_mr_cost2_extension_v1.py'
-          tests = git('show', base+':'+testold).decode()
-          if 'scalp7_mr_formation_v2' not in tests or Path(testnew).exists():
-              raise SystemExit('TEST_SOURCE_PROFILE_CHANGED')
-          Path(testnew).write_text(tests.replace('scalp7_mr_formation_v2', 'issue1377_mr_formation_cost2_v1'))
-          Path(testold).write_bytes(git('show', original+':'+testold))
-          consumers = ['ops/issue1377_mr_batch_v1.py', 'tests/test_issue1377_mr_batch_v1.py']
-          changed = [old,new,testold,testnew]
-          for name in consumers:
-              p=Path(name); before=p.read_text()
-              after=before.replace('scalp7_mr_formation_v2', 'issue1377_mr_formation_cost2_v1')
-              if before != after:
-                  p.write_text(after); changed.append(name)
-          workflow = '.github/workflows/issue1377-keltner-orthogonal-v1.yml'
-          text=Path(workflow).read_text()
-          source_line="      - 'backend/research/rebuild/scalp7_mr_formation_v2.py'"
-          test_line="      - 'tests/test_scalp7_mr_formation_v2.py'"
-          if text.count(source_line)!=1 or text.count(test_line)!=1:
-              raise SystemExit('ISSUE1377_WORKFLOW_PROFILE_CHANGED')
-          text=text.replace(source_line,source_line+"\n      - '"+new+"'")
-          text=text.replace(test_line,test_line+"\n      - '"+testnew+"'")
-          invocation='          tests/test_scalp7_mr_formation_v2.py\n'
-          if text.count(invocation)!=1:
-              raise SystemExit('ISSUE1377_TEST_INVOCATION_PROFILE_CHANGED')
-          text=text.replace(invocation,invocation+'          '+testnew+'\n')
-          Path(workflow).write_text(text); changed.append(workflow)
-          proof='tests/test_scalp7_mr_source_isolation_v1.py'
-          ext_sha=hashlib.sha256(extended).hexdigest()
-          code='''"""Historical freeze remains strict; separately named MR extension is preserved."""\nfrom pathlib import Path\nimport hashlib\nimport unittest\nfrom unittest.mock import patch\nfrom backend.research.rebuild import scalp7_campaign_v2 as campaign\nfrom backend.research.rebuild import scalp7_mr_formation_v2 as original\nfrom backend.research.rebuild import issue1377_mr_formation_cost2_v1 as extension\nROOT=Path(__file__).resolve().parents[1]\nclass SourceIsolationTests(unittest.TestCase):\n    def test_frozen_original_bytes(self):\n        self.assertEqual(hashlib.sha256((ROOT/'backend/research/rebuild/scalp7_mr_formation_v2.py').read_bytes()).hexdigest(), EXPECTED_ORIGINAL)\n    def test_preserved_extension_bytes(self):\n        self.assertEqual(hashlib.sha256((ROOT/'backend/research/rebuild/issue1377_mr_formation_cost2_v1.py').read_bytes()).hexdigest(), EXPECTED_EXTENSION)\n    def test_original_and_extension_are_distinct(self):\n        self.assertFalse(hasattr(original,'COST_COVERED_IDENTITY'))\n        self.assertIn(extension.COST_COVERED_IDENTITY,extension.SUPPORTED_IDENTITIES)\n        self.assertEqual(original.PARENT_IDENTITY,extension.PARENT_IDENTITY)\n    def test_unchanged_freeze_rejects_tampering(self):\n        real_sha=campaign.sha\n        def altered(path):\n            return '0'*64 if str(path).endswith('/scalp7_mr_formation_v2.py') else real_sha(path)\n        with patch.object(campaign,'sha',side_effect=altered):\n            with self.assertRaisesRegex(ValueError,'FROZEN_SOURCE_CHANGED:backend/research/rebuild/scalp7_mr_formation_v2.py'):\n                campaign.verify_freeze()\n'''
-          code+='\nEXPECTED_ORIGINAL='+repr(expected)+'\nEXPECTED_EXTENSION='+repr(ext_sha)+'\n'
-          Path(proof).write_text(code); changed.append(proof)
-          driver='.github/workflows/scalp7-economic-development-v1.yml'
-          Path(driver).write_bytes(git('show',base+':'+driver))
-          changed.append(driver)
-          actual=git('status','--porcelain','--untracked-files=all').decode().splitlines()
-          paths=[line[3:] for line in actual]
-          if set(paths)!=set(changed):
-              raise SystemExit('UNEXPECTED_CHANGED_PATHS:'+repr(paths))
-          output=Path(os.environ['RUNNER_TEMP'])/'freeze-repair'; output.mkdir()
-          (output/'allowed_paths.json').write_text(json.dumps(changed))
-          (output/'source_identity.json').write_text(json.dumps({'base':base,'original_sha256':expected,'extension_sha256':ext_sha,'extension_bytes_unchanged':Path(new).read_bytes()==extended,'original_bytes_restored':Path(old).read_bytes()==frozen,'verifier_or_frozen_manifest_mutations':0,'market_runs':0,'paid_ai_calls':0},indent=2))
-          print(json.dumps({'changed':changed,'original_sha256':expected,'extension_sha256':ext_sha}))
-          PY
-          git diff --check
-      - name: Install deterministic verification dependencies
-        run: python -m pip install numpy==2.4.3 pandas==3.0.1 pytest==9.0.2 websockets==15.0.1 requests==2.32.5 pre-commit==4.6.0
-      - name: Both original and preserved extension tests
-        run: |
-          set -o pipefail
-          python -m pytest -q tests/test_scalp7_*.py tests/test_issue1377_mr_batch_v1.py tests/test_issue1377_saved_ledger_audit_v1.py | tee "$RUNNER_TEMP/freeze-repair/tests.log"
-      - name: Unmodified frozen-source and economic publication validators
-        run: |
-          set -euo pipefail
-          {
-            python -m backend.research.rebuild.scalp7_campaign_binding_repair_v2 verify
-            python research/campaigns/scalp7_20260915/broad_v2/verify_saved_results_v2.py --repo "$PWD"
-            python scripts/verify_scalp7_clock_freezes_v3.py
-            python scripts/verify_scalp7_source_ab_seal_v1.py
-            python scripts/verify_frozen_exact25_source_v1.py
-            python scripts/verify_scalp7_fidelity_saved_v1.py
-            python scripts/verify_scalp7_economic_saved_v1.py
-            python backend/research/rebuild/issue1377_saved_ledger_audit_v1.py verify
-          } | tee "$RUNNER_TEMP/freeze-repair/frozen-validation.log"
-          npm run --prefix frontend/z-os-app-source validate
-          git diff --check
-      - name: Publish tested source-only changes to this repair branch, never master
-        run: |
-          python - <<'PY'
-          import json,os,subprocess
-          from pathlib import Path
-          branch='repair/scalp7-mr-frozen-source-isolation-20261014'
-          assert os.environ['GITHUB_REF']=='refs/heads/'+branch
+          if sys.version_info[:2] != (3,11):
+              raise SystemExit('ORIGINAL_VERIFIER_RUNTIME_REQUIRED')
+          raw=subprocess.check_output(['git','show',os.environ['REPAIR_DRIVER_SHA']+':.github/workflows/scalp7-economic-development-v1.yml'],text=True)
+          steps=yaml.safe_load(raw)['jobs']['economic-development-saved']['steps']
+          expected={
+              'Restore frozen source and isolate already-existing extension':'isolate.sh',
+              'Both original and preserved extension tests':'tests.sh',
+              'Unmodified frozen-source and economic publication validators':'validate.sh',
+              'Publish tested source-only changes to this repair branch, never master':'publish.sh',
+          }
+          root=Path(os.environ['RUNNER_TEMP'])/'frozen-repair-code'; root.mkdir()
+          for name,dest in expected.items():
+              matches=[s for s in steps if s.get('name')==name]
+              if len(matches)!=1:
+                  raise SystemExit('PINNED_REPAIR_STEP_MISSING:'+name)
+              (root/dest).write_text('set -euo pipefail\n'+matches[0]['run'])
+          subprocess.run(['bash',str(root/'isolate.sh')],check=True)
           out=Path(os.environ['RUNNER_TEMP'])/'freeze-repair'
-          allowed=json.loads((out/'allowed_paths.json').read_text())
-          actual=subprocess.check_output(['git','status','--porcelain','--untracked-files=all'],text=True)
-          assert {line[3:] for line in actual.splitlines()}==set(allowed),actual
-          subprocess.run(['git','add','--',*allowed],check=True)
-          subprocess.run(['git','config','user.name','github-actions[bot]'],check=True)
-          subprocess.run(['git','config','user.email','41898282+github-actions[bot]@users.noreply.github.com'],check=True)
-          subprocess.run(['git','commit','-m','Restore exact frozen MR source and preserve cost2 extension in separate module'],check=True)
-          subprocess.run(['git','push','origin','HEAD:refs/heads/'+branch],check=True)
-          head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
-          (out/'published.json').write_text(json.dumps({'branch':branch,'head':head,'master_changed':False,'economic_runs':0}))
-          print('TESTED_REPAIR_HEAD='+head)
+          (out/'runtime.txt').write_text(sys.version+'\nOriginal project workflow specifies Python 3.11; frozen validators and result bytes are unchanged.\n')
+          subprocess.run(['git','diff','--binary'],check=True,stdout=(out/'proposed.diff').open('w'))
+          PY
+      - name: Both original and preserved extension tests
+        run: bash "$RUNNER_TEMP/frozen-repair-code/tests.sh"
+      - name: Original strict frozen-source and publication validators
+        run: bash "$RUNNER_TEMP/frozen-repair-code/validate.sh"
+      - name: Publish fully tested repair only to own branch
+        run: bash "$RUNNER_TEMP/frozen-repair-code/publish.sh"
+      - name: Diagnose an exact remaining metric mismatch without modifying it
+        if: failure()
+        run: |
+          python - <<'PY'
+          import gzip, json, os, sys, traceback
+          from pathlib import Path
+          out=Path(os.environ['RUNNER_TEMP'])/'freeze-repair'; out.mkdir(exist_ok=True)
+          report={'python':sys.version,'changes_to_frozen_results':0,'differences':[]}
+          try:
+              from backend.research.rebuild import scalp7_source_ab_runner_v1 as m
+              saved=m.read(m.OUT/'RESULTS.json')
+              windows=m.read(m.OUT/'FREEZE.json')['windows']
+              def compare(a,b,path):
+                  if isinstance(a,dict) and isinstance(b,dict):
+                      for key in sorted(a.keys() | b.keys()):
+                          if key not in a or key not in b:
+                              report['differences'].append({'path':path+'.'+key,'kind':'MISSING_KEY'})
+                          else: compare(a[key],b[key],path+'.'+key)
+                  elif isinstance(a,list) and isinstance(b,list) and len(a)==len(b):
+                      for i,(x,y) in enumerate(zip(a,b)): compare(x,y,path+'['+str(i)+']')
+                  elif a!=b:
+                      report['differences'].append({'path':path,'recomputed':a,'saved':b})
+              for key in ('PA','PB','PAB'):
+                  prior=saved['comparisons'][key]
+                  payload=json.loads(gzip.decompress((m.ROOT/prior['ledger_path']).read_bytes()))
+                  now=m.summarize(payload['trades'],windows)
+                  compare(now,{k:prior[k] for k in now},key)
+          except Exception:
+              report['diagnostic_error']=traceback.format_exc()
+          (out/'metric-difference-diagnostic.json').write_text(json.dumps(report,indent=2))
+          print(json.dumps(report)[:8000])
           PY
       - uses: actions/upload-artifact@v4
         if: always()

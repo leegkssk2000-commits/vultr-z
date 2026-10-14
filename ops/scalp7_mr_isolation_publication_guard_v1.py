@@ -55,7 +55,7 @@ def read_safe(repo: Path, path: str) -> bytes:
 
 
 def adapted_workflow(original: bytes) -> bytes:
-    """Only the entrypoint changes; events, base provenance and checks remain."""
+    """Only the entrypoint and its trigger coverage change; checks remain."""
     require(digest(original) == WORKFLOW_SHA, "HISTORIC_WORKFLOW_CHANGED")
     text = original.decode("utf-8")
     changes = {
@@ -69,6 +69,10 @@ def adapted_workflow(original: bytes) -> bytes:
     for before, after in changes.items():
         require(text.count(before) == 1, "WORKFLOW_TRANSFORM_PROFILE:" + before)
         text = text.replace(before, after)
+    # Wrapper-only edits must trigger the same full verifier on PR and push.
+    trigger = "      - 'scripts/verify_scalp7*'\n"
+    require(text.count(trigger) == 2, "WORKFLOW_TRIGGER_PROFILE")
+    text = text.replace(trigger, trigger + "      - '" + ADAPTER + "'\n")
     return text.encode("utf-8")
 
 

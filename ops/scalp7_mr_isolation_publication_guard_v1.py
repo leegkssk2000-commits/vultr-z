@@ -54,6 +54,19 @@ def read_safe(repo: Path, path: str) -> bytes:
     return target.read_bytes()
 
 
+def verify_adapter_identity(current: bytes, executing: bytes,
+                            published: bytes | None) -> str:
+    """The trusted base adapter must reject its own replacement before delegation."""
+    if published is not None:
+        require(current == published, "PUBLISHED_ADAPTER_CHANGED")
+        require(executing == published, "UNTRUSTED_ADAPTER_EXECUTION")
+        return "PUBLISHED_BASE_BYTES"
+    # Initial introduction has no earlier adapter. Normal PR review authorizes
+    # bootstrap; the executing copy must still equal the actual checked-out file.
+    require(current == executing, "BOOTSTRAP_ADAPTER_COPY_MISMATCH")
+    return "INITIAL_REVIEWED_BOOTSTRAP"
+
+
 def adapted_workflow(original: bytes) -> bytes:
     """Only the entrypoint and its trigger coverage change; checks remain."""
     require(digest(original) == WORKFLOW_SHA, "HISTORIC_WORKFLOW_CHANGED")
@@ -69,7 +82,6 @@ def adapted_workflow(original: bytes) -> bytes:
     for before, after in changes.items():
         require(text.count(before) == 1, "WORKFLOW_TRANSFORM_PROFILE:" + before)
         text = text.replace(before, after)
-    # Wrapper-only edits must trigger the same full verifier on PR and push.
     trigger = "      - 'scripts/verify_scalp7*'\n"
     require(text.count(trigger) == 2, "WORKFLOW_TRIGGER_PROFILE")
     text = text.replace(trigger, trigger + "      - '" + ADAPTER + "'\n")
@@ -95,6 +107,11 @@ def run(args: argparse.Namespace) -> dict:
             "CHECKOUT_MISMATCH")
     require(not git(repo, "status", "--porcelain", "--untracked-files=all").strip(),
             "UNCOMMITTED_CHECKOUT_REJECTED")
+    has_adapter = bool(git(repo, "ls-tree", "--name-only", args.base_sha, "--", ADAPTER).strip())
+    published_adapter = git(repo, "show", args.base_sha + ":" + ADAPTER) if has_adapter else None
+    adapter_binding = verify_adapter_identity(
+        read_safe(repo, ADAPTER), Path(__file__).read_bytes(), published_adapter,
+    )
     frozen_workflow = git(repo, "show", PUBLICATION + ":" + WORKFLOW)
     require(read_safe(repo, WORKFLOW) == adapted_workflow(frozen_workflow),
             "UNREVIEWED_WORKFLOW_CHANGE")
@@ -139,6 +156,8 @@ def run(args: argparse.Namespace) -> dict:
         "extension_sha256": EXTENSION_SHA,
         "historic_workflow_sha256": WORKFLOW_SHA,
         "historic_verifier_changed": False,
+        "adapter_identity_basis": adapter_binding,
+        "adapter_sha256": digest(read_safe(repo, ADAPTER)),
         "disclosed_projection_paths": changed_view,
         "other_current_backend_changes_checked_by_original_guard": True,
         "sealed_results_or_hashes_changed": False,

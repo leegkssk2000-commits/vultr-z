@@ -75,3 +75,27 @@ class SourceIsolationTests(unittest.TestCase):
     def test_workflow_tampering_is_not_accepted(self):
         with self.assertRaisesRegex(ValueError, "HISTORIC_WORKFLOW_CHANGED"):
             migration.adapted_workflow(b"on: push\njobs: {}\n")
+
+    def test_published_adapter_unchanged(self):
+        self.assertEqual(migration.verify_adapter_identity(b"trusted", b"trusted", b"trusted"),
+                         "PUBLISHED_BASE_BYTES")
+
+    def test_replacement_adapter_rejected_by_base_copy(self):
+        with self.assertRaisesRegex(ValueError, "PUBLISHED_ADAPTER_CHANGED"):
+            migration.verify_adapter_identity(b"replacement", b"trusted", b"trusted")
+
+    def test_replacement_adapter_cannot_validate_itself(self):
+        with self.assertRaisesRegex(ValueError, "PUBLISHED_ADAPTER_CHANGED"):
+            migration.verify_adapter_identity(b"replacement", b"replacement", b"trusted")
+
+    def test_untrusted_executing_copy_rejected(self):
+        with self.assertRaisesRegex(ValueError, "UNTRUSTED_ADAPTER_EXECUTION"):
+            migration.verify_adapter_identity(b"trusted", b"replacement", b"trusted")
+
+    def test_initial_reviewed_bootstrap(self):
+        self.assertEqual(migration.verify_adapter_identity(b"reviewed", b"reviewed", None),
+                         "INITIAL_REVIEWED_BOOTSTRAP")
+
+    def test_bootstrap_copy_mismatch_rejected(self):
+        with self.assertRaisesRegex(ValueError, "BOOTSTRAP_ADAPTER_COPY_MISMATCH"):
+            migration.verify_adapter_identity(b"reviewed", b"replacement", None)

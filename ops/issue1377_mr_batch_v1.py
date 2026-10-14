@@ -30,7 +30,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from backend.research.rebuild import scalp7_metrics_v2 as metrics
-from backend.research.rebuild import scalp7_mr_formation_v2 as rules
+from backend.research.rebuild import issue1377_mr_formation_cost2_v1 as rules
 from backend.research.rebuild import scalp7_source_binding_repair_v2 as binding
 PROTOCOL_PATH = ROOT / "research/campaigns/scalp7_20261006/issue1377_keltner_orthogonal_v1/PROTOCOL.json"
 COST_PATH = ROOT / (

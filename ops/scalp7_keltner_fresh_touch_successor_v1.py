@@ -280,7 +280,7 @@ def _fresh_touch_successor(
                             (str(window["label"]), symbol)
                         ]
                         gate_allowed, gate_ts, gate_reason = native._entry_gate(
-                            signal, frames
+                            signal, {symbol: sliced}
                         )
                         trade, open_position, until, reason = execution._single(
                             signal,

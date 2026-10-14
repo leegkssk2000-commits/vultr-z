@@ -233,6 +233,9 @@ def _fresh_touch_successor(
                 stamp = max(row_available, int(regime_available))
                 if stamp < first_start:
                     continue
+                # Match the accepted-entry child control: evaluation alone
+                # must not consume the episode.  Geometry is unchanged here.
+                state.episode_traded = False
                 window = next(
                     (
                         item

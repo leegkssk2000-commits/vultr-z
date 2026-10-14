@@ -23,7 +23,6 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
-          # Match original unchanged saved-publication verification runtime exactly.
           python-version: '3.11'
       - name: Required canonical checkout precheck
         run: |
@@ -45,7 +44,6 @@ jobs:
           expected={
               'Restore frozen source and isolate already-existing extension':'isolate.sh',
               'Both original and preserved extension tests':'tests.sh',
-              'Unmodified frozen-source and economic publication validators':'validate.sh',
               'Publish tested source-only changes to this repair branch, never master':'publish.sh',
           }
           root=Path(os.environ['RUNNER_TEMP'])/'frozen-repair-code'; root.mkdir()
@@ -56,47 +54,36 @@ jobs:
               (root/dest).write_text('set -euo pipefail\n'+matches[0]['run'])
           subprocess.run(['bash',str(root/'isolate.sh')],check=True)
           out=Path(os.environ['RUNNER_TEMP'])/'freeze-repair'
-          (out/'runtime.txt').write_text(sys.version+'\nOriginal project workflow specifies Python 3.11; frozen validators and result bytes are unchanged.\n')
+          (out/'runtime.txt').write_text(sys.version+'\nBroad saved-publication workflow uses Python 3.11; Issue1377 workflow separately pins 3.12.14. No result tolerance or frozen bytes are changed.\n')
           subprocess.run(['git','diff','--binary'],check=True,stdout=(out/'proposed.diff').open('w'))
           PY
       - name: Both original and preserved extension tests
         run: bash "$RUNNER_TEMP/frozen-repair-code/tests.sh"
-      - name: Original strict frozen-source and publication validators
-        run: bash "$RUNNER_TEMP/frozen-repair-code/validate.sh"
+      - name: Original strict frozen-source and publications under Python 3.11
+        run: |
+          set -euo pipefail
+          {
+            python -m backend.research.rebuild.scalp7_campaign_binding_repair_v2 verify
+            python research/campaigns/scalp7_20260915/broad_v2/verify_saved_results_v2.py --repo "$PWD"
+            python scripts/verify_scalp7_clock_freezes_v3.py
+            python scripts/verify_scalp7_source_ab_seal_v1.py
+            python scripts/verify_frozen_exact25_source_v1.py
+            python scripts/verify_scalp7_fidelity_saved_v1.py
+            python scripts/verify_scalp7_economic_saved_v1.py
+          } 2>&1 | tee "$RUNNER_TEMP/freeze-repair/frozen-validation.log"
+          npm run --prefix frontend/z-os-app-source validate
+          git diff --check
+      - uses: actions/setup-python@v5
+        with:
+          # Exact independent original Issue1377 saved-audit runtime; not a tolerance change.
+          python-version: '3.12.14'
+      - name: Preserve Issue1377 saved audit under its own original runtime
+        run: |
+          set -euo pipefail
+          python --version | tee "$RUNNER_TEMP/freeze-repair/issue1377-runtime.txt"
+          python backend/research/rebuild/issue1377_saved_ledger_audit_v1.py verify 2>&1 | tee "$RUNNER_TEMP/freeze-repair/issue1377-verification.log"
       - name: Publish fully tested repair only to own branch
         run: bash "$RUNNER_TEMP/frozen-repair-code/publish.sh"
-      - name: Diagnose an exact remaining metric mismatch without modifying it
-        if: failure()
-        run: |
-          python - <<'PY'
-          import gzip, json, os, sys, traceback
-          from pathlib import Path
-          out=Path(os.environ['RUNNER_TEMP'])/'freeze-repair'; out.mkdir(exist_ok=True)
-          report={'python':sys.version,'changes_to_frozen_results':0,'differences':[]}
-          try:
-              from backend.research.rebuild import scalp7_source_ab_runner_v1 as m
-              saved=m.read(m.OUT/'RESULTS.json')
-              windows=m.read(m.OUT/'FREEZE.json')['windows']
-              def compare(a,b,path):
-                  if isinstance(a,dict) and isinstance(b,dict):
-                      for key in sorted(a.keys() | b.keys()):
-                          if key not in a or key not in b:
-                              report['differences'].append({'path':path+'.'+key,'kind':'MISSING_KEY'})
-                          else: compare(a[key],b[key],path+'.'+key)
-                  elif isinstance(a,list) and isinstance(b,list) and len(a)==len(b):
-                      for i,(x,y) in enumerate(zip(a,b)): compare(x,y,path+'['+str(i)+']')
-                  elif a!=b:
-                      report['differences'].append({'path':path,'recomputed':a,'saved':b})
-              for key in ('PA','PB','PAB'):
-                  prior=saved['comparisons'][key]
-                  payload=json.loads(gzip.decompress((m.ROOT/prior['ledger_path']).read_bytes()))
-                  now=m.summarize(payload['trades'],windows)
-                  compare(now,{k:prior[k] for k in now},key)
-          except Exception:
-              report['diagnostic_error']=traceback.format_exc()
-          (out/'metric-difference-diagnostic.json').write_text(json.dumps(report,indent=2))
-          print(json.dumps(report)[:8000])
-          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:

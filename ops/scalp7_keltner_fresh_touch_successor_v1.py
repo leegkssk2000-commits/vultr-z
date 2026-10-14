@@ -184,6 +184,11 @@ def _fresh_touch_successor(
         "validation": Counter(),
         "rolling": Counter(),
     }
+    unverified_admissions: Counter[str] = Counter()
+    unverified_by_partition: dict[str, Counter[str]] = {
+        "validation": Counter(),
+        "rolling": Counter(),
+    }
     candidates: Counter[str] = Counter()
     admitted: Counter[str] = Counter()
     ownership: dict[tuple[str, str], int] = {}
@@ -256,7 +261,7 @@ def _fresh_touch_successor(
                 policy.generated(int(stamp))
                 duplicate = (str(window["label"]), symbol, int(stamp))
                 reason: str | None = None
-                decision_ts = int(stamp)
+                decision_ts: int | None = int(stamp)
                 trade = open_position = None
                 until = int(stamp)
 
@@ -283,10 +288,11 @@ def _fresh_touch_successor(
                             positive.exit_update,
                             positive.entry_update,
                         )
-                        if gate_ts is not None:
-                            decision_ts = int(gate_ts)
+                        decision_ts = (
+                            int(gate_ts) if gate_ts is not None else None
+                        )
                         if reason is None and (
-                            not gate_allowed or gate_ts is None
+                            not gate_allowed or decision_ts is None
                         ):
                             raise ValueError(
                                 "ENTRY_GATE_SINGLE_DISAGREEMENT:"
@@ -296,6 +302,11 @@ def _fresh_touch_successor(
                             )
                         if reason is not None and not gate_allowed:
                             reason = str(reason)
+                if reason is not None and decision_ts is None:
+                    reason = str(reason)
+                    unverified_admissions[reason] += 1
+                    unverified_by_partition[partition][reason] += 1
+                    continue
                 if reason is not None:
                     reason = str(reason)
                     rejections[reason] += 1
@@ -304,7 +315,7 @@ def _fresh_touch_successor(
                         policy,
                         state,
                         signal_ts_ms=int(stamp),
-                        decision_ts_ms=decision_ts,
+                        decision_ts_ms=int(decision_ts),
                         reason=reason,
                         symbol=symbol,
                         segment_id=str(row["segment_id"]),
@@ -362,8 +373,10 @@ def _fresh_touch_successor(
     rows.sort(
         key=lambda item: (
             int(item["outcome_available_ts_ms"]),
-            str(item["identity"]),
+            int(item["exit_ts_ms"]),
             str(item["symbol"]),
+            str(item["identity"]),
+            int(item["signal_ts_ms"]),
         )
     )
     return {
@@ -376,6 +389,11 @@ def _fresh_touch_successor(
         "rejections": dict(sorted(rejections.items())),
         "rejections_by_partition": {
             key: dict(sorted(value.items())) for key, value in by_partition.items()
+        },
+        "unverified_admissions": dict(sorted(unverified_admissions.items())),
+        "unverified_admissions_by_partition": {
+            key: dict(sorted(value.items()))
+            for key, value in unverified_by_partition.items()
         },
     }
 
@@ -400,8 +418,10 @@ def _streaks(rows: list[dict[str, Any]], multiplier: float) -> dict[str, Any]:
         rows,
         key=lambda row: (
             int(row["outcome_available_ts_ms"]),
-            str(row["identity"]),
+            int(row["exit_ts_ms"]),
             str(row["symbol"]),
+            str(row["identity"]),
+            int(row["signal_ts_ms"]),
         ),
     )
     nets = [
@@ -464,7 +484,7 @@ def _streaks(rows: list[dict[str, Any]], multiplier: float) -> dict[str, Any]:
             ),
         }
     return {
-        "ordering": "outcome_available_ts_then_identity_then_symbol",
+        "ordering": "outcome_available_ts_then_exit_ts_then_symbol_then_identity_then_signal_ts",
         "zero_terminates_run": True,
         "max_win_run": max(win_lengths, default=0),
         "median_win_run": median(win_lengths) if win_lengths else 0,
@@ -616,6 +636,9 @@ def run(
             "admitted_count_by_partition"
         ].get("rolling", 0),
         "rejections": successor["rejections_by_partition"].get("rolling", {}),
+        "unverified_admissions": successor[
+            "unverified_admissions_by_partition"
+        ].get("rolling", {}),
         "unresolved_count": len(successor_unresolved),
         "boundary_excluded_count": len(successor_boundary),
         "causal_trace": {

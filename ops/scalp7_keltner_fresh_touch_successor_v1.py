@@ -608,6 +608,8 @@ def run(
     completed_traces = [
         row for row in rolling_traces if row["next_decision"] == "ACCEPTED"
     ]
+    if not completed_traces:
+        raise ValueError("NO_COMPLETED_CAUSAL_TRACE")
     if any(
         not (
             int(row["rejected_event_ts_ms"])

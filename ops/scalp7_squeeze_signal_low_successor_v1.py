@@ -53,9 +53,9 @@ def bind_signal_low(signal: Mapping[str, Any], frame: pd.DataFrame) -> dict[str,
     if len(hits) != 1:
         raise ValueError("SIGNAL_BAR_MISSING_OR_DUPLICATE")
     row = hits.to_dict("records")[0]
-    opened = int(row["open_ts_ms"])
-    closed = int(row["close_ts_ms"])
-    available = int(row["available_ts_ms"])
+    opened = execution._integer(row["open_ts_ms"], "signal_low_open_ts_ms")
+    closed = execution._integer(row["close_ts_ms"], "signal_low_close_ts_ms")
+    available = execution._integer(row["available_ts_ms"], "signal_low_available_ts_ms")
     low = float(row["low"])
     if (
         closed != opened + positive.TIMEFRAME_MS

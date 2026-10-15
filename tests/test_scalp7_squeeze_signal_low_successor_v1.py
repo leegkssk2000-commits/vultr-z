@@ -137,6 +137,14 @@ def test_unverified_signal_low_fails_closed(change):
         successor.bind_signal_low(signal(), bars)
 
 
+def test_fractional_source_clock_is_not_silently_truncated():
+    bars = frame()
+    bars["available_ts_ms"] = bars["available_ts_ms"].astype(float)
+    bars.loc[0, "available_ts_ms"] = TF + 0.5
+    with pytest.raises(ValueError, match="NONINTEGER"):
+        successor.bind_signal_low(signal(), bars)
+
+
 def test_panics_signal_and_native_lifecycle_unchanged():
     bars, sig = frame(), signal("PANIC_DISPERSION")
     assert successor.bind_signal_low(sig, bars) == sig

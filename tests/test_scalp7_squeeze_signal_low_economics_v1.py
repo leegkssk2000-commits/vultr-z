@@ -41,6 +41,30 @@ def run(signals, frame, enabled=True):
 
 
 class SqueezeSignalLowEconomicsTests(unittest.TestCase):
+    def test_all_economic_dependencies_match_actual_frozen_sources(self):
+        contract = json.loads(candidate.CONTRACT.read_text())
+        candidate._verify_source_pins(contract, candidate.ROOT)
+
+    def test_omitted_result_dependency_cannot_weaken_runtime_pins(self):
+        contract = json.loads(candidate.CONTRACT.read_text())
+        contract['frozen_source_git_blob_sha1'].pop('backend/research/rebuild/scalp7_metrics_v2.py')
+        with self.assertRaisesRegex(ValueError, 'DEPENDENCY_COVERAGE'):
+            candidate._verify_source_pins(contract, candidate.ROOT)
+
+    def test_mutated_result_dependency_fails_closed(self):
+        import shutil
+        contract = json.loads(candidate.CONTRACT.read_text())
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in candidate.REQUIRED_SOURCE_PINS:
+                target = root / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(candidate.ROOT / name, target)
+            target = root / 'ops/scalp7_keltner_fresh_touch_successor_v1.py'
+            target.write_bytes(target.read_bytes() + b'\n# changed aggregation\n')
+            with self.assertRaisesRegex(ValueError, 'FROZEN_SOURCE_CHANGED'):
+                candidate._verify_source_pins(contract, root)
+
     def test_disabled_synthetic_control_exact_frozen_engine_parity(self):
         frame, signals = bars(), [signal(), signal(opened=TF)]
         expected = execution.replay(signals, {SYMBOL: frame}, {SYMBOL: 14.0},

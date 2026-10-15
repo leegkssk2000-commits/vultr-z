@@ -29,6 +29,36 @@ ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / 'research/campaigns/scalp7_20261013/dual_streak_v1/SQUEEZE_SIGNAL_LOW_COMPARISON_V1.json'
 SYMBOLS = {'BTC-USDT', 'DOGE-USDT', 'ETH-USDT', 'LINK-USDT', 'SOL-USDT', 'XRP-USDT'}
 SUCCESSOR = preparation.SQUEEZE_SUCCESSOR
+REQUIRED_SOURCE_PINS = frozenset({
+    'backend/research/rebuild/scalp7_execution_v2.py',
+    'backend/research/rebuild/scalp7_positive_lanes_v2.py',
+    'backend/research/rebuild/scalp7_rolling_context_v2.py',
+    'backend/research/rebuild/scalp7_source_data_v2.py',
+    'backend/research/rebuild/economic7_canonical_history_v1.py',
+    'backend/research/rebuild/scalp7_metrics_v2.py',
+    'ops/scalp7_dual_native_funnel_v1.py',
+    'ops/scalp7_keltner_fresh_touch_successor_v1.py',
+    'ops/scalp7_squeeze_regime_overlay_child_v1.py',
+    'ops/scalp7_squeeze_signal_low_successor_v1.py',
+    'research/campaigns/scalp7_20261013/dual_streak_v1/streak_successor_policies.py',
+    'research/campaigns/scalp7_20260915/broad_rebuild_v2/CAMPAIGN_PREREGISTERED_V2.json',
+    'research/campaigns/scalp7_20260915/cost_snapshot_v2/SCALP7_CURRENT_REFERENCE_COST_SNAPSHOT_V2.json',
+    'research/campaigns/scalp7_20261012/dual_frequency_v1/SQUEEZE_TREND_DISPERSED_OVERLAY_CHILD_V1.json',
+})
+
+
+def _verify_source_pins(contract, root):
+    sha256 = contract.get('frozen_source_sha256', {})
+    git_blobs = contract.get('frozen_source_git_blob_sha1', {})
+    if set(sha256) & set(git_blobs) or set(sha256) | set(git_blobs) != REQUIRED_SOURCE_PINS:
+        raise ValueError('FROZEN_DEPENDENCY_COVERAGE_INCOMPLETE_OR_AMBIGUOUS')
+    for algorithm, pins in (('sha256', sha256), ('git_blob_sha1', git_blobs)):
+        for name, expected in pins.items():
+            raw = (root / name).read_bytes()
+            actual = (hashlib.sha256(raw).hexdigest() if algorithm == 'sha256' else
+                      hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest())
+            if actual != expected:
+                raise ValueError('FROZEN_SOURCE_CHANGED:' + name)
 
 
 def _digest(value: Mapping[str, Any]) -> str:
@@ -231,9 +261,7 @@ def load_inputs(source_root: Path, saved_result: Path):
     contract = json.loads(CONTRACT.read_text())
     if contract['successor_identity'] != SUCCESSOR or contract['source_inventory_sha256'] != native.EXPECTED_INVENTORY:
         raise ValueError('SUCCESSOR_CONTRACT_DRIFT')
-    for name, digest in contract['frozen_source_sha256'].items():
-        if hashlib.sha256((ROOT / name).read_bytes()).hexdigest() != digest:
-            raise ValueError('FROZEN_SOURCE_CHANGED:' + name)
+    _verify_source_pins(contract, ROOT)
     frames = source.load_candles(source_root, 30, cache_dir=None)
     if set(frames) != SYMBOLS or {f.attrs.get('source_inventory_sha256') for f in frames.values()} != {native.EXPECTED_INVENTORY}:
         raise ValueError('EXACT_SOURCE_COHORT_REQUIRED')

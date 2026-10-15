@@ -197,10 +197,10 @@ def _scan_rows(
         previous = records[source_i]
         for i in range(entry_i, len(records)):
             bar = records[i]
-            if int(bar["open_ts_ms"]) >= int(trade["exit_ts_ms"]):
-                break
             if not execution._can_follow(previous, bar):
                 raise ValueError("SAVED_PATH_SOURCE_GAP")
+            if int(bar["open_ts_ms"]) >= int(trade["exit_ts_ms"]):
+                break
             if int(bar["available_ts_ms"]) != int(bar["close_ts_ms"]):
                 raise ValueError("SAVED_PATH_LATE_AVAILABILITY")
             # Existing current-bar stop and original earlier/same exit win.
@@ -234,6 +234,8 @@ def _scan_rows(
                     )
                 break
             previous = bar
+        else:
+            raise ValueError("SAVED_EXIT_SOURCE_NOT_COVERED")
     return {
         "successor_identity": SQUEEZE_SUCCESSOR,
         "state": "DIAGNOSTIC_TRIGGER_SCAN_ONLY_NOT_ECONOMIC_REPLAY",

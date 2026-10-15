@@ -264,6 +264,20 @@ def test_scan_missing_next_open_is_not_zero_trigger_success():
         successor._scan_rows({"BTC-USDT": bars}, [saved_trade(bars)])
 
 
+def test_truncated_nontriggering_path_is_not_structural_zero():
+    bars = frame().iloc[:2].copy()
+    bars.loc[1, ["low", "close"]] = [101.0, 103.0]
+    with pytest.raises(ValueError, match="EXIT_SOURCE_NOT_COVERED"):
+        successor._scan_rows({"BTC-USDT": bars}, [saved_trade(bars)])
+
+
+def test_gap_crossing_original_exit_is_not_structural_zero():
+    bars = frame().drop(index=[2, 3, 4]).reset_index(drop=True)
+    bars.loc[1, ["low", "close"]] = [101.0, 103.0]
+    with pytest.raises(ValueError, match="PATH_SOURCE_GAP"):
+        successor._scan_rows({"BTC-USDT": bars}, [saved_trade(bars, exit_ts=4 * TF)])
+
+
 def test_scanner_rejects_unpinned_receipt_before_reading_any_rows():
     with pytest.raises(ValueError, match="RECEIPT_MISMATCH"):
         successor.scan_saved_trend_triggers({}, {"receipt_sha256": "0" * 64})

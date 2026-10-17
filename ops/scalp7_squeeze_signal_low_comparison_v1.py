@@ -345,11 +345,13 @@ def comparison_report(parent_rows, saved_rows, result, start_ms=START, end_ms=EN
             'parent': economic_summary(parent_rows, start_ms, end_ms, m),
             'saved_rejected': economic_summary(saved_rows, start_ms, end_ms, m),
             'successor': economic_summary(rolling, start_ms, end_ms, m),
-            'vs_parent': attribution(parent_rows, rolling, m),
-            'vs_saved_rejected': attribution(saved_rows, rolling, m),
+            'vs_parent': attribution(parent_rows, rolling, m) if terminal else None,
+            'vs_saved_rejected': attribution(saved_rows, rolling, m) if terminal else None,
         }
+        views[f'cost{int(m)}x']['successor']['completed_subset_only'] = not terminal
         for k in ('vs_parent', 'vs_saved_rejected'):
-            views[f'cost{int(m)}x'][k]['comparison_complete'] = terminal
+            if terminal:
+                views[f'cost{int(m)}x'][k]['comparison_complete'] = True
     entries = [d['entry_ts_ms'] for d in result['decisions']
                if d['partition'] == 'rolling' and d['state'] == 'ACCEPTED']
     days = math.ceil((end_ms - start_ms) / DAY)

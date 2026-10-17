@@ -457,3 +457,15 @@ def test_prior_route_unknown_terminal_pnl_is_not_removed_loss(field,partition):
     assert effect['comparison_complete'] is False and effect['completed_subset_only'] is True
     for name in ('parent_to_successor','saved_rejected_to_successor','exit_attribution_cost1x','exit_attribution_cost2x'):
         assert effect[name] is None
+
+
+@pytest.mark.parametrize('partition',['rolling','validation'])
+def test_delivered_route_unknown_outcome_omits_all_economic_effects(partition):
+    r=replay(frame().iloc[:2])
+    r['unresolved'][0]['partition']=partition
+    reference=[reference_trade(-100.,1)]
+    report=sut.comparison_report(reference,reference,r,0,20*TF)
+    assert report['state']=='INCOMPLETE_NO_ADOPTION'
+    for view in report['views'].values():
+        assert view['vs_parent'] is None and view['vs_saved_rejected'] is None
+        assert view['successor']['completed_subset_only'] is True

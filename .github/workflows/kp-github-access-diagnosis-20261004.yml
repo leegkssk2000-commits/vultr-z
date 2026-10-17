@@ -15,6 +15,11 @@ on:
       - research/campaigns/scalp7_20261013/dual_streak_v1/test_streak_successors.py
       - research/campaigns/scalp7_20261012/dual_frequency_v1/SQUEEZE_TREND_DISPERSED_OVERLAY_CHILD_V1.json
   workflow_dispatch:
+    inputs:
+      benchmark_observations:
+        description: Attach optional read-only H02 traces without changing the candidate
+        type: boolean
+        default: false
   issue_comment:
     types: [created]
 permissions:
@@ -172,6 +177,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         shell: bash
         env:
+          BENCHMARK_OBSERVATIONS: ${{ inputs.benchmark_observations || false }}
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
@@ -308,10 +314,14 @@ jobs:
           print('USED_DEV_SOURCE_BINDING_RECEIPT='+report['receipt_sha256'])
           PY
           test -f "$RUNNER_TEMP/saved-keltner-rejected/NATIVE_DAILY_FUNNEL.json"
+          OBSERVER_ARGS=()
+          if [ "$BENCHMARK_OBSERVATIONS" = 'true' ]; then
+            OBSERVER_ARGS+=(--benchmark-observations)
+          fi
           PYTHONPATH=. python3 -B ops/scalp7_keltner_fresh_touch_successor_v1.py \
             --source-root "$STAGE" \
             --saved-rejected-result "$RUNNER_TEMP/saved-keltner-rejected/NATIVE_DAILY_FUNNEL.json" \
-            --output "$OUT/KELTNER_FRESH_TOUCH_SUCCESSOR_RESULT.json"
+            --output "$OUT/KELTNER_FRESH_TOUCH_SUCCESSOR_RESULT.json" "${OBSERVER_ARGS[@]}"
       - name: Validate canonical source and preserve a clean checkout
         if: always()
         run: |

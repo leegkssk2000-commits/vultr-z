@@ -1,0 +1,40 @@
+--- a/ops/scalp7_squeeze_signal_low_comparison_v1.py
++++ b/ops/scalp7_squeeze_signal_low_comparison_v1.py
+@@ -376,7 +376,8 @@
+         out.write('\n')
+ 
+ 
+-def run(source_root: Path, saved_path: Path, output_dir: Path, *, full: bool = False):
++def run(source_root: Path, saved_path: Path, output_dir: Path, *, full: bool = False,
++        benchmark_observations: bool = False):
+     """Existing owner invokes this only under its approved execution admission.
+ 
+     An existing output directory is a consumed/recovery checkpoint, never a cue to
+@@ -411,6 +412,15 @@
+     scan = policy.scan_saved_trend_triggers(frames, saved)
+     output_dir.mkdir(parents=True, exist_ok=False)
+     _write_new(output_dir / 'TRIGGER_SCAN.json', scan)
++    if benchmark_observations:
++        from ops.scalp7_benchmark_observer_v1 import scan_saved_squeeze_paths
++        try:
++            diagnostic = scan_saved_squeeze_paths(frames, saved)
++        except (ValueError, KeyError, TypeError, IndexError) as exc:
++            diagnostic = {'state': 'DIAGNOSTIC_INCOMPLETE_NOT_ZERO',
++                          'error_type': type(exc).__name__, 'error': str(exc),
++                          'economic_runs': 0, 'profit_improvement': 'NOT_MEASURED'}
++        _write_new(output_dir / 'BENCHMARK_OBSERVATIONS.json', diagnostic)
+     if not full or scan['earlier_invalidation_count'] == 0:
+         return {'state': 'SCAN_COMPLETE' if not full else 'NO_EARLIER_TRIGGER_NO_FULL',
+                 'scan': scan, 'economic_runs': 0, 'promotion': False}
+@@ -472,8 +482,10 @@
+     parser.add_argument('--saved-overlay', type=Path, required=True)
+     parser.add_argument('--output-dir', type=Path, required=True)
+     parser.add_argument('--full', action='store_true', help='Existing owner admission required; consumes the one approved S comparison.')
++    parser.add_argument('--benchmark-observations', action='store_true',
++                        help='Attach read-only H01 source observations; no new candidate.')
+     args = parser.parse_args()
+-    report = run(args.source_root, args.saved_overlay, args.output_dir, full=args.full)
++    report = run(args.source_root, args.saved_overlay, args.output_dir, full=args.full, benchmark_observations=args.benchmark_observations)
+     print(json.dumps({'state': report['state'], 'economic_runs': report['economic_runs'],
+                       'promotion': False}, sort_keys=True))
+     return 0

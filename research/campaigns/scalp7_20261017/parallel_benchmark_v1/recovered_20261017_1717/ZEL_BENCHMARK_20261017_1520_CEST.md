@@ -14,7 +14,7 @@
 
 **CODE_OBSERVATION:** ZEL HG는 `MFE >= 3R`일 때 `peak - 1.25R`를 제시하되 **30분봉 현재 stop 검사를 마친 뒤** 다음봉에 유효하도록 갱신. 거래소 native trailing은 활성화 후 실시간 극값 기준이라 같은 30분봉 안의 고점→하락 선후가 달라질 수 있음. 이전 조사에서 별도 Guaranteed SL의 수정 제한을 확인했지만, 그것이 모든 BingX trailing 상품의 부재를 뜻하지 않음. Native 주문과 ZEL 3R runner의 API 호출 가능성/계정 적용/체결동등성은 미검증.
 
-**반증:** 같은 고점 후 급락에서도 거래소 native의 실시간 트리거와 연구 엔진의 지연갱신신 순서가 달라 비용후 결과가 나빠질 수 있음. 정상 눌림에서 조기 청산된 큰 승리도 기록해야 함.
+**반증:** 같은 고점 후 급락에서도 거래소 native의 실시간 트리거와 연구 엔진의 지연갱신 순서가 달라 비용후 결과가 나빠질 수 있음. 정상 눌림에서 조기 청산된 큰 승리도 기록해야 함.
 
 ## B05 — BingX Auto Breakeven
 **SOURCE_FACT:** BingX 공식 공개 HTML 전문, 2026-06-18 갱신. https://bingxservice.zendesk.com/hc/en-001/articles/16351526106255-Auto-Breakeven-Lock-In-Your-Principal-Once-Profit-Targets-Are-Reached-No-Manual-Stop-Loss-Adjustments-Needed

@@ -93,7 +93,8 @@ replay would miss the resulting downstream entry difference.
             pending.update(
                 observed_at_ms=int(bar['available_ts_ms']),
                 expected_open_ms=int(bar['close_ts_ms']),
-                stop_price=float(position['stop_price']),
+                stop_price=max(float(position['stop_price']),
+                               float(update['next_stop']) if update.get('next_stop') is not None else float(position['stop_price'])),
                 signal_low=float(position['signal']['meta'][preparation.BINDING]['low']),
             )
         return update
@@ -270,6 +271,21 @@ def load_inputs(source_root: Path, saved_result: Path):
     return contract, frames, saved, scan
 
 
+def comparison_effects(parent, saved_rows, child, replay):
+    """Missing terminal outcomes are unknown, never removed/avoided losses."""
+    complete = not replay['unresolved'] and not replay['boundary_excluded']
+    return {
+        'comparison_complete': complete,
+        'completed_subset_only': not complete,
+        'all_partition_unresolved': deepcopy(replay['unresolved']),
+        'all_partition_boundary_excluded': deepcopy(replay['boundary_excluded']),
+        'parent_to_successor': native._opportunity_comparison(parent, child) if complete else None,
+        'saved_rejected_to_successor': native._opportunity_comparison(saved_rows, child) if complete else None,
+        'exit_attribution_cost1x': exit_attribution(saved_rows, child, 1.0) if complete else None,
+        'exit_attribution_cost2x': exit_attribution(saved_rows, child, 2.0) if complete else None,
+    }
+
+
 def compare(source_root: Path, saved_result: Path, output: Path, *, keltner_result: Path, claim_id: str):
     """One existing-authority comparison; caller owns admission, no self-dispatch.
 
@@ -313,8 +329,9 @@ The claim ID must have been acquired by the existing coordinator before calling.
     boundary = [_relabel(r) for r in replay['boundary_excluded'] if r['partition'] == 'rolling']
     traces = [r for r in replay['traces'] if r['partition'] == 'rolling']
     saved_rows = saved['trade_rows']
-    result = {'parent': keltner._metrics(parent), 'saved_rejected_child': keltner._metrics(saved_rows), 'successor': keltner._metrics(child), 'parent_to_successor': native._opportunity_comparison(parent, child), 'saved_rejected_to_successor': native._opportunity_comparison(saved_rows, child), 'exit_attribution_cost1x': exit_attribution(saved_rows, child, 1.0), 'exit_attribution_cost2x': exit_attribution(saved_rows, child, 2.0), 'trade_rows': child, 'unresolved': unresolved, 'boundary_excluded': boundary, 'causal_trace': traces, 'all_modeled_entries': native._daily_summary([r['entry_ts_ms'] for r in replay['admitted_entry_ts_ms'] if r['partition'] == 'rolling']), 'rejections': replay['rejections_by_partition'].get('rolling', {}), 'requires_independent_economic_disposition': True}
-    return _publish({**base, 'state': 'USED_DEV_COMPARISON_COMPLETE_NOT_PROMOTED', 'context_fit_sha256': fit_sha, 'parent_ledger_sha256': hashlib.sha256(parent_path.read_bytes()).hexdigest(), 'cost_snapshot_sha256': hashlib.sha256(native.COST_PATH.read_bytes()).hexdigest(), 'window': {'start_ms': native.START, 'end_exclusive_ms': native.END, 'calendar_days': 245, 'timeframe_min': 30}, 'new_candidate_native_comparisons': 1, 'economic_result': result}, output)
+    result = {'parent': keltner._metrics(parent), 'saved_rejected_child': keltner._metrics(saved_rows), 'successor': keltner._metrics(child), **comparison_effects(parent, saved_rows, child, replay), 'trade_rows': child, 'unresolved': unresolved, 'boundary_excluded': boundary, 'causal_trace': traces, 'all_modeled_entries': native._daily_summary([r['entry_ts_ms'] for r in replay['admitted_entry_ts_ms'] if r['partition'] == 'rolling']), 'rejections': replay['rejections_by_partition'].get('rolling', {}), 'requires_independent_economic_disposition': True}
+    state = 'USED_DEV_COMPARISON_COMPLETE_NOT_PROMOTED' if result['comparison_complete'] else 'INCOMPLETE_NO_ADOPTION'
+    return _publish({**base, 'state': state, 'context_fit_sha256': fit_sha, 'parent_ledger_sha256': hashlib.sha256(parent_path.read_bytes()).hexdigest(), 'cost_snapshot_sha256': hashlib.sha256(native.COST_PATH.read_bytes()).hexdigest(), 'window': {'start_ms': native.START, 'end_exclusive_ms': native.END, 'calendar_days': 245, 'timeframe_min': 30}, 'new_candidate_native_comparisons': 1, 'economic_result': result}, output)
 
 
 def main() -> int:

@@ -414,3 +414,46 @@ def test_original_v1_pins_are_preserved_by_versioned_observer_amendment():
     assert prior['frozen_source_git_blob_sha1']['ops/scalp7_keltner_fresh_touch_successor_v1.py']=='02df4682418593a48f5818b21034df552ef16196'
     assert current['versioned_amendment']['prior_keltner_helper_git_blob']==prior['frozen_source_git_blob_sha1']['ops/scalp7_keltner_fresh_touch_successor_v1.py']
     old_route._verify_source_pins(current,root)
+
+
+@pytest.mark.parametrize('raise_on_trigger',[False,True])
+@pytest.mark.parametrize('opening',[94.,95.,96.])
+def test_active_raised_stop_not_initial_stop_controls_next_open(monkeypatch,raise_on_trigger,opening):
+    from ops import scalp7_squeeze_signal_low_economics_v1 as prior_route
+    bars=frame(trigger=False)
+    trigger_i=1 if raise_on_trigger else 2
+    bars.loc[trigger_i,['open','high','low','close']]=[103.,104.,98.,99.]
+    bars.loc[trigger_i+1,['open','high','low','close']]=[opening,99.,93.,98.]
+    original_callback=policy.native_exit_update
+    def callback(pos,bar,history,**kwargs):
+        def native_fixture(*args):
+            return {'next_stop':95.} if bar['open_ts_ms']==TF else {}
+        return original_callback(pos,bar,history,parent_callback=native_fixture,**kwargs)
+    monkeypatch.setattr(policy,'native_exit_update',callback)
+    signals=[signal(),signal(i=trigger_i)]
+    a=replay(bars,signals)
+    reason='OPEN_GAP_STOP' if opening<95. else 'STOP_FIRST' if opening==95. else policy.EXIT_REASON
+    assert a['trades'][0]['reason']==reason
+    assert a['trades'][0]['exit_prices']['BTC-USDT']==opening
+    if opening<=95.:
+        assert a['next_open_stop_arbitrations'][0]['frozen_stop']==95.
+        assert a['decisions'][1]['reason']=='POSITION_ALREADY_OWNED'
+    else:
+        assert a['next_open_stop_arbitrations']==[]
+        assert a['decisions'][1]['state']=='ACCEPTED'
+    b=prior_route.replay_window(signals,{'BTC-USDT':bars},{'BTC-USDT':14.})
+    assert b['trades'][0]['reason']==reason
+    if opening<=95.:
+        assert b['rejections']['POSITION_ALREADY_OWNED']==1
+
+
+@pytest.mark.parametrize('field',['unresolved','boundary_excluded'])
+@pytest.mark.parametrize('partition',['rolling','validation'])
+def test_prior_route_unknown_terminal_pnl_is_not_removed_loss(field,partition):
+    from ops import scalp7_squeeze_signal_low_economics_v1 as prior_route
+    r={'unresolved':[],'boundary_excluded':[]}
+    r[field]=[{'partition':partition}]
+    effect=prior_route.comparison_effects([],[],[],r)
+    assert effect['comparison_complete'] is False and effect['completed_subset_only'] is True
+    for name in ('parent_to_successor','saved_rejected_to_successor','exit_attribution_cost1x','exit_attribution_cost2x'):
+        assert effect[name] is None

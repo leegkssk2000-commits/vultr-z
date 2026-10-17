@@ -86,21 +86,23 @@ def _label(value: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _pending_stop_priority(row, until, signal, records, indexes):
+def _pending_stop_priority(row, until, signal, records, indexes, active_stop):
     """Resolve stop-at-next-open at that open, never in the prior-close callback.
 
     The frozen engine handles a pending market exit before a next-bar stop. This
     narrow adapter restores the successor's explicitly required existing-stop
     priority WITHOUT touching the frozen engine, changing prices, or looking at a
-    future low. Only next OPEN and the already-frozen initial stop are used.
+    future low. Only next OPEN and the active stop after callback updates are used.
     Its conservative release clock matches the original stop-first engine.
     """
     if row is None or row['reason'] != policy.EXIT_REASON:
         return row, until, None
     bar = records[indexes[int(row['exit_ts_ms'])]]
-    entry = float(row['entry_prices'][signal['symbol']])
-    admission = positive.entry_admission(signal, entry)
-    stop, opening = float(admission['stop_price']), float(bar['open'])
+    # Use the position's actual stop after the last callback update, not a
+    # reconstruction of the INITIAL admission geometry.
+    stop, opening = float(active_stop), float(bar['open'])
+    if not math.isfinite(stop) or stop <= 0:
+        raise ValueError('ACTIVE_PENDING_EXIT_STOP_REQUIRED')
     if opening > stop:
         return row, until, None
     out = deepcopy(row)
@@ -175,8 +177,13 @@ def replay_successor(signals, frames, costs, windows) -> dict[str, Any]:
             if float(s['meta']['frozen_cost_bps']) != float(costs[symbol]):
                 raise ValueError('SIGNAL_COST_SNAPSHOT_DRIFT')
             trace_start = len(traces)
+            pending = {}
             def callback(pos, bar, history):
-                return policy.native_exit_update(pos, bar, history, trace=traces)
+                update = policy.native_exit_update(pos, bar, history, trace=traces)
+                if update.get('reason') == policy.EXIT_REASON:
+                    pending['active_stop'] = max(float(pos['stop_price']),
+                        float(update['next_stop']) if update.get('next_stop') is not None else float(pos['stop_price']))
+                return update
             row, opened, until, rejection = execution._single(
                 s, f, records, indexes, execution._cost(s, costs), callback,
                 positive.entry_update)
@@ -184,7 +191,8 @@ def replay_successor(signals, frames, costs, windows) -> dict[str, Any]:
                 decision.update(state='REJECTED', reason=rejection)
                 decisions.append(decision); counts[rejection] += 1
                 continue
-            row, until, arbitration = _pending_stop_priority(row, until, s, records, indexes)
+            row, until, arbitration = _pending_stop_priority(
+                row, until, s, records, indexes, pending.get('active_stop'))
             if arbitration is not None:
                 stop_arbitrations.append(dict(arbitration, window_label=w['label']))
             owner_until[symbol] = until

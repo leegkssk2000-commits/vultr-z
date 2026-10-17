@@ -156,6 +156,7 @@ def _fresh_touch_successor(
     frames: Mapping[str, pd.DataFrame],
     costs: Mapping[str, float],
     windows: list[dict[str, Any]],
+    *, benchmark_observations: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     first_start = min(int(window["start_ms"]) for window in windows)
     ordered_windows = sorted(windows, key=lambda item: int(item["start_ms"]))
@@ -201,11 +202,32 @@ def _fresh_touch_successor(
         for segment in positive.enriched_segments(frame):
             source_rows = segment.to_dict("records")
             state = positive.HolyGrailState()
+            if benchmark_observations is not None:
+                from ops.scalp7_benchmark_observer_v1 import HGObserver
+                watcher = HGObserver(symbol)
             pending: dict[str, Any] | None = None
             for i in range(1, len(source_rows)):
                 row, previous = source_rows[i], source_rows[i - 1]
                 before = _state(state)
-                event = positive._hg_event(state, row, previous) if i >= 121 else None
+                observation = None
+                if i >= 121 and benchmark_observations is not None:
+                    from dataclasses import asdict
+                    from ops.scalp7_benchmark_observer_v1 import _state_view
+                    raw_before = asdict(state)
+                    # Exactly one native call. Observe raw dataclass state, not
+                    # the JSON null-sanitized projection used by existing traces.
+                    event = positive._hg_event(state, row, previous)
+                    try:
+                        observation = watcher.observe(raw_before, asdict(state), row, previous, event)
+                    except (ValueError, KeyError, TypeError, IndexError) as exc:
+                        observation = {"kind": "KELTNER_TRANSITION_UNKNOWN", "symbol": symbol,
+                            "signal_open_ts_ms": int(row["open_ts_ms"]),
+                            "error_type": type(exc).__name__, "error": str(exc),
+                            "coverage": "UNKNOWN_NOT_ZERO"}
+                    observation["admission"] = {"state": "NO_GENERATED_EVENT", "reason": None}
+                    benchmark_observations.append(observation)
+                else:
+                    event = positive._hg_event(state, row, previous) if i >= 121 else None
                 after = _state(state)
                 row_available = int(row["feature_available_ts_ms"])
                 if (
@@ -229,6 +251,8 @@ def _fresh_touch_successor(
                     pending["new_touch_open_ts_ms"] = int(row["open_ts_ms"])
                 if event is None:
                     continue
+                if observation is not None:
+                    observation["admission"] = {"state": "OUTSIDE_EVALUATION_WINDOW", "reason": None}
                 regime, regime_available = positive._regime(row, None)
                 stamp = max(row_available, int(regime_available))
                 if stamp < first_start:
@@ -248,6 +272,8 @@ def _fresh_touch_successor(
                     continue
                 partition = str(window["partition"])
                 if regime not in {"PANIC_DISPERSION", "TREND_DISPERSED"}:
+                    if observation is not None:
+                        observation["admission"] = {"state": "REGIME_INELIGIBLE_NO_RESET", "reason": regime}
                     continue
 
                 candidates[partition] += 1
@@ -309,6 +335,8 @@ def _fresh_touch_successor(
                     reason = str(reason)
                     unverified_admissions[reason] += 1
                     unverified_by_partition[partition][reason] += 1
+                    if observation is not None:
+                        observation["admission"] = {"state": "UNKNOWN_NO_RESET", "reason": reason}
                     continue
                 if reason is not None:
                     reason = str(reason)
@@ -325,6 +353,10 @@ def _fresh_touch_successor(
                         pending=pending,
                         traces=traces,
                     )
+                    if observation is not None:
+                        observation["admission"] = {"state": "REJECTED_RESET", "reason": reason,
+                            "decision_ts_ms": int(decision_ts),
+                            "state_after_policy": _state_view(asdict(state))}
                     continue
 
                 if pending is not None:
@@ -346,6 +378,10 @@ def _fresh_touch_successor(
                 policy.decided(
                     state, accepted=True, decision_ts_ms=int(decision_ts)
                 )
+                if observation is not None:
+                    observation["admission"] = {"state": "ACCEPTED", "reason": None,
+                        "decision_ts_ms": int(decision_ts),
+                        "state_after_policy": _state_view(asdict(state))}
                 admitted[partition] += 1
                 owner = (str(window["label"]), symbol)
                 ownership[owner] = int(until)
@@ -537,7 +573,8 @@ def _metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def run(
-    source_root: Path, saved_rejected_result: Path, output: Path
+    source_root: Path, saved_rejected_result: Path, output: Path,
+    *, benchmark_observations: bool = False,
 ) -> dict[str, Any]:
     contract = json.loads(CONTRACT_PATH.read_text())
     if contract.get("successor_identity") != KELTNER_SUCCESSOR:
@@ -591,7 +628,8 @@ def run(
         raise ValueError("SAVED_REJECTED_CONTEXT_SHA_MISMATCH")
     rejected_rows = rejected_result["trade_rows"]
 
-    successor = _fresh_touch_successor(bound, costs, windows)
+    observations = [] if benchmark_observations else None
+    successor = _fresh_touch_successor(bound, costs, windows, benchmark_observations=observations)
     successor_rows = [
         row for row in successor["trades"] if row["partition"] == "rolling"
     ]
@@ -695,6 +733,10 @@ def run(
         "account_nav_or_mtm": None,
         "order_live_paper_deploy": "BLOCKED_UNSURE_HOLD",
     }
+    if observations is not None:
+        report["benchmark_observations"] = {"kind": "H02_READ_ONLY_NOT_NEW_RULE",
+            "native_warmup_min_index": 121, "records": observations,
+            "economic_improvement": "NOT_MEASURED_BY_OBSERVER"}
     report["receipt_sha256"] = _receipt(report)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
@@ -710,9 +752,11 @@ def main() -> int:
         "--saved-rejected-result", type=Path, required=True
     )
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--benchmark-observations", action="store_true")
     args = parser.parse_args()
     result = run(
-        args.source_root, args.saved_rejected_result, args.output
+        args.source_root, args.saved_rejected_result, args.output,
+        benchmark_observations=args.benchmark_observations,
     )
     print("KELTNER_FRESH_TOUCH_RECEIPT=" + result["receipt_sha256"])
     summary = result["result"]

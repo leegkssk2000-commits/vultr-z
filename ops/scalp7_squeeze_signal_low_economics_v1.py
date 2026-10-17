@@ -26,7 +26,7 @@ from ops import scalp7_squeeze_regime_overlay_child_v1 as overlay
 from ops import scalp7_squeeze_signal_low_successor_v1 as preparation
 
 ROOT = Path(__file__).resolve().parents[1]
-CONTRACT = ROOT / 'research/campaigns/scalp7_20261013/dual_streak_v1/SQUEEZE_SIGNAL_LOW_COMPARISON_V1.json'
+CONTRACT = ROOT / 'research/campaigns/scalp7_20261013/dual_streak_v1/SQUEEZE_SIGNAL_LOW_COMPARISON_V2.json'
 SYMBOLS = {'BTC-USDT', 'DOGE-USDT', 'ETH-USDT', 'LINK-USDT', 'SOL-USDT', 'XRP-USDT'}
 SUCCESSOR = preparation.SQUEEZE_SUCCESSOR
 REQUIRED_SOURCE_PINS = frozenset({

@@ -140,6 +140,59 @@ class IncrementalStateTests(unittest.TestCase):
         self.assertEqual(result["reason"], "HISTORICAL_HG_ADMISSION_UNKNOWN_WAIT_NATIVE_RESET")
         self.assertIsNone(result["signal"])
 
+    def test_missing_context_retries_same_bar_before_and_after_restart(self):
+        for version in adapter.VERSIONS:
+            for initialized in (False, True):
+                with self.subTest(version=version, initialized=initialized):
+                    state = {}
+                    if initialized:
+                        consume(state, candles(122), version)
+                    before = deepcopy(state)
+                    raw = candles(123).drop(columns=[
+                        "regime", "regime_available_ts_ms", "regime_fit_end_ts_ms",
+                        "regime_spec_sha256"])
+                    with patch.object(adapter.positive, "_hg_event",
+                                      wraps=adapter.positive._hg_event) as call:
+                        held = consume(state, raw, version)
+                    self.assertEqual(held["reason"], "CAUSAL_CONTEXT_UNBOUND")
+                    self.assertEqual(call.call_count, 0)
+                    self.assertEqual(state, before)
+                    restarted = json.loads(json.dumps(state, allow_nan=False))
+                    recovered = consume(restarted, candles(123), version)
+                    direct = consume(before, candles(123), version)
+                    self.assertEqual(recovered, direct)
+                    self.assertNotEqual(recovered["status"], "DUPLICATE")
+                    self.assertEqual(restarted, before)
+                    if initialized and version in adapter.VERSIONS[:2]:
+                        self.assertEqual(recovered["status"], "SIGNAL")
+                    snapshot = deepcopy(restarted)
+                    self.assertEqual(consume(restarted, candles(123), version)["status"],
+                                     "DUPLICATE")
+                    self.assertEqual(restarted, snapshot)
+
+    def test_invalid_fit_and_cost_do_not_consume_native_transition(self):
+        altered = fit()
+        altered["disp_q67"] = 999
+        for bad_fit, cost, reason in (
+                (None, 14., "CONTEXT_FIT_MISSING"),
+                (altered, 14., "CONTEXT_FIT_HASH_MISMATCH"),
+                (fit(), float("nan"), "FROZEN_COST_UNBOUND"),
+                (fit(), 0., "FROZEN_COST_UNBOUND")):
+            with self.subTest(reason=reason):
+                state = {}
+                consume(state, candles(122))
+                before = deepcopy(state)
+                with patch.object(adapter.positive, "enriched_segments", side_effect=enriched), \
+                     patch.object(adapter.positive, "_hg_event",
+                                  wraps=adapter.positive._hg_event) as call:
+                    held = adapter.on_bar(state, version=adapter.positive.KELTNER_PARENT,
+                        symbol=SYMBOL, frame=candles(123), cost_bps=cost,
+                        asof_ms=BASE + 123 * TF, fit=bad_fit)
+                self.assertEqual(held["reason"], reason)
+                self.assertEqual(call.call_count, 0)
+                self.assertEqual(state, before)
+                self.assertEqual(consume(state, candles(123))["status"], "SIGNAL")
+
     def test_callback_facade_preserves_parent_and_signal_low_priority(self):
         from ops.scalp7_squeeze_signal_low_successor_v1 import BINDING
         frame = candles(123)

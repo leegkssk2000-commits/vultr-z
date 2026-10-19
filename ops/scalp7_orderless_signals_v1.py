@@ -146,6 +146,18 @@ def on_bar(state: dict[str, Any], *, version: str, symbol: str,
         i = len(rows) - 1
         row = rows[-1]
         previous = rows[-2] if i >= 1 else row
+        # Missing cross-symbol context/fit/cost is recoverable on this candle.
+        # Validate it before calling HG or advancing the durable bar cursor.
+        result.update(source_open_ts_ms=opened, source_close_ts_ms=int(row["close_ts_ms"]),
+                      available_ts_ms=int(row["available_ts_ms"]))
+        if fit is None:
+            raise ValueError("CONTEXT_FIT_MISSING")
+        verify_fit(fit, int(row["close_ts_ms"]))
+        regime, available = positive._regime(row, None)
+        if regime in {"UNBOUND", "NO_CONTEXT"} or row.get("regime_spec_sha256") != fit["sha256"]:
+            raise ValueError("CAUSAL_CONTEXT_UNBOUND")
+        if not math.isfinite(float(cost_bps)) or float(cost_bps) <= 0:
+            raise ValueError("FROZEN_COST_UNBOUND")
         hg = _hg_load(saved["hg"]) if saved is not None else positive.HolyGrailState()
         fresh_unknown = bool(saved.get("bootstrap_admission_unknown", False)) if saved else False
         is_hg = PARENTS[version] == positive.KELTNER_PARENT
@@ -169,20 +181,13 @@ def on_bar(state: dict[str, Any], *, version: str, symbol: str,
             "prefix_sha256": _prefix_hash(checked), "hg": _hg_dump(hg),
             "pending_ts_ms": None, "bootstrap_admission_unknown": fresh_unknown,
             "native_calls": int(saved.get("native_calls", 0) if saved else 0) + result["hg_calls"]}
-        state[key] = current
-        result.update(source_open_ts_ms=opened, source_close_ts_ms=int(row["close_ts_ms"]),
-                      available_ts_ms=int(row["available_ts_ms"]))
-        if fit is None:
-            raise ValueError("CONTEXT_FIT_MISSING")
-        verify_fit(fit, int(row["close_ts_ms"]))
-        regime, available = positive._regime(row, None)
-        if regime in {"UNBOUND", "NO_CONTEXT"} or row.get("regime_spec_sha256") != fit["sha256"]:
-            raise ValueError("CAUSAL_CONTEXT_UNBOUND")
-        if not math.isfinite(float(cost_bps)) or float(cost_bps) <= 0:
-            raise ValueError("FROZEN_COST_UNBOUND")
+        # These two UNKNOWNs require a later bar, not repaired inputs. Preserve
+        # their validated progress, including the observed native reset state.
         if is_hg and i < 121 or not is_hg and i < 80:
+            state[key] = current
             raise ValueError("INDICATOR_WARMUP_INCOMPLETE")
         if fresh_unknown:
+            state[key] = current
             raise ValueError("HISTORICAL_HG_ADMISSION_UNKNOWN_WAIT_NATIVE_RESET")
         signal = None
         if is_hg and event is not None and regime in {"PANIC_DISPERSION", "TREND_DISPERSED"}:
@@ -207,6 +212,7 @@ def on_bar(state: dict[str, Any], *, version: str, symbol: str,
             result.update(status="SIGNAL", reason="FROZEN_NATIVE_SIGNAL", signal=signal)
         else:
             result.update(status="NO_SIGNAL", reason="FROZEN_NATIVE_CONDITIONS_NOT_MET")
+        state[key] = current
     except (ValueError, KeyError, TypeError, OverflowError) as exc:
         result.update(status="UNKNOWN", reason=str(exc), signal=None)
     return result

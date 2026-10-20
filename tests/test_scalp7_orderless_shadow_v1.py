@@ -116,6 +116,11 @@ class PublicBoundaryTests(unittest.TestCase):
         self.assertEqual(len(feed.receipts), 2)
         self.assertTrue(all(x["method"] == "GET" and not x["auth_headers"] for x in feed.receipts))
         self.assertTrue(all(len(x["body_sha256"]) == 64 for x in feed.receipts))
+        self.assertTrue(all(x["exchange_code"] == 0 for x in feed.receipts))
+        response.read.return_value = b'{"code":100410,"msg":"retry"}'
+        self.assertEqual(feed(runtime.PUBLIC + "/openApi/swap/v3/quote/klines")[1],
+                         response.read.return_value)
+        self.assertEqual(feed.receipts[-1]["exchange_code"], 100410)
         before = feed.opener.open.call_count
         paths = ["http://open-api.bingx.com/openApi/swap/v3/quote/klines",
                  "https://open-api.bingx.com.evil/openApi/swap/v3/quote/klines",
@@ -150,6 +155,103 @@ class PublicBoundaryTests(unittest.TestCase):
                 hook("open", (path, "r", 0))
         self.assertEqual(evidence["order_calls"], 0)
         self.assertEqual(evidence["credential_file_reads"], 0)
+
+
+class SourceRetryTests(unittest.TestCase):
+    """Synthetic HTTP/clock fixtures only; no network or economic replay."""
+
+    def receipt(self, code=100410):
+        return dict(source=runtime.PUBLIC + "/openApi/swap/v3/quote/klines",
+                    http_status=200, exchange_code=code, body_sha256="a" * 64)
+
+    def run_cli(self, failures, *, max_seconds=7200, clock_after_sleep=None):
+        shadow = Mock()
+        shadow.state = dict(http_receipts=[], accounts={"original": dict(pending={}, positions={})})
+        shadow.report.return_value = dict(state="DEVELOPMENT_OBSERVATION")
+        shadow.source_frames.return_value = ({}, {})
+        feed = SimpleNamespace(receipts=[])
+        clock = [0.0]
+        calls = []
+
+        def collect(*_, **__):
+            calls.append(clock[0])
+            index = len(calls) - 1
+            if index < len(failures):
+                error, receipt = failures[index]
+                if receipt is not None:
+                    feed.receipts.append(receipt)
+                raise error
+            clock[0] = max_seconds  # Successful cycle reaches the bounded end.
+
+        def sleep(delay):
+            clock[0] = clock_after_sleep if clock_after_sleep is not None else clock[0] + delay
+
+        with patch.dict(os.environ, {"ZEL_ORDERLESS_SCRUBBED": "1"}, clear=True), \
+             patch.object(runtime, "install_audit_boundary", return_value={"order_calls": 0}), \
+             patch.object(runtime, "Shadow", return_value=shadow), \
+             patch.object(runtime, "PublicFeed", return_value=feed), \
+             patch.object(source_reader, "collect_once", side_effect=collect), \
+             patch.object(runtime.time, "monotonic", side_effect=lambda: clock[0]), \
+             patch.object(runtime.time, "sleep", side_effect=sleep) as sleeper, \
+             patch("builtins.print"):
+            code = runtime.main(["--out", "fixture-out", "--source", "fixture-source",
+                                 "--collect", "--max-seconds", str(max_seconds)])
+        shadow.close.assert_called_once()
+        return code, shadow, sleeper, calls
+
+    def rejection(self):
+        return source_reader.SourceDataError("FRESH_SOURCE_RESPONSE_REJECTED")
+
+    def test_transient_retry_preserves_error_receipt_and_advances_only_after_success(self):
+        code, shadow, sleeper, calls = self.run_cli([(self.rejection(), self.receipt())])
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, [0, 10])
+        sleeper.assert_called_once_with(10)
+        shadow.advance.assert_called_once()
+        self.assertEqual(shadow.state["http_receipts"], [self.receipt()])
+        self.assertEqual(shadow.state["last_error"]["reason"], "FRESH_SOURCE_RESPONSE_REJECTED")
+        self.assertEqual(shadow.state["source_retry_events"][0]["disposition"], "WAIT_SOURCE_RETRY")
+        self.assertEqual(shadow.state["accounts"], {"original": dict(pending={}, positions={})})
+
+    def test_repeated_error_exhausts_three_retries_and_publishes_hold(self):
+        code, shadow, sleeper, calls = self.run_cli([(self.rejection(), self.receipt())] * 4)
+        self.assertEqual(code, 2)
+        self.assertEqual(calls, [0, 10, 40, 100])
+        self.assertEqual([x.args[0] for x in sleeper.call_args_list], [10, 30, 60])
+        shadow.advance.assert_not_called()
+        self.assertEqual(len(shadow.state["http_receipts"]), 4)
+        self.assertEqual(shadow.atomic.call_args.args[1]["state"], "HOLD")
+        self.assertEqual(shadow.state["source_retry_events"][-1]["disposition"], "HOLD_RETRY_BUDGET")
+
+    def test_other_exchange_codes_integrity_and_auth_failures_never_retry(self):
+        for error, receipt in [(self.rejection(), self.receipt(100001)),
+                               (self.rejection(), None),
+                               (ValueError("SHADOW_STATE_HASH_MISMATCH"), self.receipt()),
+                               (ValueError("AUDIT_NON_PUBLIC_GET_BLOCKED"), self.receipt()),
+                               (source_reader.SourceDataError("FRESH_NORMALIZED_RAW_MISMATCH"), self.receipt())]:
+            with self.subTest(error=str(error), receipt=receipt):
+                code, shadow, sleeper, calls = self.run_cli([(error, receipt)])
+                self.assertEqual(code, 2)
+                self.assertEqual(len(calls), 1)
+                sleeper.assert_not_called()
+                shadow.advance.assert_not_called()
+                self.assertEqual(shadow.atomic.call_args.args[1]["state"], "HOLD")
+
+    def test_unbounded_or_insufficient_time_does_not_enable_retry(self):
+        for bound in (0, 5, 10):
+            with self.subTest(bound=bound):
+                code, shadow, sleeper, calls = self.run_cli([(self.rejection(), self.receipt())], max_seconds=bound)
+                self.assertEqual(code, 2)
+                sleeper.assert_not_called()
+                shadow.advance.assert_not_called()
+
+    def test_oversleep_never_starts_another_request_after_deadline(self):
+        code, shadow, sleeper, calls = self.run_cli([(self.rejection(), self.receipt())],
+                                                   max_seconds=20, clock_after_sleep=21)
+        self.assertEqual(code, 2)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(shadow.atomic.call_args.args[1]["state"], "HOLD")
+        shadow.advance.assert_not_called()
 
 
 class RuntimeLedgerTests(unittest.TestCase):
@@ -221,6 +323,15 @@ class RuntimeLedgerTests(unittest.TestCase):
             with self.assertRaisesRegex(OSError, "fixture_disk_failure"):
                 self.ingest()
         self.assertEqual(self.shadow.state, before)
+        self.assertEqual(self.shadow.path.read_bytes(), disk)
+
+    def test_retry_repair_does_not_accept_or_rewrite_old_code_pins(self):
+        self.shadow.state["code_pins"]["ops/scalp7_orderless_shadow_v1.py"] = "0" * 64
+        self.shadow.save()
+        disk = self.shadow.path.read_bytes()
+        self.shadow.close()
+        with self.assertRaisesRegex(ValueError, "SHADOW_CODE_CHANGED"):
+            self.make()
         self.assertEqual(self.shadow.path.read_bytes(), disk)
 
     def test_simultaneous_writer_and_state_tamper_are_rejected(self):

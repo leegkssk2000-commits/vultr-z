@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TF = 1_800_000
 PUBLIC = "https://open-api.bingx.com"
 ENDPOINTS = {"/openApi/swap/v3/quote/klines", "/openApi/swap/v2/quote/depth"}
+SOURCE_RETRY_DELAYS = (10, 30, 60)
 SAFE_ENV = {
     "PATH", "LANG", "LC_ALL", "TZ", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
     "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy",
@@ -103,6 +104,13 @@ class PublicFeed:
             except urllib.error.HTTPError as exc:
                 status, raw = int(exc.code), exc.read()
             item.update(http_status=status, body_sha256=hashlib.sha256(raw).hexdigest())
+            # Classification only: retain original response bytes for the collector.
+            try:
+                payload = json.loads(raw)
+                if isinstance(payload, dict):
+                    item["exchange_code"] = payload.get("code")
+            except (ValueError, UnicodeError):
+                pass
             return status, raw
         except Exception as exc:
             item["error_type"] = type(exc).__name__
@@ -425,6 +433,19 @@ class Shadow:
                 "persistent_service_started": False}
 
 
+def transient_source_rejection(exc: Exception, receipts: list[dict[str, Any]]) -> bool:
+    """Only the observed exchange retry response, never integrity/auth failures."""
+    from backend.research.rebuild.scalp7_source_data_v2 import SourceDataError
+    if not isinstance(exc, SourceDataError) or str(exc) != "FRESH_SOURCE_RESPONSE_REJECTED":
+        return False
+    if not receipts:
+        return False
+    last = receipts[-1]
+    return (last.get("source") == PUBLIC + "/openApi/swap/v3/quote/klines"
+            and last.get("http_status") == 200
+            and str(last.get("exchange_code")) == "100410")
+
+
 def main(argv: list[str] | None = None) -> int:
     args_list = sys.argv[1:] if argv is None else argv
     if os.environ.get("ZEL_ORDERLESS_SCRUBBED") != "1":
@@ -445,6 +466,7 @@ def main(argv: list[str] | None = None) -> int:
     shadow = Shadow(args.out, args.source, warmup_source=args.warmup_source)
     feed = PublicFeed()
     started = time.monotonic()
+    consecutive_source_retries = 0
     try:
         if args.stop:
             shadow.stop()
@@ -475,14 +497,35 @@ def main(argv: list[str] | None = None) -> int:
                 shadow.save()
                 shadow.atomic(args.out / "STATUS.json", shadow.report())
                 print(json.dumps(shadow.report(), sort_keys=True), flush=True)
+                consecutive_source_retries = 0
             except (ValueError, RuntimeError, OSError, KeyError) as exc:
+                retryable = args.collect and transient_source_rejection(exc, feed.receipts)
                 shadow.state["http_receipts"].extend(feed.receipts)
                 feed.receipts.clear()
                 shadow.state["last_error"] = {"type": type(exc).__name__, "reason": str(exc),
                                                "at_ms": int(time.time() * 1000)}
                 shadow.state["last_process_isolation"] = {**audit, "environment_allowlist_only": True}
+                delay = (SOURCE_RETRY_DELAYS[consecutive_source_retries]
+                         if consecutive_source_retries < len(SOURCE_RETRY_DELAYS) else None)
+                remaining = args.max_seconds - (time.monotonic() - started)
+                retry = retryable and args.max_seconds > 0 and delay is not None and remaining > delay
+                if retryable:
+                    shadow.state.setdefault("source_retry_events", []).append({
+                        **shadow.state["last_error"], "attempt": consecutive_source_retries + 1,
+                        "delay_seconds": delay if retry else None,
+                        "disposition": "WAIT_SOURCE_RETRY" if retry else "HOLD_RETRY_BUDGET",
+                    })
                 shadow.save()
-                print(json.dumps({"state": "HOLD", **shadow.state["last_error"]}), flush=True)
+                status = {**shadow.report(), "state": "WAIT_SOURCE_RETRY" if retry else "HOLD",
+                          "last_error": shadow.state["last_error"]}
+                shadow.atomic(args.out / "STATUS.json", status)
+                print(json.dumps(status, sort_keys=True), flush=True)
+                if retry:
+                    consecutive_source_retries += 1
+                    time.sleep(delay)
+                    if time.monotonic() - started < args.max_seconds:
+                        continue  # No signal/quote/ledger advancement on the failed response.
+                    shadow.atomic(args.out / "STATUS.json", {**status, "state": "HOLD"})
                 return 2
             if not args.max_seconds or time.monotonic() - started >= args.max_seconds:
                 return 0

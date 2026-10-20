@@ -38,14 +38,28 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Download the receipt-bound rejected Keltner comparator
+      - name: Restore the receipt-bound rejected Keltner comparator
         if: github.event_name == 'workflow_dispatch'
-        uses: actions/download-artifact@v4
-        with:
-          name: kp-access-diagnosis-38310659348-1
-          github-token: ${{ github.token }}
-          run-id: 38310659348
-          path: ${{ runner.temp }}/saved-keltner-rejected
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import gzip, hashlib, os
+          from pathlib import Path
+          source = Path('research/development_evidence/KELTNER_SAVED_COMPARATOR_38310659348/NATIVE_DAILY_FUNNEL.json.gz')
+          compressed = source.read_bytes()
+          if hashlib.sha256(compressed).hexdigest() != 'f8b2619cc2f26e620b48e0d81b8a5e3c09f5a58f84789f46aa9e20e88252f106':
+              raise SystemExit("SAVED_REJECTED_ARCHIVE_HASH_MISMATCH")
+          raw = gzip.decompress(compressed)
+          if hashlib.sha256(raw).hexdigest() != '90da33b3e76da942d8ef01139b31bd80e58d96fb1241050d21c8415d3a35a420':
+              raise SystemExit("SAVED_REJECTED_RAW_HASH_MISMATCH")
+          folder = Path(os.environ["RUNNER_TEMP"]) / "saved-keltner-rejected"
+          folder.mkdir(parents=True, exist_ok=True)
+          target = folder / "NATIVE_DAILY_FUNNEL.json"
+          if target.exists() and target.read_bytes() != raw:
+              raise SystemExit("SAVED_REJECTED_EXISTING_INPUT_MISMATCH")
+          target.write_bytes(raw)
+          print("SAVED_REJECTED_BYTES_RESTORED_NOT_A_NEW_REPLAY")
+          PY
       - name: Validate canonical source and parse the read-only probe
         run: |
           pwd

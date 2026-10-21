@@ -463,17 +463,45 @@ jobs:
       - name: Execute remaining approved Squeeze FULL comparison
         if: github.event_name == 'workflow_dispatch' && inputs.squeeze_signal_low_full
         shell: bash
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+          CURRENT_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
+          umask 077
           OUT="$RUNNER_TEMP/kp-access-diagnosis"
           STAGE="/home/z/z/runtime/economic7_campaign_20260915"
+          KEY="$RUNNER_TEMP/squeeze-claim-key"
+          KNOWN="$RUNNER_TEMP/squeeze-claim-known-hosts"
+          CLAIM_PARENT="/home/z/z/runtime/economic_owner_claims/CLOUD_WORK_COORDINATOR_ISSUE1358_V1"
+          CLAIM_DIR="$CLAIM_PARENT/squeeze_signal_low_full_v1.claim"
           cleanup() {
+            rm -f "$KEY" "$KNOWN"
             if [ -f "$STAGE/.kp-used-dev-runner-stage" ]; then
               sudo rm -rf -- "$STAGE"
             fi
             sudo rmdir --ignore-fail-on-non-empty /home/z/z/runtime /home/z/z /home/z 2>/dev/null || true
           }
           trap cleanup EXIT
+          printf '%s\n' "$VPS_SSH_KEY" > "$KEY"
+          chmod 600 "$KEY"
+          ssh-keyscan -T 10 -t ed25519 -H "$VPS_HOST" > "$KNOWN" 2>/dev/null
+          FP=$(ssh-keygen -lf "$KNOWN" | awk '{print $2}')
+          test "$FP" = 'SHA256:pI/PzwvzWLNJDkOfG98IrC/3NLzh0dIOEUgyqEWta/U'
+          if ! timeout 60 ssh -T -i "$KEY" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 \
+            -o ConnectionAttempts=1 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 \
+            -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 \
+            -o UserKnownHostsFile="$KNOWN" "$VPS_USER@$VPS_HOST" \
+            "set -euo pipefail; umask 077; mkdir -p '$CLAIM_PARENT'; mkdir '$CLAIM_DIR'; printf '%s\\n' '{\"schema\":\"zel.economic.one_shot_claim.v1\",\"owner\":\"CLOUD_WORK_COORDINATOR_ISSUE1358_V1\",\"candidate\":\"scalp7_squeeze_signal_low_full_v1\",\"run_id\":${CURRENT_RUN_ID},\"run_attempt\":${CURRENT_ATTEMPT}}' > '$CLAIM_DIR/STARTED.json'"
+          then
+            echo 'SQUEEZE_FULL_DURABLE_CLAIM_EXISTS_OR_UNAVAILABLE'
+            exit 1
+          fi
+          echo 'SQUEEZE_FULL_DURABLE_OWNER_CLAIM_ACQUIRED'
           test -f "$STAGE/.kp-used-dev-runner-stage"
           test -f "$RUNNER_TEMP/saved-squeeze-rejected/SQUEEZE_REGIME_OVERLAY_RESULT.json"
           test -f "$RUNNER_TEMP/ordered-keltner-completed/KELTNER_FRESH_TOUCH_SUCCESSOR_RESULT.json"

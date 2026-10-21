@@ -1,4 +1,5 @@
 name: Keltner GitHub SSH read-only access diagnosis 20261004
+run-name: ${{ inputs.squeeze_signal_low_full && 'Squeeze signal-low FULL CLOUD_WORK_COORDINATOR_ISSUE1358_V1' || github.workflow }}
 # User-authorized bounded read-only metadata and used-DEV source binding. No economic/service mutation.
 on:
   push:
@@ -47,6 +48,61 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Guard the durable one-shot Squeeze FULL claim
+        if: github.event_name == 'workflow_dispatch' && inputs.squeeze_signal_low_full
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+          CURRENT_ATTEMPT: ${{ github.run_attempt }}
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_API: ${{ github.api_url }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.parse, urllib.request
+
+          title = 'Squeeze signal-low FULL CLOUD_WORK_COORDINATOR_ISSUE1358_V1'
+          economic_step = 'Execute remaining approved Squeeze FULL comparison'
+          api = os.environ['GH_API']
+          repo = os.environ['GH_REPOSITORY']
+          current = int(os.environ['CURRENT_RUN_ID'])
+          attempt = int(os.environ['CURRENT_ATTEMPT'])
+          token = os.environ['GH_TOKEN']
+
+          def get(url):
+              req = urllib.request.Request(url, headers={
+                  'Authorization': 'Bearer ' + token,
+                  'Accept': 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+              })
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  return json.load(response)
+
+          workflow = urllib.parse.quote('kp-github-access-diagnosis-20261004.yml', safe='')
+          runs = get(f'{api}/repos/{repo}/actions/workflows/{workflow}/runs?event=workflow_dispatch&per_page=100')
+          job_urls = []
+          for run in runs.get('workflow_runs', []):
+              if int(run['id']) != current and run.get('display_title') == title:
+                  job_urls.append(run['jobs_url'] + '?filter=all&per_page=100')
+          for prior_attempt in range(1, attempt):
+              job_urls.append(f'{api}/repos/{repo}/actions/runs/{current}/attempts/{prior_attempt}/jobs?per_page=100')
+
+          started = []
+          for url in job_urls:
+              for job in get(url).get('jobs', []):
+                  for step in job.get('steps') or []:
+                      if step.get('name') == economic_step and step.get('started_at'):
+                          started.append({
+                              'run_id': job.get('run_id'),
+                              'job_id': job.get('id'),
+                              'started_at': step['started_at'],
+                              'conclusion': step.get('conclusion'),
+                          })
+          if started:
+              raise SystemExit('SQUEEZE_FULL_ALREADY_STARTED_DURABLE_RUN_HISTORY:' +
+                               json.dumps(started, sort_keys=True, separators=(',', ':')))
+          print('SQUEEZE_FULL_ONE_SHOT_GUARD_PASS_NO_PRIOR_ECONOMIC_STEP')
+          PY
       - name: Restore the receipt-bound rejected Keltner comparator
         if: github.event_name == 'workflow_dispatch' && !inputs.squeeze_signal_low_full
         shell: bash
@@ -261,7 +317,7 @@ jobs:
           COMPRESSED_LIMIT=$((4 * 1024 * 1024 * 1024))
           cleanup() {
             rm -f "$KEY" "$KNOWN" "$ARCHIVE"
-            if [ -f "$STAGE/.kp-used-dev-runner-stage" ]; then
+            if [ "${SQUEEZE_SIGNAL_LOW_FULL:-false}" != 'true' ] && [ -f "$STAGE/.kp-used-dev-runner-stage" ]; then
               sudo rm -rf -- "$STAGE"
             fi
             sudo rmdir --ignore-fail-on-non-empty /home/z/z/runtime /home/z/z /home/z 2>/dev/null || true
@@ -385,13 +441,7 @@ jobs:
           if [ "$SQUEEZE_SIGNAL_LOW_FULL" = 'true' ]; then
             test -f "$RUNNER_TEMP/saved-squeeze-rejected/SQUEEZE_REGIME_OVERLAY_RESULT.json"
             test -f "$RUNNER_TEMP/ordered-keltner-completed/KELTNER_FRESH_TOUCH_SUCCESSOR_RESULT.json"
-            PYTHONPATH=. python3 -B ops/scalp7_squeeze_signal_low_comparison_v1.py \
-              --source-root "$STAGE" \
-              --saved-overlay "$RUNNER_TEMP/saved-squeeze-rejected/SQUEEZE_REGIME_OVERLAY_RESULT.json" \
-              --output-dir "$OUT/SQUEEZE_SIGNAL_LOW_FULL" \
-              --full \
-              --keltner-result "$RUNNER_TEMP/ordered-keltner-completed/KELTNER_FRESH_TOUCH_SUCCESSOR_RESULT.json" \
-              --claim-id "CLOUD_WORK_COORDINATOR_ISSUE1358_V1"
+            echo 'SQUEEZE_SOURCE_BOUND_FULL_NOT_STARTED'
           else
             test -f "$RUNNER_TEMP/saved-keltner-rejected/NATIVE_DAILY_FUNNEL.json"
             OBSERVER_ARGS=()
@@ -403,6 +453,30 @@ jobs:
               --saved-rejected-result "$RUNNER_TEMP/saved-keltner-rejected/NATIVE_DAILY_FUNNEL.json" \
               --output "$OUT/KELTNER_FRESH_TOUCH_SUCCESSOR_RESULT.json" "${OBSERVER_ARGS[@]}"
           fi
+      - name: Execute remaining approved Squeeze FULL comparison
+        if: github.event_name == 'workflow_dispatch' && inputs.squeeze_signal_low_full
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/kp-access-diagnosis"
+          STAGE="/home/z/z/runtime/economic7_campaign_20260915"
+          cleanup() {
+            if [ -f "$STAGE/.kp-used-dev-runner-stage" ]; then
+              sudo rm -rf -- "$STAGE"
+            fi
+            sudo rmdir --ignore-fail-on-non-empty /home/z/z/runtime /home/z/z /home/z 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          test -f "$STAGE/.kp-used-dev-runner-stage"
+          test -f "$RUNNER_TEMP/saved-squeeze-rejected/SQUEEZE_REGIME_OVERLAY_RESULT.json"
+          test -f "$RUNNER_TEMP/ordered-keltner-completed/KELTNER_FRESH_TOUCH_SUCCESSOR_RESULT.json"
+          PYTHONPATH=. python3 -B ops/scalp7_squeeze_signal_low_comparison_v1.py \
+            --source-root "$STAGE" \
+            --saved-overlay "$RUNNER_TEMP/saved-squeeze-rejected/SQUEEZE_REGIME_OVERLAY_RESULT.json" \
+            --output-dir "$OUT/SQUEEZE_SIGNAL_LOW_FULL" \
+            --full \
+            --keltner-result "$RUNNER_TEMP/ordered-keltner-completed/KELTNER_FRESH_TOUCH_SUCCESSOR_RESULT.json" \
+            --claim-id "CLOUD_WORK_COORDINATOR_ISSUE1358_V1"
       - name: Validate canonical source and preserve a clean checkout
         if: always()
         run: |

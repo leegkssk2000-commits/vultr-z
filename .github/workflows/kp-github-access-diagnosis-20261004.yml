@@ -2,8 +2,9 @@ name: Keltner GitHub SSH read-only access diagnosis 20261004
 # User-authorized bounded read-only metadata and used-DEV source binding. No economic/service mutation.
 on:
   push:
-    branches: [codex/kp-github-access-diagnosis-20261004]
+    branches: [codex/kp-github-access-diagnosis-20261004, research/parallel-benchmark-20261017]
     paths:
+      - research/campaigns/scalp7_20261021/k126_reversal_failure_v1/queue_20261021T2050Z/REQUEST.json
       - .github/workflows/kp-github-access-diagnosis-20261004.yml
       - ops/kp_host_metadata_readonly_20261004.py
       - ops/scalp7_dual_native_funnel_v1.py
@@ -24,9 +25,10 @@ concurrency:
   # Used-DEV child replay is economic-heavy; serialize with all approved heavy evaluators.
   group: a1-global-heavy-economic-evaluator-v1
   cancel-in-progress: false
+  queue: max
 jobs:
   diagnose:
-    if: github.event_name != 'issue_comment' || (github.event.sender.id == 232057951 && github.event.issue.number == 1352 && github.event.comment.body == '/kp-readonly-census')
+    if: github.ref != 'refs/heads/research/parallel-benchmark-20261017' && (github.event_name != 'issue_comment' || (github.event.sender.id == 232057951 && github.event.issue.number == 1352 && github.event.comment.body == '/kp-readonly-census'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -323,4 +325,60 @@ jobs:
           name: kp-access-diagnosis-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/kp-access-diagnosis/
           if-no-files-found: warn
+          retention-days: 7
+
+  k126_postentry_once:
+    name: One frozen K126 post-entry loss comparison
+    if: github.event_name == 'push' && github.ref == 'refs/heads/research/parallel-benchmark-20261017' && github.actor_id == '232057951'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify exactly one pre-authorized frozen request
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          raw=Path('research/campaigns/scalp7_20261021/k126_reversal_failure_v1/queue_20261021T2050Z/REQUEST.json').read_bytes()
+          assert hashlib.sha256(raw).hexdigest()=='b33f76915f431ae4555eaa1fe87bf6e7ecdb8ebe18ee542af8e77258cdc6f169'
+          r=json.loads(raw)
+          assert r['candidate']=='scalp7_k126_reversal_bar_failure_next_open_v1'
+          assert r['comparison_cap']==1 and r['live_and_order_authority']=='BLOCKED'
+          assert r['freeze_sha256']=='cf7736ec4d0f0737e98675ad0af369beac86eeefbbd7b2c7762d5c1542645fff'
+          print('EXACT_FROZEN_SINGLE_REQUEST_VERIFIED')
+          PY
+      - name: Execute existing frozen comparison only under assigned shared slot
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$VPS_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]]
+          [[ "$VPS_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]
+          test -n "$VPS_SSH_KEY"
+          KEY="$RUNNER_TEMP/k126-existing-key"
+          KNOWN="$RUNNER_TEMP/k126-existing-known-hosts"
+          trap 'rm -f "$KEY" "$KNOWN"' EXIT
+          printf '%s\n' "$VPS_SSH_KEY" > "$KEY"
+          chmod 600 "$KEY"
+          ssh-keyscan -T 10 -t ed25519 -H "$VPS_HOST" > "$KNOWN" 2>/dev/null
+          FP=$(ssh-keygen -lf "$KNOWN" | awk '{print $2}')
+          test "$FP" = 'SHA256:pI/PzwvzWLNJDkOfG98IrC/3NLzh0dIOEUgyqEWta/U'
+          timeout 1080 ssh -T -i "$KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 -o ConnectionAttempts=1 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o UserKnownHostsFile="$KNOWN" "$VPS_USER@$VPS_HOST" "cd /home/z/z/runtime/k126_reversal_bar_failure_20261021_v1 && PYTHONDONTWRITEBYTECODE=1 /home/z/z/venv/bin/python -u -B queue_registered_once.py $RUN_ID" 2>&1 | tee "$RUNNER_TEMP/k126-assigned-queue.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: k126-postentry-assigned-queue-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/k126-assigned-queue.log
+            research/campaigns/scalp7_20261021/k126_reversal_failure_v1/queue_20261021T2050Z/REQUEST.json
           retention-days: 7

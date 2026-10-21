@@ -25,9 +25,9 @@ All128 rows grouped by final exit reason:
 
 Counts and both Net totals exactly reconcile with the source result within floating tolerance. STOP_FIRST is a fill-order label, NOT synonymous with losing trade; it contains protected profitable exits too. Scratch's negative group does not prove that the scratch caused those losses or that removing it improves results.
 
-23 trades end at approximately +2.0bps net each under base cost (absolute tolerance1e-8), all STOP_FIRST and all with recorded MFE between1.0472089R and1.8297689R. Their combined Net1x is +46.00000000000894; Net2x is -299.57622073167846. This is a persistent cost-fragile small-winner group, not evidence that all23 would later recover after a different exit. Across all128,27 base-cost winners become nonpositive at2x cost; the23 are a subset, not all27.
+23 trades end at approximately +2.0bps net each under base cost (absolute tolerance1e-8), all STOP_FIRST and all with recorded MFE between1.0472090256863542R and1.829768741988991R. Their combined Net1x is +46.00000000000894; Net2x is -299.57622073167846. This is a persistent cost-fragile small-winner group, not evidence that all23 would later recover after a different exit. Across all128,27 base-cost winners become nonpositive at2x cost; the23 are a subset, not all27.
 
-The recorded-MFE>=2R group contains35 trades and sums +13113.449792272382 Net1x / +12584.781591191126 Net2x. This is ex-post path classification, not an entry filter or claim that the observed maximum was an executable fill. It emphasizes the need to preserve real larger winners when reducing losses.
+The recorded-MFE>=2R group contains35 trades and sums +13113.449792272382 Net1x / +12584.781591146395 Net2x. This is ex-post path classification, not an entry filter or claim that the observed maximum was an executable fill. It emphasizes the need to preserve real larger winners when reducing losses.
 
 19 trades exit at the25-bar time limit,13 profitable at base cost. No post-exit price path is exported, so extending these positions has NOT been evaluated and may lose rather than gain. Merely observing a profitable time exit is not proof of premature exit.
 

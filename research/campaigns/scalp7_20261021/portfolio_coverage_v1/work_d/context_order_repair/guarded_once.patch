@@ -1,0 +1,29 @@
+--- a/guarded_once.py
++++ b/guarded_once.py
+@@ -34,12 +34,24 @@
+ 
+ def run_cached():
+     import pandas as pd
+     import run_handoff as runner
+-    cache=json.loads((S/'INPUT_CACHE.json').read_text())
++    from backend.research.rebuild import scalp7_source_data_v2 as source
++    def unique_object(pairs):
++        result={}
++        for key,value in pairs:
++            if key in result:raise ValueError('DUPLICATE_CACHE_KEY:'+key)
++            result[key]=value
++        return result
++    cache=json.loads((S/'INPUT_CACHE.json').read_text(),object_pairs_hook=unique_object)
++    symbols=tuple(source.SYMBOLS)
++    if len(symbols)!=len(set(symbols)):raise ValueError('DUPLICATE_SOURCE_SYMBOL')
++    if not isinstance(cache.get('symbols'),dict) or set(cache['symbols'])!=set(symbols):raise ValueError('INPUT_CACHE_SYMBOL_SET_MISMATCH')
+     def frames():
+         output={};original=json.loads((runner.BASE/'CHRONO_SOURCE_BINDING.json').read_text())
+-        for symbol,record in cache['symbols'].items():
++        if set(original)!=set(symbols):raise ValueError('ORIGINAL_SYMBOL_SET_MISMATCH')
++        for symbol in symbols:
++            record=cache['symbols'][symbol]
+             raw=(S/record['path']).read_bytes()
+             if sha(raw)!=record['sha256']:raise ValueError('INPUT_CACHE_CHANGED')
+             f=pd.read_csv(io.BytesIO(raw),compression='gzip',float_precision='round_trip')
+             digest=sha(f.to_csv(index=False).encode())

@@ -79,11 +79,18 @@ jobs:
                   return json.load(response)
 
           workflow = urllib.parse.quote('kp-github-access-diagnosis-20261004.yml', safe='')
-          runs = get(f'{api}/repos/{repo}/actions/workflows/{workflow}/runs?event=workflow_dispatch&per_page=100')
           job_urls = []
-          for run in runs.get('workflow_runs', []):
-              if int(run['id']) != current and run.get('display_title') == title:
-                  job_urls.append(run['jobs_url'] + '?filter=all&per_page=100')
+          page = 1
+          while True:
+              runs = get(f'{api}/repos/{repo}/actions/workflows/{workflow}/runs'
+                         f'?event=workflow_dispatch&per_page=100&page={page}')
+              rows = runs.get('workflow_runs', [])
+              if not rows:
+                  break
+              for run in rows:
+                  if int(run['id']) != current and run.get('display_title') == title:
+                      job_urls.append(run['jobs_url'] + '?filter=all&per_page=100')
+              page += 1
           for prior_attempt in range(1, attempt):
               job_urls.append(f'{api}/repos/{repo}/actions/runs/{current}/attempts/{prior_attempt}/jobs?per_page=100')
 

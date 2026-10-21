@@ -1,0 +1,385 @@
+name: Keltner GitHub SSH read-only access diagnosis 20261004
+# User-authorized bounded read-only metadata and used-DEV source binding. No economic/service mutation.
+on:
+  push:
+    branches: [codex/kp-github-access-diagnosis-20261004, research/parallel-benchmark-20261017]
+    paths:
+      - research/campaigns/scalp7_20261022/k126_c_veto_consume_v1/queue/REQUEST.json
+      - research/campaigns/scalp7_20261021/k126_reversal_failure_v1/queue_20261021T2050Z/REQUEST.json
+      - .github/workflows/kp-github-access-diagnosis-20261004.yml
+      - ops/kp_host_metadata_readonly_20261004.py
+      - ops/scalp7_dual_native_funnel_v1.py
+      - ops/scalp7_keltner_fresh_touch_successor_v1.py
+      - ops/scalp7_squeeze_regime_overlay_child_v1.py
+      - research/campaigns/scalp7_20261012/dual_frequency_v1/KELTNER_ENTRY_ACCEPTED_EPISODE_STATE_CHILD_V1.json
+      - research/campaigns/scalp7_20261013/dual_streak_v1/KELTNER_FRESH_TOUCH_SUCCESSOR_V1.json
+      - research/campaigns/scalp7_20261013/dual_streak_v1/streak_successor_policies.py
+      - research/campaigns/scalp7_20261013/dual_streak_v1/test_streak_successors.py
+      - research/campaigns/scalp7_20261012/dual_frequency_v1/SQUEEZE_TREND_DISPERSED_OVERLAY_CHILD_V1.json
+  workflow_dispatch:
+  issue_comment:
+    types: [created]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  # Used-DEV child replay is economic-heavy; serialize with all approved heavy evaluators.
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+  queue: max
+jobs:
+  diagnose:
+    if: github.ref != 'refs/heads/research/parallel-benchmark-20261017' && (github.event_name != 'issue_comment' || (github.event.sender.id == 232057951 && github.event.issue.number == 1352 && github.event.comment.body == '/kp-readonly-census'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download the receipt-bound rejected Keltner comparator
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/download-artifact@v4
+        with:
+          name: kp-access-diagnosis-38310659348-1
+          github-token: ${{ github.token }}
+          run-id: 38310659348
+          path: ${{ runner.temp }}/saved-keltner-rejected
+      - name: Validate canonical source and parse the read-only probe
+        run: |
+          pwd
+          ls -la frontend/z-os-app-source
+          cat frontend/z-os-app-source/package.json
+          npm run --prefix frontend/z-os-app-source validate
+          python3 - <<'PY'
+          import ast
+          from pathlib import Path
+          ast.parse(Path('ops/kp_host_metadata_readonly_20261004.py').read_text())
+          ast.parse(Path('ops/scalp7_dual_native_funnel_v1.py').read_text())
+          ast.parse(Path('ops/scalp7_keltner_fresh_touch_successor_v1.py').read_text())
+          ast.parse(Path('ops/scalp7_squeeze_regime_overlay_child_v1.py').read_text())
+          print('PROBE_SYNTAX_PASS_NOT_A_MARKET_TEST')
+          PY
+          (cd research/campaigns/scalp7_20261013/dual_streak_v1 && python3 -B -m unittest -v test_streak_successors.py)
+      - name: Read current metadata using the existing SSH identity
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          OUT="$RUNNER_TEMP/kp-access-diagnosis"
+          mkdir -p "$OUT"
+          export OUT
+          python3 - <<'PY'
+          import json,os,re
+          from pathlib import Path
+          names=('VPS_HOST','VPS_USER','VPS_SSH_KEY')
+          present={n:bool(os.environ.get(n,'').strip()) for n in names}
+          valid=bool(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.:-]*',os.environ.get('VPS_HOST',''))) and bool(re.fullmatch(r'[A-Za-z_][A-Za-z0-9_-]*',os.environ.get('VPS_USER','')))
+          r={'secret_references_present':present,'endpoint_format_valid':valid,'secret_values_exported':False,'service_mutations':0,'market_runs':0,'hostkey_basis':'CONTINUITY_FROM_AUTHORIZED_RUN_37164129391'}
+          Path(os.environ['OUT'],'transport.json').write_text(json.dumps(r,indent=2)); print(json.dumps(r))
+          if not all(present.values()) or not valid: raise SystemExit('CONFIGURED_SSH_INPUT_UNAVAILABLE')
+          PY
+          KEY="$RUNNER_TEMP/kp-access-key"
+          KNOWN="$RUNNER_TEMP/kp-access-known-hosts"
+          ERR="$RUNNER_TEMP/kp-ssh-error"
+          trap 'rm -f "$KEY" "$KNOWN" "$ERR"' EXIT
+          printf '%s\n' "$VPS_SSH_KEY" > "$KEY"
+          chmod 600 "$KEY"
+          if ! ssh-keyscan -T 10 -t ed25519 -H "$VPS_HOST" > "$KNOWN" 2>/dev/null; then
+            echo '{"stage":"HOST_KEY_SCAN","status":"FAILED","remote_script_started":false}' > "$OUT/failure.json"
+            exit 1
+          fi
+          FP=$(ssh-keygen -lf "$KNOWN" | awk '{print $2}')
+          if [ "$FP" != 'SHA256:pI/PzwvzWLNJDkOfG98IrC/3NLzh0dIOEUgyqEWta/U' ]; then
+            echo '{"stage":"HOST_IDENTITY_CONTINUITY","status":"MISMATCH","remote_script_started":false}' > "$OUT/failure.json"
+            exit 1
+          fi
+          printf '%s\n' "$FP" > "$OUT/observed_hostkey_fingerprint.txt"
+          set +e
+          timeout 160 ssh -T -i "$KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 -o ConnectionAttempts=1 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o UserKnownHostsFile="$KNOWN" "$VPS_USER@$VPS_HOST" 'PYTHONDONTWRITEBYTECODE=1 python3 -B -' < ops/kp_host_metadata_readonly_20261004.py > "$OUT/host_metadata_projection.json" 2> "$ERR"
+          RC=$?
+          set -e
+          export RC
+          python3 - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          p=Path(os.environ['OUT'])/'transport.json'; r=json.loads(p.read_text()); rc=int(os.environ['RC'])
+          err=(Path(os.environ['RUNNER_TEMP'])/'kp-ssh-error').read_text(errors='replace').lower()
+          r['ssh_exit_code']=rc
+          r['failure_class']=('NONE' if rc==0 else 'AUTHENTICATION_REJECTED' if 'permission denied' in err else 'CONNECTION_REFUSED' if 'connection refused' in err else 'TIMEOUT' if rc==124 or 'timed out' in err else 'SSH_OR_REMOTE_SCRIPT_ERROR')
+          r['probe_sha256']=hashlib.sha256(Path('ops/kp_host_metadata_readonly_20261004.py').read_bytes()).hexdigest()
+          if rc==0:
+              raw=(Path(os.environ['OUT'])/'host_metadata_projection.json').read_bytes(); h=json.loads(raw)
+              assert h['economic_runs']==0 and h['service_changes']==0
+              r['projection_sha256']=hashlib.sha256(raw).hexdigest(); r['observed_at_utc']=h['observed_at_utc']
+              print('REMOTE_METADATA_READ_SUCCESS',h['observed_at_utc'])
+              print('ORIGINAL_PARENT_HASH_MATCH',h['parent_module'].get('frozen_match'))
+              print('OBSERVED_METADATA_FILES',len(h['metadata_documents']))
+          p.write_text(json.dumps(r,indent=2)); print(json.dumps(r))
+          PY
+          exit "$RC"
+      - name: Normalize actual partial observations without inventing completeness
+        run: |
+          python3 - <<'PY'
+          import datetime,hashlib,json,os
+          from pathlib import Path
+          out=Path(os.environ['RUNNER_TEMP'])/'kp-access-diagnosis'
+          raw=(out/'host_metadata_projection.json').read_bytes(); h=json.loads(raw)
+          transport=json.loads((out/'transport.json').read_text())
+          assert hashlib.sha256(raw).hexdigest()==transport['projection_sha256']
+          pins={'candidate':h['candidate'],'parent_identity':h['parent_identity'],'parent_module_sha256':'b0919c9e3542d6d2e14ab8f545179c7bfc43d661379bc1f6d0714a6603ea9aa2'}
+          assert h['parent_module'].get('frozen_match') is True
+          root=out/'partial_export'; root.mkdir()
+          collected=int(datetime.datetime.fromisoformat(h['observed_at_utc']).timestamp()*1000)
+          def save(name,body):
+              data=(json.dumps(body,sort_keys=True,indent=2,allow_nan=False)+'\n').encode()
+              (root/name).write_bytes(data)
+              return {'path':name,'sha256':hashlib.sha256(data).hexdigest()}
+          records={k:[] for k in ('ledger','reservations','locks','processes','state')}
+          for c in h['candidate_registry'].get('claims',[]):
+              if c['identity_key']==pins['parent_identity'] and c['state']=='COMPLETED':
+                  records['ledger'].append({'identity':c['identity_key'],'status':'COMPLETE'})
+          # Completed old claims do not prove absence/release of other reservations.
+          for item in h['locks']:
+              if '/fresh_forward/' not in item['path'] and '/observed_paper_clock_v3/' not in item['path']: continue
+              held=item['kernel_entries']
+              records['locks'].append({'identity':item['path'],'status':'LOCKED' if held else 'UNLOCKED'})
+              for line in held:
+                  records['processes'].append({'identity':'observed_lock_owner_pid:'+line.split()[4],'status':'RUNNING'})
+          for item in h['metadata_documents']:
+              if item['path'].endswith('/STATE.json') and ('/fresh_forward/' in item['path'] or '/observed_paper_clock_v3/' in item['path']):
+                  records['state'].append({'identity':item['path'],'status':'PRESENT'})
+          refs={k:save(k+'.metadata.json',{'schema':'kp30.'+k+'_metadata.v1',**pins,'collected_at_ms':collected,'complete':False,'records':rows}) for k,rows in records.items()}
+          census=save('census.metadata.json',{'schema':'kp30.candidate_census_metadata.v1',**pins,'collected_at_ms':collected,**refs})
+          usage=save('usage.metadata.json',{'schema':'kp30.usage_inventory_metadata.v1',**pins,'complete':False,'seen':[]})
+          index=save('index.metadata.json',{'schema':'kp30.source_index_metadata.v1',**pins,'sources':[]})
+          exported=save('export.metadata.json',{'schema':'kp30.metadata_export.v1',**pins,'census':census,'usage':usage,'index':index})
+          note={'source_projection_sha256':transport['projection_sha256'],'export_sha256':exported['sha256'],'actual_observation_export':True,'complete_census_claimed':False,'raw_source_body_hashes_not_yet_joined':True,'usage_list_is_unknown_not_empty_history':True,'reason':'Known canonical registry and shared writer/state observations acquired; no complete candidate-only host census or source/use receipts yet. Preserve inherited seen witnesses. The unchanged inspector must keep this partial evidence blocked.'}
+          (out/'partial_export_provenance.json').write_text(json.dumps(note,indent=2))
+          print('ACTUAL_PARTIAL_EXPORT_SHA256='+exported['sha256'])
+          PY
+      - name: Inspect actual partial export with the unchanged PR1352 inspector
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+          PYTHONPATH: .
+        run: |
+          python3 -m pip install --disable-pip-version-check pandas numpy requests
+          OUT="$RUNNER_TEMP/kp-access-diagnosis"
+          SHA=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["export_sha256"])' "$OUT/partial_export_provenance.json")
+          python3 -B research/campaigns/scalp7_20261003/kp_validation_prep_v1/input_binding.py inspect --export "$OUT/partial_export/export.metadata.json" --expected-export-sha256 "$SHA" --pin-origin "GITHUB_ACTIONS_${{ github.run_id }}_AUTHENTICATED_SSH_METADATA_PROJECTION_NOT_COMPLETE_ORIGINAL_SOURCE_CERTIFICATE" > "$OUT/INPUT_BINDING_RESULT.json"
+          cat "$OUT/INPUT_BINDING_RESULT.json"
+      - name: Bind exact 245-day used-DEV source bodies without remote mutation
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          OUT="$RUNNER_TEMP/kp-access-diagnosis"
+          ARCHIVE="$RUNNER_TEMP/scalp7-used-dev-source.tar.gz"
+          STAGE="/home/z/z/runtime/economic7_campaign_20260915"
+          KEY="$RUNNER_TEMP/kp-source-key"
+          KNOWN="$RUNNER_TEMP/kp-source-known-hosts"
+          COMPRESSED_LIMIT=$((4 * 1024 * 1024 * 1024))
+          cleanup() {
+            rm -f "$KEY" "$KNOWN" "$ARCHIVE"
+            if [ -f "$STAGE/.kp-used-dev-runner-stage" ]; then
+              sudo rm -rf -- "$STAGE"
+            fi
+            sudo rmdir --ignore-fail-on-non-empty /home/z/z/runtime /home/z/z /home/z 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          printf '%s\n' "$VPS_SSH_KEY" > "$KEY"
+          chmod 600 "$KEY"
+          ssh-keyscan -T 10 -t ed25519 -H "$VPS_HOST" > "$KNOWN" 2>/dev/null
+          FP=$(ssh-keygen -lf "$KNOWN" | awk '{print $2}')
+          test "$FP" = 'SHA256:pI/PzwvzWLNJDkOfG98IrC/3NLzh0dIOEUgyqEWta/U'
+          cat > "$RUNNER_TEMP/bounded_source_copy.py" <<'PY'
+          import pathlib,sys
+          path=pathlib.Path(sys.argv[1])
+          limit=int(sys.argv[2])
+          count=0
+          with path.open('wb') as output:
+              while True:
+                  block=sys.stdin.buffer.read(1024*1024)
+                  if not block:
+                      break
+                  count+=len(block)
+                  if count>limit:
+                      raise SystemExit('COMPRESSED_SOURCE_ARCHIVE_BOUND_EXCEEDED')
+                  output.write(block)
+          print('COMPRESSED_SOURCE_BYTES='+str(count))
+          PY
+          timeout 900 ssh -T -i "$KEY" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 \
+            -o ConnectionAttempts=1 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 \
+            -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 \
+            -o UserKnownHostsFile="$KNOWN" "$VPS_USER@$VPS_HOST" \
+            'set -euo pipefail; test -d /home/z/z/runtime/economic7_campaign_20260915/canonical_12m; test -d /home/z/z/runtime/economic7_campaign_20260915/canonical_gapday_prefix; test -d /home/z/z/runtime/economic7_campaign_20260915/canonical_postgap_20260213; exec tar -C /home/z/z/runtime/economic7_campaign_20260915 -czf - canonical_12m canonical_gapday_prefix canonical_postgap_20260213' \
+            | python3 "$RUNNER_TEMP/bounded_source_copy.py" "$ARCHIVE" "$COMPRESSED_LIMIT"
+          test -s "$ARCHIVE"
+          test ! -e "$STAGE"
+          sudo install -d -o "$(id -u)" -g "$(id -g)" "$STAGE"
+          printf '%s\n' kp-used-dev-runner-stage > "$STAGE/.kp-used-dev-runner-stage"
+          export ARCHIVE STAGE OUT
+          python3 - <<'PY'
+          import os, tarfile
+          from pathlib import Path, PurePosixPath
+          archive=Path(os.environ['ARCHIVE'])
+          destination=Path(os.environ['STAGE'])
+          allowed={'canonical_12m','canonical_gapday_prefix','canonical_postgap_20260213'}
+          with tarfile.open(archive,'r:gz') as handle:
+              members=handle.getmembers()
+              if len(members)>100_000 or sum(row.size for row in members)>12*1024**3:
+                  raise SystemExit('SOURCE_ARCHIVE_BOUND_EXCEEDED')
+              for member in members:
+                  p=PurePosixPath(member.name)
+                  if p.is_absolute() or '..' in p.parts or not p.parts or p.parts[0] not in allowed:
+                      raise SystemExit('UNSAFE_SOURCE_ARCHIVE_MEMBER:'+member.name)
+                  if not (member.isdir() or member.isfile()):
+                      raise SystemExit('NONREGULAR_SOURCE_ARCHIVE_MEMBER:'+member.name)
+              handle.extractall(destination,filter='data')
+          print('SAFE_SOURCE_MEMBERS='+str(len(members)))
+          print('SAFE_SOURCE_UNCOMPRESSED_BYTES='+str(sum(row.size for row in members)))
+          PY
+          python3 - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          from backend.research.rebuild.scalp7_source_data_v2 import load_candles
+
+          START=1768262400000
+          END=1789430400000
+          EXPECTED_INVENTORY='53c64616fa98ddd446533cbc7b8e90eb2866ce9b1b0b3243df4211d59f155ba2'
+          expected_ledgers={
+            'scalp7_keltner_hg_parent_utc30m_v2':'8863caa8231282fbd7dfd5660811b74e007c018c9cdafdaa52c24830cddfd989',
+            'scalp7_squeeze_panic_cost4_parent_utc30m_v2':'5f1af277aefb4e0887d723ef7a59311385551abf500cd4308693f9cbf6000e52',
+          }
+          root=Path(os.environ['STAGE'])
+          frames=load_candles(root,30,cache_dir=None)
+          summaries={}
+          inventories=set()
+          for symbol,frame in sorted(frames.items()):
+              inventories.add(frame.attrs['source_inventory_sha256'])
+              view=frame[(frame.open_ts_ms>=START)&(frame.open_ts_ms<END)].copy()
+              if view.empty:
+                  raise SystemExit('EMPTY_FROZEN_WINDOW:'+symbol)
+              raw=view.to_csv(index=False,lineterminator='\n').encode()
+              summaries[symbol]={
+                'rows_30m':len(view),
+                'first_open_ts_ms':int(view.open_ts_ms.iloc[0]),
+                'last_open_ts_ms':int(view.open_ts_ms.iloc[-1]),
+                'csv_sha256':hashlib.sha256(raw).hexdigest(),
+                'segment_count':int(view.segment_id.nunique()),
+                'availability_basis':frame.attrs['availability_basis'],
+              }
+          if inventories!={EXPECTED_INVENTORY}:
+              raise SystemExit('SOURCE_INVENTORY_SHA_MISMATCH:'+repr(inventories))
+          base=Path('research/campaigns/scalp7_20260915/broad_rebuild_v2/results')
+          ledgers={}
+          for identity,expected in expected_ledgers.items():
+              path=base/(identity+'.trades.json.gz')
+              actual=hashlib.sha256(path.read_bytes()).hexdigest()
+              if actual!=expected:
+                  raise SystemExit('PARENT_LEDGER_SHA_MISMATCH:'+identity)
+              ledgers[identity]={'path':str(path),'sha256':actual}
+          report={
+            'schema':'zel.scalp7.used_dev_source_binding.v1',
+            'state':'USED_DEV_SOURCE_BODIES_BOUND_READ_ONLY',
+            'source_root_remote':'/home/z/z/runtime/economic7_campaign_20260915',
+            'source_members':['canonical_12m','canonical_gapday_prefix','canonical_postgap_20260213'],
+            'source_inventory_sha256':EXPECTED_INVENTORY,
+            'window':{'start_ms':START,'end_exclusive_ms':END,'calendar_days':245,'timeframe_min':30},
+            'symbols':summaries,
+            'parent_ledgers':ledgers,
+            'remote_file_writes':0,
+            'market_requests':0,
+            'economic_runs':0,
+            'fresh_or_oos_opened':False,
+            'price_bodies_uploaded':False,
+            'derived_economic_improvement':False,
+          }
+          payload=(json.dumps(report,sort_keys=True,indent=2)+'\n').encode()
+          report['receipt_sha256']=hashlib.sha256(payload).hexdigest()
+          target=Path(os.environ['OUT'])/'USED_DEV_SOURCE_BINDING.json'
+          target.write_text(json.dumps(report,sort_keys=True,indent=2)+'\n')
+          print('USED_DEV_SOURCE_BINDING_RECEIPT='+report['receipt_sha256'])
+          PY
+          test -f "$RUNNER_TEMP/saved-keltner-rejected/NATIVE_DAILY_FUNNEL.json"
+          PYTHONPATH=. python3 -B ops/scalp7_keltner_fresh_touch_successor_v1.py \
+            --source-root "$STAGE" \
+            --saved-rejected-result "$RUNNER_TEMP/saved-keltner-rejected/NATIVE_DAILY_FUNNEL.json" \
+            --output "$OUT/KELTNER_FRESH_TOUCH_SUCCESSOR_RESULT.json"
+      - name: Validate canonical source and preserve a clean checkout
+        if: always()
+        run: |
+          npm run --prefix frontend/z-os-app-source validate
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kp-access-diagnosis-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kp-access-diagnosis/
+          if-no-files-found: warn
+          retention-days: 7
+
+  k126_postentry_once:
+    name: Consume delivered Work C origin and one fixed comparison
+    if: github.event_name == 'push' && github.ref == 'refs/heads/research/parallel-benchmark-20261017' && github.actor_id == '232057951'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify exactly one pre-authorized frozen request
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          raw=Path('research/campaigns/scalp7_20261022/k126_c_veto_consume_v1/queue/REQUEST.json').read_bytes()
+          assert hashlib.sha256(raw).hexdigest()=='bfebb8bd464dd24257558e79b2d2990a3486e07de12bb4e459920d5b6775a161'
+          r=json.loads(raw)
+          assert r['candidate']=='scalp7_k126_known_regime_veto_fresh_touch_v1'
+          assert r['comparison_cap']==1 and r['live_and_order_authority']=='BLOCKED'
+          assert r['freeze_sha256']=='90896db25079e0951f84bb7822af5e1ef3d57a9adc6bb5b96b5d0e15284be7d6'
+          print('EXACT_FROZEN_SINGLE_REQUEST_VERIFIED')
+          PY
+      - name: Execute existing frozen comparison only under assigned shared slot
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$VPS_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]]
+          [[ "$VPS_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]
+          test -n "$VPS_SSH_KEY"
+          KEY="$RUNNER_TEMP/k126-existing-key"
+          KNOWN="$RUNNER_TEMP/k126-existing-known-hosts"
+          trap 'rm -f "$KEY" "$KNOWN"' EXIT
+          printf '%s\n' "$VPS_SSH_KEY" > "$KEY"
+          chmod 600 "$KEY"
+          ssh-keyscan -T 10 -t ed25519 -H "$VPS_HOST" > "$KNOWN" 2>/dev/null
+          FP=$(ssh-keygen -lf "$KNOWN" | awk '{print $2}')
+          test "$FP" = 'SHA256:pI/PzwvzWLNJDkOfG98IrC/3NLzh0dIOEUgyqEWta/U'
+          timeout 1080 ssh -T -i "$KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 -o ConnectionAttempts=1 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o UserKnownHostsFile="$KNOWN" "$VPS_USER@$VPS_HOST" "cd /home/z/z/runtime/k126_c_veto_consume_20261022_v1 && PYTHONDONTWRITEBYTECODE=1 /home/z/z/venv/bin/python -u -B queue_existing_once.py $RUN_ID" 2>&1 | tee "$RUNNER_TEMP/k126-assigned-queue.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: k126-postentry-assigned-queue-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/k126-assigned-queue.log
+            research/campaigns/scalp7_20261022/k126_c_veto_consume_v1/queue/REQUEST.json
+          retention-days: 7

@@ -1,0 +1,15 @@
+# Consume the existing H02 benchmark before further unrelated candidate expansion
+
+User priority: reduce incumbent losing streaks step by step using primary-source benchmarks, not intuitive new strategies.
+
+This is NOT a newly discovered source. The October18 H02 sequence note already recorded a concrete unconsumed difference: Raschke separates preceding ADX strength/rise, EMA20 retracement, and turn. The frozen ZEL generator checks current ADX and moving-average alignment but records no preceding rise witness. Source: AIQ Opening Bell August1997, printed p2, four-rule box, https://lindaraschke.net/wp-content/uploads/2026/01/august1997.pdf (page image and text reviewed). Original entry is a buy-stop; ZEL's close/next-open translation is retained and is not claimed source-exact.
+
+One hypothesis: retain the existing126T winner-extension control; require a completed rising-ADX14>30 witness strictly BEFORE the original native EMA20 touch, same native episode/direction. Falling ADX during the pullback is explicitly allowed. Native event reset clears the witness; a later rise cannot retroactively validate an old touch. Source-gate rejection uses the already-existing rejected-signal reset. No entry-time ADX-rise demand, no new numerical threshold sweep, no exit/stop/cost tuning, no cherry-picked symbols/months.
+
+The baseline worst8-loss run remains -1128.2251166863311 equal-notional trade-bps before this change. Every trade in it is already gross-negative;4 use the frozen5bar scratch and4 stop-first. This is attribution, not evidence that any one exit caused the loss. The13-loss cost2x chain also contains actual gross losses, so fee-only adjustments do not answer it.
+
+Counterexamples preserved: all126 incumbent trades, ordinary winners, large/recovery winners, all raw chronological opportunities, changed occupancy, unresolved positions, same245day usedDEV and original365day context. Price outcomes are NOT selection features. Check disabled126-row equality first, then execute one frozen child on the same complete stream. Report avoided losses AND forgone wins, added opportunities, Net1x/2x, worst loss-run amount/count, realized DD and win-run distribution. No account-return or fresh-OOS claim.
+
+Other actual sources reread: Better System Trader episode124 publisher text, https://bettersystemtrader.com/124-managing-trades-with-linda-raschke/ supports separate testing of management and market-state effects; it does not certify this candidate. Freqtrade official protections, https://www.freqtrade.io/en/stable/plugins/ documents loss-dependent guards; its example numeric settings are NOT applied to ZEL. A cooldown can miss recovery winners and cannot undo positions already open. No full video/transcript/view-count verification claimed.
+
+Existing C3 process has completed; preserve its output without rerunning it. C1/C2 and inferior K handoff stay rejected. Reserved S comparison remains separate. Existing4 B observation versions are unchanged. No new platform/workflow/service/API-key/paid API/order/deployment. One research hypothesis, not automatic production adoption.

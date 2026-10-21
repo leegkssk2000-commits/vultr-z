@@ -171,6 +171,30 @@ class NativeIntegrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'DIRECTORY_NAME'):
             a.load_candidate('../outside')
 
+    def _candidate_fixture(self, name):
+        handle = importlib.util.spec_from_file_location('fixture_' + name, HERE / name / 'test_adapter.py')
+        fixture = importlib.util.module_from_spec(handle)
+        handle.loader.exec_module(fixture)
+        return fixture
+
+    def test_actual_c1_candidate_through_shared_native_runner(self):
+        c1, _ = a.load_candidate('c1_box_rotation')
+        f = self._candidate_fixture('c1_box_rotation')
+        bars = f.frame(f.setup() + [(103,105,102,104),(104,106,103,105.5),(106,107,105,106)])
+        out = a.replay_candidate(c1,{SYMBOL:bars},{SYMBOL:15.},[
+            dict(start_ms=0,end_ms=17*f.TF,label='synthetic',partition='rolling')])
+        self.assertEqual(len(out['trades']),1)
+        self.assertEqual(out['trades'][0]['reason'],'BOX_CENTER_CLOSE_NEXT_OPEN')
+
+    def test_actual_c3_candidate_through_shared_native_runner(self):
+        c3, _ = a.load_candidate('c3_mtf_inside_continuation')
+        f = self._candidate_fixture('c3_mtf_inside_continuation')
+        bars = f.fixture([(113,124,112,120)])
+        out = a.replay_candidate(c3,{SYMBOL:bars},{SYMBOL:15.},[
+            dict(start_ms=0,end_ms=17*f.STEP,label='synthetic',partition='rolling')])
+        self.assertEqual(len(out['trades']),1)
+        self.assertEqual(out['trades'][0]['reason'],'TARGET')
+
 
 if __name__=='__main__':
     unittest.main()

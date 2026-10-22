@@ -4,7 +4,7 @@ on:
   push:
     branches: [codex/kp-github-access-diagnosis-20261004, research/parallel-benchmark-20261017]
     paths:
-      - research/campaigns/scalp7_20261022/k126_c_veto_consume_v1/queue/REQUEST.json
+      - research/campaigns/scalp7_20261022/k117_exit_improvement_parallel_v1/applied_20261022/queue/REQUEST.json
       - research/campaigns/scalp7_20261021/k126_reversal_failure_v1/queue_20261021T2050Z/REQUEST.json
       - .github/workflows/kp-github-access-diagnosis-20261004.yml
       - ops/kp_host_metadata_readonly_20261004.py
@@ -328,11 +328,11 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-  k126_postentry_once:
-    name: Consume delivered Work C origin and one fixed comparison
+  k117_cd_passive_once:
+    name: Apply delivered K117 C and D passive observers once
     if: github.event_name == 'push' && github.ref == 'refs/heads/research/parallel-benchmark-20261017' && github.actor_id == '232057951'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
         with:
@@ -344,15 +344,15 @@ jobs:
           python3 - <<'PY'
           import hashlib,json
           from pathlib import Path
-          raw=Path('research/campaigns/scalp7_20261022/k126_c_veto_consume_v1/queue/REQUEST.json').read_bytes()
-          assert hashlib.sha256(raw).hexdigest()=='bfebb8bd464dd24257558e79b2d2990a3486e07de12bb4e459920d5b6775a161'
+          raw=Path('research/campaigns/scalp7_20261022/k117_exit_improvement_parallel_v1/applied_20261022/queue/REQUEST.json').read_bytes()
+          assert hashlib.sha256(raw).hexdigest()=='004bd65a9419fa2a0c5d12dd2517d2cffb21de93421197521f20adc1e05ac061'
           r=json.loads(raw)
-          assert r['candidate']=='scalp7_k126_known_regime_veto_fresh_touch_v1'
-          assert r['comparison_cap']==1 and r['live_and_order_authority']=='BLOCKED'
-          assert r['freeze_sha256']=='90896db25079e0951f84bb7822af5e1ef3d57a9adc6bb5b96b5d0e15284be7d6'
+          assert r['mode']=='K117_EXACT_PASSIVE_C_D'
+          assert r['new_policy_comparisons']==0 and r['orders']==0 and r['native_observer_runs_cap']==2
+          assert r['baseline']=='8a301b017414bdd612fbd2ac7f0b5c5bc25d53a8'
           print('EXACT_FROZEN_SINGLE_REQUEST_VERIFIED')
           PY
-      - name: Execute existing frozen comparison only under assigned shared slot
+      - name: Apply unchanged observers only under assigned shared slot
         shell: bash
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
@@ -374,12 +374,12 @@ jobs:
           ssh-keyscan -T 10 -t ed25519 -H "$VPS_HOST" > "$KNOWN" 2>/dev/null
           FP=$(ssh-keygen -lf "$KNOWN" | awk '{print $2}')
           test "$FP" = 'SHA256:pI/PzwvzWLNJDkOfG98IrC/3NLzh0dIOEUgyqEWta/U'
-          timeout 1080 ssh -T -i "$KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 -o ConnectionAttempts=1 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o UserKnownHostsFile="$KNOWN" "$VPS_USER@$VPS_HOST" "cd /home/z/z/runtime/k126_c_veto_consume_20261022_v1 && PYTHONDONTWRITEBYTECODE=1 /home/z/z/venv/bin/python -u -B queue_existing_once.py $RUN_ID" 2>&1 | tee "$RUNNER_TEMP/k126-assigned-queue.log"
+          timeout 1980 ssh -T -i "$KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 -o ConnectionAttempts=1 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o UserKnownHostsFile="$KNOWN" "$VPS_USER@$VPS_HOST" "cd /home/z/k117_cd_apply_20261022_v1 && PYTHONDONTWRITEBYTECODE=1 /home/z/z/venv/bin/python -u -B queue_apply_existing.py $RUN_ID" 2>&1 | tee "$RUNNER_TEMP/k117-cd-passive-assigned-queue.log"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: k126-postentry-assigned-queue-${{ github.run_id }}
+          name: k117-cd-passive-assigned-queue-${{ github.run_id }}
           path: |
-            ${{ runner.temp }}/k126-assigned-queue.log
-            research/campaigns/scalp7_20261022/k126_c_veto_consume_v1/queue/REQUEST.json
+            ${{ runner.temp }}/k117-cd-passive-assigned-queue.log
+            research/campaigns/scalp7_20261022/k117_exit_improvement_parallel_v1/applied_20261022/queue/REQUEST.json
           retention-days: 7

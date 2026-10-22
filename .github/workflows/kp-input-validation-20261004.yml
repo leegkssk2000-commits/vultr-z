@@ -1,7 +1,14 @@
 name: Keltner verified price input and frozen validation 20261004
 on:
+  workflow_dispatch:
+    inputs:
+      queue_contract_only:
+        description: 'Validate global queue configuration only; no strategy replay or markets'
+        type: boolean
+        required: false
+        default: false
   push:
-    branches: [codex/kp-input-validation-20261004]
+    branches: [codex/kp-input-validation-20261004, fix/global-heavy-queue-preservation-20261022]
     paths:
       - ops/*kp1355*.py
       - ops/kp_connected_research_validation_v1.py
@@ -29,6 +36,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   verify-input:
+    if: github.ref != 'refs/heads/fix/global-heavy-queue-preservation-20261022' && (github.event_name != 'workflow_dispatch' || !inputs.queue_contract_only)
     runs-on: ubuntu-latest
     timeout-minutes: 8
     env:
@@ -129,3 +137,39 @@ jobs:
           path: ${{ runner.temp }}/kp-input/
           if-no-files-found: error
           retention-days: 14
+
+  queue-contract:
+    if: (github.event_name == 'workflow_dispatch' && inputs.queue_contract_only) || (github.event_name == 'push' && github.ref == 'refs/heads/fix/global-heavy-queue-preservation-20261022')
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      contents: read
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Canonical precheck and exact queue base
+        run: |
+          set -euo pipefail
+          pwd
+          ls -la frontend/z-os-app-source
+          cat frontend/z-os-app-source/package.json
+          npm run --prefix frontend/z-os-app-source validate
+          git fetch --no-tags --depth=1 origin 5f290859fdf7be23806e2cc930001a3144c6324d
+      - name: Queue configuration regressions without economic execution
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check PyYAML==6.0.2
+          python -B research/campaigns/scalp7_20261022/heavy_queue_preservation_v1/test_queue_contract.py
+          git diff --exit-code
+      - name: Canonical postcheck
+        if: always()
+        run: |
+          npm run --prefix frontend/z-os-app-source validate
+          git diff --exit-code

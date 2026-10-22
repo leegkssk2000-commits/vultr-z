@@ -1,0 +1,201 @@
+name: A1 Trend Rider Long Only Exact Parent V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/contracts/a1_trend_rider_long_only_exact_parent_v1.json'
+      - 'backend/research/rebuild/a1_trend_rider_long_only_exact_parent_evaluator_v1.py'
+      - 'backend/research/rebuild/a1_trend_rider_h4_h5_hardening_v1.py'
+      - 'backend/research/rebuild/a1_trend_rider_survivor_seal_v1.py'
+      - '.github/workflows/a1-trend-rider-long-only-exact-parent-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/contracts/a1_trend_rider_long_only_exact_parent_v1.json'
+      - 'backend/research/rebuild/a1_trend_rider_long_only_exact_parent_evaluator_v1.py'
+      - '.github/workflows/a1-trend-rider-long-only-exact-parent-v1.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '11 4,10,16,22 * * *'
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify frozen exact-parent long-only contract
+        run: |
+          set -euo pipefail
+          CONTRACT='backend/research/contracts/a1_trend_rider_long_only_exact_parent_v1.json'
+          python -m py_compile backend/research/rebuild/a1_trend_rider_long_only_exact_parent_evaluator_v1.py
+          python -m backend.research.rebuild.a1_trend_rider_long_only_exact_parent_evaluator_v1 \
+            --contract "$CONTRACT" --self-test
+
+  evaluate:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    concurrency:
+      group: a1-global-heavy-economic-evaluator-v1
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build exact parent and frozen long-only child
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          SYMBOLS='BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,1INCH-USDT,ETHFI-USDT,HYPE-USDT,BCH-USDT,APE-USDT,1000PEPE-USDT,DOGE-USDT,LINK-USDT'
+          PARENT_CONTRACT='backend/research/contracts/a1_trend_rider_delayed_fill_v1.json'
+          CHILD_CONTRACT='backend/research/contracts/a1_trend_rider_long_only_exact_parent_v1.json'
+          python -m backend.research.rebuild.a1_trend_rider_delayed_fill_evaluator_v1 \
+            --symbols "$SYMBOLS" --mode development --contract "$PARENT_CONTRACT" \
+            --out out/parent_development.json
+          PARENT_BOUNDARY="$(python -c "import json;print(json.load(open('$PARENT_CONTRACT'))['frozen_at_utc'])")"
+          python -m backend.research.rebuild.a1_trend_rider_delayed_fill_evaluator_v1 \
+            --symbols "$SYMBOLS" --mode prospective --boundary-utc "$PARENT_BOUNDARY" --contract "$PARENT_CONTRACT" \
+            --out out/parent_prospective.json
+          python -m backend.research.rebuild.a1_trend_rider_long_only_exact_parent_evaluator_v1 \
+            --parent out/parent_development.json --contract "$CHILD_CONTRACT" --mode development \
+            --out out/long_only_development.json
+          python -m backend.research.rebuild.a1_trend_rider_h4_h5_hardening_v1 \
+            --receipt out/long_only_development.json \
+            --out out/long_only_development_hardening.json
+          python -m backend.research.rebuild.a1_trend_rider_long_only_exact_parent_evaluator_v1 \
+            --parent out/parent_prospective.json --contract "$CHILD_CONTRACT" --mode prospective \
+            --out out/long_only_prospective.json
+      - name: Harden mature fresh sample and summarize
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,subprocess
+          fresh=json.load(open('out/long_only_prospective.json'))
+          symbols=sorted({x['symbol'] for x in fresh.get('trades') or []})
+          if int(fresh.get('completed_trades') or 0)>=25 and len(symbols)>=2 and (fresh.get('source_quality_gate') or {}).get('state')=='PASS':
+              subprocess.run([
+                  'python','-m','backend.research.rebuild.a1_trend_rider_h4_h5_hardening_v1',
+                  '--receipt','out/long_only_prospective.json',
+                  '--out','out/long_only_prospective_hardening.json'],check=True)
+          PY
+          python - <<'PY'
+          import hashlib,json
+          def load(path):
+              try:return json.load(open(path))
+              except Exception:return {'state':'WAIT_FRESH_SAMPLE'}
+          dev=load('out/long_only_development.json')
+          dh=load('out/long_only_development_hardening.json')
+          fresh=load('out/long_only_prospective.json')
+          fh=load('out/long_only_prospective_hardening.json')
+          symbols=sorted({x['symbol'] for x in fresh.get('trades') or []})
+          mature=int(fresh.get('completed_trades') or 0)>=25 and len(symbols)>=2
+          ready=(
+              mature
+              and (fresh.get('source_quality_gate') or {}).get('state')=='PASS'
+              and fh.get('state')=='PASS_HARDENING_EVIDENCE'
+              and (fh.get('candidate_integrity') or {}).get('state')=='PASS')
+          summary={
+              'schema_version':'zel.a1.trend_rider.long_only_exact_parent_summary.v1',
+              'challenger_id':'trend_rider_delayed_fill_long_only_v1',
+              'parent_challenger_id':'trend_rider_one_bar_delayed_fill_v1',
+              'changed_axis':'LONG_SHORT_ASYMMETRY_LONG_ONLY',
+              'development_metrics':dev.get('metrics'),
+              'development_h4_state':(dh.get('h4_receipt') or {}).get('state'),
+              'development_h4_passed':(dh.get('h4_receipt') or {}).get('passed_control_count'),
+              'development_h5_state':(dh.get('h5_receipt') or {}).get('state'),
+              'development_h5_blockers':(dh.get('h5_receipt') or {}).get('blockers'),
+              'development_hardening_advisory_only':True,
+              'fresh_boundary':fresh.get('prospective_boundary_utc'),
+              'fresh_trade_count':fresh.get('completed_trades'),
+              'fresh_symbols':symbols,
+              'fresh_metrics':fresh.get('metrics'),
+              'fresh_source_quality_state':(fresh.get('source_quality_gate') or {}).get('state'),
+              'fresh_hardening_state':fh.get('state'),
+              'survivor_ready':ready,
+              'parameter_sweep':False,
+              'thresholds_changed':False,
+              'selection_authority':False,
+              'promotion_authority':False,
+              'execution_authority':'NONE',
+              'order_authority':'BLOCKED',
+              'live_trade_authority':'BLOCKED',
+              'exchange_order_submitted':False,
+              'protected_mutations':0}
+          summary['state']='READY_TO_SEAL' if ready else ('WAIT_FRESH_SAMPLE' if not mature else 'HOLD_HARDENING')
+          summary['receipt_sha256']=hashlib.sha256(json.dumps(summary,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          open('out/long_only_summary.json','w').write(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          print('A1_TREND_RIDER_LONG_ONLY_EXACT_PARENT='+json.dumps(summary,sort_keys=True))
+          PY
+      - name: Seal verified Survivor
+        run: |
+          set -euo pipefail
+          READY="$(python -c "import json;print(str(json.load(open('out/long_only_summary.json'))['survivor_ready']).lower())")"
+          if [ "$READY" != "true" ]; then exit 0; fi
+          python -m backend.research.rebuild.a1_trend_rider_survivor_seal_v1 \
+            --receipt out/long_only_prospective.json \
+            --evidence out/long_only_prospective_hardening.json
+          git config user.name 'a1-trend-rider-long-only'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/rebuild/a1_exact25_disposition_ledger_v1.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'A1 trend_rider: seal verified long-only Survivor [skip ci]'
+            git pull --rebase origin master
+            git push origin HEAD:master
+          fi
+      - name: Persist latest long-only state
+        run: |
+          set -euo pipefail
+          target=backend/research/rebuild/a1_trend_rider_long_only_exact_parent_latest.json
+          cp out/long_only_summary.json "$target"
+          git config user.name 'a1-trend-rider-long-only'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 trend_rider: persist long-only exact-parent state [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - name: Publish latest receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os,urllib.request
+          r=json.load(open('out/long_only_summary.json'))
+          marker='<!-- A1_TREND_RIDER_LONG_ONLY_EXACT_PARENT_V1 -->'
+          body='\n'.join([marker,'## A1 trend_rider long-only exact-parent',f"run={os.environ['RUN_ID']}",json.dumps(r,sort_keys=True)])
+          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
+          base=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
+          with urllib.request.urlopen(urllib.request.Request(base,headers=h),timeout=20) as response: comments=json.load(response)
+          existing=next((x for x in comments if marker in str(x.get('body') or '')),None)
+          url=existing.get('url') if existing else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
+          with urllib.request.urlopen(urllib.request.Request(url,data=json.dumps({'body':body}).encode(),headers=h,method='PATCH' if existing else 'POST'),timeout=20): pass
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-trend-rider-long-only-exact-parent-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

@@ -1,0 +1,7 @@
+# Source bundle
+
+`SOURCE_INDEX.json` maps each repository source path to the exact actual checkout, GitHub URL, returned Git blob SHA1, independently verified blob SHA1, file SHA256, byte size and local copy. `current255/` holds 19 originals from bfcf40a34c73d3b98ac6256fac47997dc6f0f230; `later256/` holds the same 19 originals from 749bc9f771b8340c3bebc30bab10c3cbda6dd1ce. All 19 pairs are byte-identical. `FETCH_*.json` preserve read-only tool responses, including the four initial wrong-location contract 404s; successful contract originals are from backend/research/contracts/.
+
+These are code/contract/workflow originals, not archived market input bodies. Neither current255's 5 JSON nor later256's 9 JSON has original OHLC prefix objects, full native FeatureSnapshot bodies, completed-bar available timestamps or funding_rows. Hash-only feature and snapshot references do not reconstruct those missing bodies. The full audit and archive inventory are one directory above.
+
+Loss geometry limitation: delayed fill refreshes bars and recalculates ATR stop while copying original intent_geometry; current255 contains 10 SL exit values unequal to copied sealed SL, whereas later256's 194 SL exits match. Adverse gap-open fills, intrabar MFE/MAE, actual close availability and delayed funding-window recalculation cannot be certified from these final rows. No native evaluator was imported or replayed to create this bundle; no source code was changed.

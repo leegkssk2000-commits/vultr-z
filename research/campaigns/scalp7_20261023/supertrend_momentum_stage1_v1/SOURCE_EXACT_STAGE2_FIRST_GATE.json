@@ -1,0 +1,77 @@
+{
+  "schema": "zel.supertrend_momentum_4h.source_to_causal_axis_gate.v1",
+  "classification": "FROZEN_RULE_RECONCILED__NO_POSTENTRY_CAUSAL_FEATURE_ASOF_IN_TRADE_RECEIPT",
+  "verified_scope": "the examined current master frozen executable policy, collector Python and saved 39 closed trades; not an exhaustive VPS/archive absence claim",
+  "target_identity": "supertrend_replacement_highvol_mom_long_4h_h12_v2",
+  "frozen_source": {
+    "contract_path": "backend/research/contracts/a1_top5_replacement_child_freeze_v2.json",
+    "contract_blob": "318df316882718d18d98fda51702473f1d092131",
+    "runner_path": "backend/research/rebuild/a1_top5_replacement_child_prospective_v2.py",
+    "runner_blob": "7854886e5c5e04bf7c0341043933bcc070b6d2c4",
+    "bar_loader_path": "backend/research/rebuild/a1_top5_replacement_child_prospective_v1.py",
+    "bar_loader_blob": "4566931dab335d45884704fe98f6e1c70629f92a",
+    "economic_state_blob": "70f5f6829d860a67f7df8e4ff1994965218c042c",
+    "g5_status_blob": "4ea2a275518ef728ee05985a9266cfedc0583c34"
+  },
+  "frozen_rules": {
+    "timeframe": "4h",
+    "features": [
+      "ema20 = ema(close,20)",
+      "ema50 = ema(close,50)",
+      "ret1 = ret(1)",
+      "retstd20 = std(ret1,20)"
+    ],
+    "entry_rule": "abs(ret1) >= 1.5 * retstd20 and ret1 > 0 and ema20 > ema50",
+    "side_rule": "long",
+    "entry_timing": "next_bar_open",
+    "exit_rule": "time_stop",
+    "max_hold_bars": 12,
+    "cost_bps_per_trade": 20,
+    "mechanism_note": "Named Supertrend Momentum but frozen evaluator uses high-volatility momentum plus EMA alignment, not an explicitly executed Supertrend ATR trailing line"
+  },
+  "actual_runner_semantics": {
+    "signal_observation": "rows[i].ts bar open timestamp; engine features calculated using bars through i",
+    "entry": "rows[i+1].open",
+    "exit": "rows[entry_i+12-1].close after fixed maximum hold",
+    "stored_trade_fields": [
+      "closed_trade_id",
+      "child_id",
+      "signal_ts",
+      "entry_ts",
+      "exit_ts",
+      "entry_px",
+      "exit_px",
+      "gross_bps",
+      "net_bps",
+      "cost_bps",
+      "symbol",
+      "side"
+    ],
+    "trade_snapshot_retains_original_feature_values": false,
+    "trade_snapshot_retains_market_bar_prefix": false,
+    "trade_snapshot_retains_per_bar_received_available_timestamp": false,
+    "market_loader_behavior": "v1._bars calls HTTP _req with 1000-row pagination and returns completed historical OHLC rows, but does not persist complete input bytes/receipt clock in the final trade-row summary"
+  },
+  "bounded_next_candidate_hypothesis": {
+    "mechanism": "LOSS_OF_ORIGINAL_TREND_PRECONDITION",
+    "potential_axis": "ema20 <= ema50 on an actually completed post-entry 4h bar, processed only when source receipt as-of proof exists; optional single-axis early exit, original entry/time-stop otherwise unchanged",
+    "new_numerical_thresholds": 0,
+    "implementation_authorized": false,
+    "first_gate": "ORIGINAL_NATIVE_OHLC_AND_4H_FEATURE_VALUES_WITH_ASOF_AVAILABLE_TS_MISSING_FROM_SAVED_TRADE_ROWS",
+    "risk": "A trend break exit may cut largest winners; the 26 observed trades cannot choose or validate the exit threshold without selection bias",
+    "fail_closed": "NO_PRODUCTION_CHILD_UNTIL_IMMUTABLE_SOURCE_AND_ASOF_AVAILABLE_FOR_SAME_PERIOD_AND_SEPARATE_DEV_WINDOWS"
+  },
+  "already_completed": {
+    "stage1_code_commit": "51a860c3bff259eca56bfe7643b7032a55a5e871",
+    "stage1_result_commit": "416732bdd98585e14ce46e70e29c9dd7d5739ce5",
+    "G5_FRESH_T": 26,
+    "modeled_net1_trade_bps": 4429.415816304049,
+    "modeled_net2_trade_bps": 3909.4158163040493,
+    "modeled_cost2_PF": 2.1578819915552176,
+    "top2_profit_winner_removal_net2_trade_bps": -250.81651088935814,
+    "synth_test_pass": 7
+  },
+  "no_new_economic_full": true,
+  "order_authority": "BLOCKED",
+  "promotion_authority": false
+}

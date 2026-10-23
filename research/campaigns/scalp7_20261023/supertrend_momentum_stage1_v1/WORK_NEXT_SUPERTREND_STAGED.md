@@ -1,0 +1,24 @@
+# 4h Supertrend Momentum next steps: K117-style one-axis economic improvement
+
+This supersedes all "continue old Supertrend 1h" work. Current new user authorization is to improve a genuinely promising strategy incrementally, without inventing an edge.
+
+## Actual work already completed, DO NOT REPEAT
+Code commit 51a860c3bff259eca56bfe7643b7032a55a5e871 and run-result commit 416732bdd98585e14ce46e70e29c9dd7d5739ce5. Both are add-only [skip ci] on work/zel-candidate-adapters-20261021.
+Code: research/campaigns/scalp7_20261023/supertrend_momentum_stage1_v1/g5_frozen_supertrend_triage.py
+Receipt: research/campaigns/scalp7_20261023/supertrend_momentum_stage1_v1/G5_STAGE1_COST2_AND_WINNER_RISK.json
+Synthetic negative tests 7 PASS and REAL 39 immutable stored entries/26 post-boundary reconciled. Original source Git blob 70f5f6829d860a67f7df8e4ff1994965218c042c; G5 snapshot blob 4ea2a275518ef728ee05985a9266cfedc0583c34. Exact frozen candidate: supertrend_replacement_highvol_mom_long_4h_h12_v2, boundary_ms=1789228800000, 4h, seven symbols. Old 1h Supertrend Pullback child terminal is a DIFFERENT identity.
+G5 26 used-fresh postboundary Net1x +4429.415816 trade-bps, Net2x +3909.415816, PF2 2.157882, 11/26 1x wins; 20bps static cost at 1x, 40bps at 2x is not observed fee/funding/slippage. Two biggest 2x winners removed posthoc => -250.816511, September 20T net2 +4734.475426, October 6T net2 -825.059610. Preboundary 13 old T net2 -4270.380801. Not NAV, G5 pass, or economic improvement by this Work. Existing A economic owner stays single.
+
+## Next three execution stages, bounded
+STAGE 2 SOURCE-EXACT FEASIBILITY, Work G5 + C in parallel:
+- G5 existing window reads the actual 26 trade rows and exact 4h policy, validates fee/spread/slippage/signed funding witness, signal/entry/exit availability, row-level original vs accountant parity, closed/censored vs open, duplicate, stop-first/gap and proper non-fresh/legacy separation. Only original trustworthy source receipts; no guessed 1m intrabar truth or changes to G5 formal credit/SSOT/state. Return exact source hashes and FIRST nonconforming field. Existing G5 handoff file from screenshot may be reused; do NOT build a second accountant.
+- C existing window consumes stage1. Recover the ORIGINAL pre-entry and intrahold frozen policy features (4h OHLC prefix, original indicator state, completed-bar available timestamps, reference fills) from native archives, as-of exact source. Classify early failure vs large recovery winners with features available WHEN the action would occur. If complete, preregister exactly ONE distinct single-axis causal child using a SEPARATE available development history (NOT 26 already inspected G5 transactions). Implement default-OFF adapter and fail-closed fixtures, preserve original entry/SL/TP/timeout except the precisely justified one axis, false triggers/ordinary & fat-tail winner retention. No generic ATR/R numeric tuning or after-loss-month symbol cherry picking. If missing, persist SOURCE_FEATURE_NOT_BOUND / NO_CAUSAL_CHILD and STOP stage, do not produce another source list.
+STAGE 3 DEVELOPMENT ECONOMICS, A ONLY:
+- A retains existing Squeeze signal-low authorized one-shot; restore ordinary authenticated GitHub workflow_dispatch rather than push/comment/secret or a second heavy owner. Do not divert Squeeze budget to this.
+- After C candidate independently source-ready and exact existing budget/new scope approved, A runs old 4h frozen control vs the ONE newly frozen child in its original authorized DEV economic engine, same input/window/order costs1/2 and complete time chronology, post-entry opportunity occupancy, DD/MTM if actually supported, streak, win and big winner preservation and negative controls. A only global-heavy<=1; no candidate consumption or survivor promotion without real receipt.
+- The already observed 26T cannot be claimed untouched OOS for a modification chosen after inspecting the results. Only AFTER new child freeze can a new future OOS boundary be opened with existing formal admission. Do not revise the 26T results retrospectively.
+
+Work D: Latest TrendRider 255/256 H4/H5 failure and cost2 negative are CURRENT_TRENDRIDER_NO_CAUSAL_CHILD, preserve and no new repeat replay. D may give existing K117/Squeeze occupancy as read-only risk input.
+Work B: old four-version observation PID374902 was not alive at 2026-10-23T16:13Z after 24h epoch, persisted 288 closed 30m symbol records, 1152 decisions, zero closed trades/orders. STATUS.json remains last persisted DEVELOPMENT_OBSERVATION and DOES NOT mean alive. No blind restart; user approval and source/writer/gap lock check first, no K117 re-label. Formal Shadow G4/G5/PREAUTO gate unchanged.
+
+Completion of this handoff is code and VERIFIED source forensic only; Stage2 and Stage3 not executed here. No new heavy economic evaluation, actions, market API, paid AI, live/Paper/order, software deploy, or formal G5 credit.

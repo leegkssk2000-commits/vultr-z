@@ -1,8 +1,9 @@
-"""Default-OFF K117 code-only prospective adapter; no transport or collector.
+"""Default-OFF K117 adapter; no transport, collector, or order authority.
 
 The exact frozen OHLC execution profile rejects late observations. B's quote
 execution cannot silently replace it. Real activation remains blocked by the
-recorded PREAUTO/admission gate; fixtures are never prospective credit.
+recorded PREAUTO/admission gate. Explicit development observation is separate
+from synthetic fixtures and confers no formal prospective credit.
 """
 from __future__ import annotations
 import argparse
@@ -125,7 +126,7 @@ def _finite(v):
     return float(v)
 
 
-def check_cost(cost, asof):
+def check_cost(cost, asof, *, allow_fixture=True):
     if not isinstance(cost,dict) or not cost.get('source_sha256') or len(cost['source_sha256']) != 64:
         raise ValueError('COST_SOURCE_UNBOUND')
     if int(cost['available_ts_ms']) > asof:
@@ -138,14 +139,18 @@ def check_cost(cost, asof):
         raise ValueError('NEGATIVE_FEE_OR_SLIPPAGE')
     if cost.get('kind') not in {'FIXTURE_ONLY','EXPLICIT_PROSPECTIVE_COST_MODEL'}:
         raise ValueError('COST_MODEL_UNBOUND')
+    if not allow_fixture and cost['kind']=='FIXTURE_ONLY':
+        raise ValueError('FIXTURE_COST_FOR_REAL_OBSERVATION_FORBIDDEN')
     return sum(float(cost[k]) for k in ('fee_bps','funding_bps','slippage_bps'))
 
 
 class Adapter:
-    def __init__(self, *, enabled=False, fixture=False, state=None, started_at_ms=None):
+    def __init__(self, *, enabled=False, fixture=False, development=False, state=None, started_at_ms=None):
         if type(enabled) is not bool or not enabled:
             raise ValueError('DEFAULT_OFF')
-        if fixture is not True:
+        if type(fixture) is not bool or type(development) is not bool or (fixture and development):
+            raise ValueError('EXPLICIT_SINGLE_OBSERVATION_MODE_REQUIRED')
+        if not fixture and not development:
             raise ValueError('SHADOW_READY_HOLD:' + FORMAL_GATE)
         self.d = dependencies()
         self.freeze_ms = int(datetime.fromisoformat(self.d.manifest['freeze_at_utc']).timestamp()*1000)
@@ -155,13 +160,18 @@ class Adapter:
         binding = digest({'pins':self.d.manifest,'adapter_sha':hashlib.sha256(Path(__file__).read_bytes()).hexdigest()})
         self.state = deepcopy(state) if state is not None else {
             'schema':SCHEMA,'identity':IDENTITY,'final_freeze':FINAL,'binding':binding,
-            'fixture':True,'fresh_start_ms':start,'signals':{},'pending':{},'positions':{},
+            'fixture':fixture,'development_observation':development,
+            'mode':'DEVELOPMENT_OBSERVATION' if development else 'SYNTHETIC_FIXTURE',
+            'formal_gate':FORMAL_GATE,'fresh_start_ms':start,'signals':{},'pending':{},'positions':{},
             'fit_sha256':None,'frozen_costs':{},
             'trades':[],'events':[],'NAV':None,'actual_funding_verified':False,
             'order_calls':0,'credential_file_reads':0,'formal_fresh_credit':False}
         if (self.state.get('schema')!=SCHEMA or self.state.get('identity')!=IDENTITY
             or self.state.get('final_freeze')!=FINAL or self.state.get('binding')!=binding
-            or self.state.get('fixture') is not True):
+            or self.state.get('fixture') is not fixture
+            or self.state.get('development_observation') is not development
+            or self.state.get('formal_fresh_credit') is not False
+            or self.state.get('mode')!=('DEVELOPMENT_OBSERVATION' if development else 'SYNTHETIC_FIXTURE')):
             raise ValueError('RUNTIME_IDENTITY_OR_CODE_MISMATCH')
         self._verify_events()
 
@@ -287,7 +297,7 @@ class Adapter:
             or int(sig['signal_ts_ms'])>expected):
             self.log('HOLD',{'symbol':symbol,'reason':'LATE_OBSERVATION_NOT_HISTORICAL_OPEN_FILL'})
             return {'status':'UNKNOWN','reason':'LATE_OBSERVATION_NOT_HISTORICAL_OPEN_FILL'}
-        total=check_cost(cost_model,int(asof_ms))
+        total=check_cost(cost_model,int(asof_ms),allow_fixture=self.state['fixture'])
         px=_finite(opened['price']);native=deepcopy(sig);native['identity']=self.d.positive.KELTNER_PARENT
         self.d.execution.validate_signal(native)
         update=self.d.positive.entry_update(native,px)
@@ -353,7 +363,8 @@ class Adapter:
             trade['prospective_net_bps']=None
             trade['prospective_cost_state']='HOLD:FULL_HOLDING_PERIOD_FUNDING_LINEAGE_NOT_VERIFIED'
             trade['actual_funding_verified']=False
-            trade['NAV']=None;trade['fixture']=True;trade['formal_fresh_credit']=False
+            trade['NAV']=None;trade['fixture']=self.state['fixture']
+            trade['development_observation']=self.state['development_observation'];trade['formal_fresh_credit']=False
             self.state['trades'].append(trade);del self.state['positions'][symbol];self.log('CLOSED',trade)
             return {'status':'CLOSED','trade':trade}
         item['position']=deepcopy(unresolved);item['unresolved']=True
@@ -399,7 +410,8 @@ def preflight(source=None,b_pointer=None):
     blockers.extend(['K117_IDENTITY_ADMISSION_NOT_VERIFIED','EXACT_NEXT_OPEN_PROSPECTIVE_CLOCK_NOT_VERIFIED','PROSPECTIVE_COST_FUNDING_LINEAGE_NOT_VERIFIED'])
     return {'state':'SHADOW_READY_HOLD:'+blockers[0],'identity':IDENTITY,'default_off':True,
             'source_binding_sha256':digest(manifest),'adapter_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-            'formal_active':False,'code_only':True,'blockers':blockers,'evidence':evidence,'orders':0}
+            'formal_active':False,'code_only':True,'development_observation_available':True,
+            'blockers':blockers,'evidence':evidence,'orders':0}
 
 
 def main():

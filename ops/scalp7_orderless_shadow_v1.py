@@ -83,6 +83,17 @@ class PublicFeed:
     def __init__(self) -> None:
         self.receipts: list[dict[str, Any]] = []
         self.opener = urllib.request.build_opener(NoRedirect())
+        # BingX public Kline endpoint is 1 request/second per IP.
+        # This bounds only the existing isolated B feed; no extra API or credentials.
+        self._last_public_request_monotonic: float | None = None
+
+    def _pace_public_request(self) -> None:
+        now = time.monotonic()
+        if self._last_public_request_monotonic is not None:
+            remaining = 1.25 - (now - self._last_public_request_monotonic)
+            if remaining > 0:
+                time.sleep(remaining)
+        self._last_public_request_monotonic = time.monotonic()
 
     def __call__(self, url: str) -> tuple[int, bytes]:
         parsed = urllib.parse.urlsplit(url)
@@ -94,6 +105,7 @@ class PublicFeed:
             raise ValueError("NON_PUBLIC_QUOTE_REQUEST_BLOCKED")
         request = urllib.request.Request(url, method="GET", headers={
             "Accept": "application/json", "User-Agent": "scalp7-orderless-work-b-v1"})
+        self._pace_public_request()
         started = int(time.time() * 1000)
         item: dict[str, Any] = {"method": "GET", "source": PUBLIC + parsed.path,
                                 "requested_at_ms": started, "auth_headers": False}

@@ -1,11 +1,14 @@
 name: A1 YouTube Diversity Scout V1
 
 on:
+  workflow_call:
   pull_request:
     branches: [master]
     paths:
       - 'backend/research/architecture_factory/a1_youtube_diversity_scout_v1.py'
       - 'backend/research/architecture_factory/a1_gemini_youtube_roi_policy_v1.json'
+      - 'tests/test_issue1414_preauto_contract_v1.py'
+      - 'tests/test_a1_youtube_diversity_scout_v1.py'
       - '.github/workflows/a1-youtube-diversity-scout-v1.yml'
   workflow_dispatch:
     inputs:
@@ -28,7 +31,7 @@ concurrency:
 
 jobs:
   verify:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/codex/issue1414-preauto-contract-20261008')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -41,8 +44,14 @@ jobs:
       - name: Compile and deterministic self-test
         run: |
           set -euo pipefail
+          npm run --prefix frontend/z-os-app-source validate
           python -m py_compile backend/research/architecture_factory/a1_youtube_diversity_scout_v1.py
           python -m backend.research.architecture_factory.a1_youtube_diversity_scout_v1 --self-test
+      - name: Generated-price and cached-source integration fixtures (no economic replay)
+        run: |
+          set -euo pipefail
+          python -m pip install pytest==8.3.5 pandas==2.2.3 numpy==2.2.4
+          python -m pytest -q backend/research/architecture_factory/test_a1_manual_research_budget_v1.py tests/test_a1_youtube_diversity_scout_v1.py tests/test_issue1414_preauto_contract_v1.py
       - name: Verify blocker-only ROI policy
         run: |
           set -euo pipefail

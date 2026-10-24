@@ -49,15 +49,15 @@ jobs:
           plan = json.loads(Path("backend/research/zel_actions_queue_purge_trigger_v1.json").read_text())
           assert plan["schema_version"] == "zel.actions.queue_purge.trigger.v1"
           assert plan["state"] == "REQUEST_SQUEEZE496_QUEUE_PRIORITY"
-          assert plan["trigger_seq"] in (2, 3)
+          assert plan["trigger_seq"] in (4, 5)
           assert plan["mode"] in ("dry_run", "cancel")
           assert int(plan["preserve_run_id"]) == 40122207006
           assert len(plan["targets"]) <= 60 and len(plan["targets"]) >= 1
           assert len({int(x["id"]) for x in plan["targets"]}) == len(plan["targets"])
           if plan["mode"] == "cancel":
-              assert plan["trigger_seq"] == 3
+              assert plan["trigger_seq"] == 5
           else:
-              assert plan["trigger_seq"] == 2
+              assert plan["trigger_seq"] == 4
           
           base = "https://api.github.com/repos/" + repo
           headers = {
@@ -98,12 +98,16 @@ jobs:
           for target in plan["targets"]:
               run_id = int(target["id"])
               assert run_id not in (current, 40122207006)
-              assert target["event"] == "schedule"
+              assert target["event"] in ("schedule", "issue_comment")
               assert target["expected_status"] in ("pending", "queued", "in_progress")
               assert dt.datetime.fromisoformat(target["created_at"].replace("Z", "+00:00")) < cutoff
               run = get_run(run_id)
               assert run["id"] == run_id and run["workflow_id"] == int(target["workflow_id"])
-              assert run["event"] == "schedule"
+              assert run["event"] == target["event"]
+    if run["event"] == "issue_comment":
+        assert run["workflow_id"] == 374265721
+        assert run["name"] == "Keltner GitHub SSH read-only access diagnosis 20261004"
+        assert target["expected_status"] in ("pending", "queued")
               assert run["head_branch"] == "master"
               assert run["created_at"] == target["created_at"]
               assert run["name"] == target["name"]

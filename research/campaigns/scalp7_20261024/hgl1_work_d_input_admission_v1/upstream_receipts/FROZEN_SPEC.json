@@ -1,0 +1,93 @@
+{
+  "schema": "zel.holygrail.rule.v1",
+  "candidate_id": "HGL1_RASCHKE_FIRST_PULLBACK_LONG_ZEL_V1",
+  "frozen_at_ms": 1792832009048,
+  "candidate_count": 1,
+  "source_ids": [
+    "S1",
+    "S2"
+  ],
+  "source_receipts_sha256": "619e6ecb84be03b0f7f99922213efdae6a0a49a6b6e6ed3347f887b2b20a326b",
+  "classification": "SOURCE_BASED_ZEL_INTERPRETATION_NOT_AUTHOR_DISCRETION_CLONE",
+  "side": "LONG_ONLY",
+  "timeframe_ms": 3600000,
+  "symbols": [
+    "BTC-USDT",
+    "ETH-USDT",
+    "SOL-USDT",
+    "XRP-USDT",
+    "LINK-USDT",
+    "DOGE-USDT"
+  ],
+  "warmup_bars": 240,
+  "ema": {
+    "period": 20,
+    "alpha": "2/21",
+    "seed": "SMA closes index0..19"
+  },
+  "adx": {
+    "period": 14,
+    "smoothing": "Wilder",
+    "first_TR_DM_sums": "transitions index1..14",
+    "first_DX_index": 14,
+    "first_ADX_index": 27,
+    "seed": "mean DX index14..27",
+    "zero_denominator": 0,
+    "equal_positive_DM_moves": "both_zero"
+  },
+  "arm": {
+    "author": "ADX14 >30 and strictly rising initially",
+    "zel": "after warmup; EMA20 > prior EMA20; close>EMA20 and low>EMA20; idle only"
+  },
+  "touch": {
+    "author": "first subsequent EMA20 retracement; ADX may fall",
+    "zel": "first later completed bar t with low[t]<=EMA20[t]<=high[t]; high[t]<EMA20[t] invalidates; no ADX recheck while armed; all bar-close inputs"
+  },
+  "levels": {
+    "trigger": "high[t-1]+tick (previous bar relative to completed touching t)",
+    "stop": "min(low[most_recent_peak_index:t+1])-tick; peak high uses arm..t-1 only; fixed after touch",
+    "target": "max(high[arm:t]); full exit at stored pre-touch high",
+    "invalid": "stop>=trigger or target<=trigger consumes setup"
+  },
+  "activation": {
+    "zel": "first future bar open timestamp>=actual available_at_ms of touching bar; no touch-bar fill",
+    "pending_validity": "one eligible bar only; no fill consumes setup",
+    "preactivation": "do not fill or update levels on intervening bars"
+  },
+  "entry_model": {
+    "fill": "max(eligible bar open,trigger) if high>=trigger",
+    "cancel": "open<=stop or open>=target",
+    "entry_bar_stop": "low<=stop => stop first; OHLC ambiguity conservative",
+    "entry_bar_target": "allowed only when entry occurred at bar open; otherwise defer target to later bar and count ambiguity"
+  },
+  "exit_model": {
+    "stop_gap": "open<=stop => open",
+    "target_gap": "open>=target => target; no favorable gap credit",
+    "inside_bar": "low<=stop => stop before high>=target => target",
+    "trail": "none; deterministic recent-high objective instead of unquantified author trail",
+    "time_exit": "none",
+    "end": "open position censored; mark and costed hypothetical liquidation separate from completed trades"
+  },
+  "rearm": {
+    "zel": "after consumption/exit, observe ADX<=30 on later bar; then fresh >30 rising arm; no same-bar reset/rearm"
+  },
+  "cost_model": {
+    "roundtrip_bps_1x": 20,
+    "roundtrip_bps_2x": 40,
+    "historical_funding": null,
+    "classification": "MODELLED_ONLY_NO_PROMOTION",
+    "same_ledger_two_cost_columns": true
+  },
+  "prohibited": [
+    "economic_FULL",
+    "orders",
+    "paid_API",
+    "collector_or_writer_changes",
+    "owner_changes",
+    "denied_57_trade_ledger",
+    "parameter_optimization_after_outcomes",
+    "retired_strategy_reruns"
+  ],
+  "data_admission": "new owner-attested immutable observed-minute snapshot; DEV starts after rule freeze; exclude used historic corpora; tick metadata required",
+  "economic_calls_this_work": 0
+}

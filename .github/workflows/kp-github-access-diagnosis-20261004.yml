@@ -35,8 +35,10 @@ permissions:
   contents: read
   actions: read
 concurrency:
-  # Used-DEV child replay is economic-heavy; serialize with all approved heavy evaluators.
-  group: a1-global-heavy-economic-evaluator-v1
+  # Only workflow_dispatch can run the economic comparison. Keep every manual
+  # full/non-full comparison on the one global economic-heavy lock.
+  # issue_comment and probe-only push must not fill that expensive FIFO queue.
+  group: ${{ github.event_name == 'workflow_dispatch' && 'a1-global-heavy-economic-evaluator-v1' || 'kp-metadata-only-readonly-v1' }}
   cancel-in-progress: false
   queue: max
 jobs:

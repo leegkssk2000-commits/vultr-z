@@ -1,0 +1,232 @@
+"""One frozen native-indicator Squeeze first-fire persistence comparison. Nonformal used-DEV."""
+from __future__ import annotations
+import argparse
+import hashlib
+import json
+import math
+import sys
+from collections import defaultdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
+H = 1_800_000
+def digest(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+def ms(stamp: str) -> int:
+    return int(datetime.fromisoformat(stamp).timestamp()*1000)
+
+def source(root: Path, symbol: str) -> tuple[pd.DataFrame, dict[str, str]]:
+    paths = sorted((root / symbol).glob("*.csv.gz"))
+    if not paths:
+        raise ValueError("CANONICAL_30M_SOURCE_MISSING")
+    frames = []
+    pins = {}
+    for p in paths:
+        data = p.read_bytes()
+        pins[p.name] = digest(data)
+        raw = pd.read_csv(p, float_precision="round_trip")
+        if list(raw.columns) != ["timestamp_ms", "open", "high", "low", "close", "volume"]:
+            raise ValueError("ORIGINAL_30M_SCHEMA_CHANGED")
+        frames.append(raw)
+    x = pd.concat(frames, ignore_index=True)
+    stamps = x.timestamp_ms.to_numpy(dtype=np.int64)
+    if len(stamps) < 500 or not np.all(np.diff(stamps)==H) or not np.all(stamps % H == 0):
+        raise ValueError("30M_SOURCE_GAP_DUPLICATE_OR_ALIGNMENT")
+    cols = x[["open", "high", "low", "close", "volume"]].to_numpy(dtype=float)
+    if not np.isfinite(cols).all() or (cols[:,:4]<=0).any() or (cols[:,4]<0).any():
+        raise ValueError("INVALID_CANONICAL_OHLC")
+    if (cols[:,1] < np.maximum.reduce([cols[:,0],cols[:,2],cols[:,3]])).any():
+        raise ValueError("HIGH_BAD")
+    if (cols[:,2] > np.minimum.reduce([cols[:,0],cols[:,1],cols[:,3]])).any():
+        raise ValueError("LOW_BAD")
+    x.rename(columns={"timestamp_ms":"open_ts_ms"}, inplace=True)
+    x["close_ts_ms"] = x.open_ts_ms + H
+    x["available_ts_ms"] = x.close_ts_ms
+    x["segment_id"] = 0
+    return x, pins
+
+def eligible_pair(prev: dict[str, Any], now: dict[str, Any]) -> bool:
+    vals = (float(now["momentum"]),float(prev["momentum"]),float(now["close"]),
+            float(now["g8"]),float(now["g21"]),float(now["g34"]),float(now["atr20"]))
+    return (bool(prev["squeeze_on"]) and not bool(now["squeeze_on"])
+        and all(map(math.isfinite, vals)) and vals[0]>0 and vals[0]>vals[1]
+        and vals[2]>vals[5] and vals[3]>vals[4]>vals[5] and vals[6]>0)
+
+def signals(enriched: pd.DataFrame) -> list[dict[str, Any]]:
+    rows=enriched.to_dict("records");out=[];streak=0
+    for i in range(len(rows)):
+        if bool(rows[i]["squeeze_on"]):
+            streak += 1
+            continue
+        if i>=80 and eligible_pair(rows[i-1],rows[i]):
+            out.append({"signal_idx":i,"signal_ts":int(rows[i]["close_ts_ms"]),
+                "prior_compressed_bars":streak,
+                "stop_price":float(rows[i]["g21"])-2.0*float(rows[i]["atr20"])})
+        streak=0
+    return out
+
+def stop_fill(open_price: float, low_price: float, stop: float) -> tuple[float|None, str|None]:
+    if open_price <= stop:
+        return open_price,"OPEN_GAP_STOP"
+    if low_price <= stop:
+        return stop,"STOP_FIRST"
+    return None,None
+
+def simulated(enriched: pd.DataFrame, symbol: str, start: int, end: int,
+             mode: str) -> tuple[list[dict[str,Any]],list[dict[str,Any]],dict[str,int]]:
+    assert mode in ("CONTROL","PERSIST3")
+    rows = enriched.to_dict("records")
+    opportunities=signals(enriched)
+    trades=[];censored=[]; counts=defaultdict(int)
+    busy_through=-1
+    for s in opportunities:
+        idx=s["signal_idx"];clock=s["signal_ts"]
+        if clock<start or clock>=end:continue
+        counts["release_candidates"]+=1
+        if mode=="PERSIST3" and s["prior_compressed_bars"]<3:
+            counts["rejected_insufficient_compression"]+=1
+            continue
+        if idx<=busy_through:
+            counts["blocked_same_symbol_occupancy"]+=1
+            continue
+        j=idx+1
+        if j>=len(rows) or int(rows[j]["open_ts_ms"])>=end:
+            censored.append({"symbol":symbol,"reason":"ENTRY_OUTSIDE_PARTITION","signal_ts":clock})
+            continue
+        entry=float(rows[j]["open"])
+        stop=float(s["stop_price"])
+        if stop<=0 or stop>=entry:
+            counts["invalid_native_stop"]+=1
+            continue
+        exit_j=None;out=None;why=None;pending=False
+        for k in range(j,min(len(rows),j+12)):
+            if int(rows[k]["open_ts_ms"])>=end:break
+            opening=float(rows[k]["open"]);low=float(rows[k]["low"])
+            fail,reason=stop_fill(opening,low,stop)
+            if fail is not None:
+                exit_j=k;out=fail;why=reason;break
+            if pending:
+                exit_j=k;out=opening;why="SQUEEZE_TWO_WEAK_NEXT_OPEN";break
+            if k>j+1 and k>=2:
+                momentum=(float(rows[k-2]["momentum"]),float(rows[k-1]["momentum"]),float(rows[k]["momentum"]))
+                if all(map(math.isfinite,momentum)) and momentum[0]>momentum[1]>momentum[2]>0:
+                    pending=True
+            if k>=j+10:
+                pending=True
+        if exit_j is None:
+            next_i=min(len(rows)-1,j+11)
+            if next_i>=len(rows) or int(rows[next_i]["open_ts_ms"])>=end:
+                censored.append({"symbol":symbol,"entry_ts":int(rows[j]["open_ts_ms"]),
+                    "signal_ts":clock,"reason":"OPEN_AT_END"})
+                busy_through=max(busy_through,next_i)
+                continue
+            exit_j=next_i;out=float(rows[next_i]["open"]);why="MAX_HOLD_NEXT_OPEN"
+        assert out is not None
+        if int(rows[exit_j]["open_ts_ms"])<int(rows[j]["open_ts_ms"]):
+            raise ValueError("EXIT_BEFORE_ENTRY")
+        gross=10000*(out/entry-1.0)
+        trades.append({"symbol":symbol,"signal_ts_ms":clock,
+            "entry_ts_ms":int(rows[j]["open_ts_ms"]),
+            "exit_ts_ms":int(rows[exit_j]["open_ts_ms"]),
+            "gross_bps":gross,"net1_bps":gross-20,"net2_bps":gross-40,
+            "entry":entry,"exit":out,"stop":stop,"why":why,
+            "prior_compressed_bars":s["prior_compressed_bars"]})
+        busy_through=exit_j
+        counts["completed"]+=1
+    return trades,censored,dict(counts)
+
+def metrics(rows: list[dict[str,Any]], start: int,end:int)->dict[str, Any]:
+    rows=sorted(rows,key=lambda r:(r["exit_ts_ms"],r["symbol"],r["signal_ts_ms"]))
+    wins1=[x["net1_bps"] for x in rows if x["net1_bps"]>0]
+    wins2=[x["net2_bps"] for x in rows if x["net2_bps"]>0]
+    losses=[-x["net2_bps"] for x in rows if x["net2_bps"]<0]
+    sum2=sum(x["net2_bps"] for x in rows)
+    cohorts=defaultdict(float)
+    for x in rows:cohorts[int(x["exit_ts_ms"])]+=x["net2_bps"]
+    equity=peak=dd=0
+    for ts in sorted(cohorts):
+        equity+=cohorts[ts]
+        peak=max(peak,equity);dd=max(dd,peak-equity)
+    streak=maximum=0
+    for x in rows:
+        streak=streak+1 if x["net2_bps"]<0 else 0
+        maximum=max(maximum,streak)
+    wsorted=sorted(wins2,reverse=True)
+    return {"T":len(rows),"T_per_day":len(rows)/((end-start)/86400000),
+        "Net1_trade_bps":sum(x["net1_bps"] for x in rows),
+        "Net2_trade_bps":sum2,"PF2":sum(wins2)/sum(losses) if losses else None,
+        "WR2_pct":100*len(wins2)/len(rows) if rows else None,
+        "max_streak2":maximum,"realized_exit_cohort_DD2_trade_bps":dd,
+        "largest2_win_share":sum(wsorted[:2])/sum(wins2) if wins2 else None,
+        "distinct_entry_epochs":len(set(x["entry_ts_ms"] for x in rows)),
+        "gross_sum_bps":sum(x["gross_bps"] for x in rows)}
+
+def run(root:Path,folder:Path) -> dict[str,Any]:
+    freeze_raw=(folder/"FREEZE.json").read_bytes()
+    spec=json.loads(freeze_raw)
+    base=Path(spec["core_indicator_module"])
+    if digest(base.read_bytes())!=spec["core_indicator_sha256"]:
+        raise ValueError("PINNED_NATIVE_SQUEEZE_SOURCE_CHANGED")
+    sys.path.insert(0,str(base.parents[3]))
+    from backend.research.rebuild import scalp7_positive_lanes_v2 as native
+    if digest(Path(native.__file__).read_bytes())!=spec["core_indicator_sha256"]:
+        raise ValueError("NATIVE_IMPORT_SHA_MISMATCH")
+    if spec["candidate_id"]!="SQUEEZE_FIRST_RELEASE_MIN3BAR_COMPRESSION_LONG_ZEL_V1":
+        raise ValueError("FROZEN_IDENTITY_MISMATCH")
+    full={"source_manifest_sha256":digest(Path(spec["root_manifest"]).read_bytes()),
+        "rule_sha256":digest(freeze_raw),"model_source_bound_by_full_raw_file_sha":{},
+        "economic":{},"rows":{},"opportunity_counts":{},"censored":{},
+        "actual_received_at":None,"funding":None,"portfolio_NAV":None,
+        "authoritative_comparison_to_saved57":False,"formal_FULL":0,"orders":0,"promotion":False}
+    for symbol in spec["symbols"]:
+        x,shas=source(root,symbol)
+        enriched=native._enrich_segment(x)
+        full["model_source_bound_by_full_raw_file_sha"][symbol]={
+            "parts":shas,"rows":len(x),"first":int(x.iloc[0].open_ts_ms),"last":int(x.iloc[-1].open_ts_ms)}
+        for label,(a,b) in spec["partitions"].items():
+            for mode in ("CONTROL","PERSIST3"):
+                k=label+"_"+mode
+                rows,cens,count=simulated(enriched,symbol,ms(a),ms(b),mode)
+                full["rows"].setdefault(k,[]).extend(rows)
+                full["censored"].setdefault(k,[]).extend(cens)
+                d=full["opportunity_counts"].setdefault(k,{})
+                for kind,n in count.items():d[kind]=d.get(kind,0)+n
+        print("SOURCE_AND_NATIVE_SQUEEZE_COMPLETE",symbol,len(x),flush=True)
+    for label,(a,b) in spec["partitions"].items():
+        for mode in ("CONTROL","PERSIST3"):
+            k=label+"_"+mode
+            full["economic"][k]=metrics(full["rows"][k],ms(a),ms(b))
+            print("COSTED",k,json.dumps(full["economic"][k],sort_keys=True),flush=True)
+    for label in spec["partitions"]:
+        control=full["rows"][label+"_CONTROL"];child=full["rows"][label+"_PERSIST3"]
+        old={ (x["symbol"],x["signal_ts_ms"]):x for x in control}
+        new={ (x["symbol"],x["signal_ts_ms"]):x for x in child}
+        lost=[x for k,x in old.items() if k not in new]
+        added=[x for k,x in new.items() if k not in old]
+        full["economic"][label+"_CAUSAL_OPPORTUNITY_DIFF"]={
+            "control_only":len(lost),"child_only":len(added),
+            "control_only_winner2_bps":sum(x["net2_bps"] for x in lost if x["net2_bps"]>0),
+            "control_only_losses_avoided2_bps":-sum(x["net2_bps"] for x in lost if x["net2_bps"]<0),
+            "child_only_net2_bps":sum(x["net2_bps"] for x in added)}
+    raw=(json.dumps(full,sort_keys=True,indent=2,ensure_ascii=False,allow_nan=False)+"\n").encode()
+    with (folder/"RESULT.json").open("xb") as f:f.write(raw)
+    summary={"schema":"zel.squeeze.native_core.duration_v1.result",
+        "candidate":spec["candidate_id"],"inputs_sha":full["source_manifest_sha256"],
+        "rule_sha":full["rule_sha256"],"result_sha":digest(raw),
+        "economic":full["economic"],"opportunity_counts":full["opportunity_counts"],
+        "net2_pass":False,"used_dev_only":True,"action":"hold"}
+    (folder/"SUMMARY.json").write_text(json.dumps(summary,indent=2,sort_keys=True,allow_nan=False)+"\n")
+    return summary
+if __name__=="__main__":
+    ap=argparse.ArgumentParser()
+    ap.add_argument("--folder",required=True,type=Path)
+    args=ap.parse_args()
+    p=args.folder
+    s=json.loads((p/"FREEZE.json").read_text())
+    z=run(Path(s["source"]),p)
+    print("FINISHED_SUMMARY",json.dumps(z,ensure_ascii=False)[:1400],flush=True)

@@ -77,7 +77,44 @@ jobs:
           [ "$matched" -eq 1 ] || { echo A1_JUMP_ECON_RUNTIME_PARITY_TIMEOUT >&2; exit 71; }
           cd "$ROOT"
           export PYTHONPATH="$ROOT"
-          python3 -m backend.production.zel_production_a1_jump_liquidity_economic_v1 --policy config/zel_production_a1_jump_liquidity_economic_v1.json
+          # Proven OOM: 3.86GB JSONL read_text/splitlines/dict fanout on 7.7GiB RAM.
+          # A deterministic fail-closed admission; NEVER silently truncate rows.
+          resource_pair="$(python3 - <<'PYRESOURCE'
+          import json
+          from pathlib import Path
+          cfg=json.loads(Path('config/zel_production_a1_jump_liquidity_economic_v1.json').read_text())
+          src=Path(str(cfg['history_path']))
+          size=src.stat().st_size if src.is_file() else -1
+          memory=next((int(line.split()[1])*1024 for line in Path('/proc/meminfo').read_text().splitlines() if line.startswith('MemAvailable:')),0)
+          budget=min(512*1024*1024,memory//8)
+          print(size,budget)
+          PYRESOURCE
+          )"
+          read -r source_bytes budget_bytes <<< "$resource_pair"
+          if [ "$source_bytes" -lt 0 ] || [ "$source_bytes" -gt "$budget_bytes" ]; then
+            RESOURCE_BYTES="$source_bytes" RESOURCE_BUDGET="$budget_bytes" python3 - <<'PYHOLD'
+          import json
+          import os
+          source=int(os.environ['RESOURCE_BYTES'])
+          budget=int(os.environ['RESOURCE_BUDGET'])
+          out={
+            'schema_version':'zel.production_a1_jump_liquidity_economic_receipt.v1',
+            'state':'HOLD_A1_ECON_RESOURCE_BUDGET',
+            'reason':'SOURCE_MISSING' if source<0 else 'FULL_HISTORY_MEMORY_ADMISSION_BLOCKED',
+            'source_history_bytes':source,
+            'resource_budget_bytes':budget,
+            'source_scan_performed':False,
+            'economic_events_evaluated':0,
+            'selection_authority':False,'promotion_authority':False,
+            'execution_authority':'NONE','order_authority':'BLOCKED',
+            'live_trade_authority':'BLOCKED','exchange_order_submitted':False,
+            'protected_mutations':0
+          }
+          print(json.dumps(out,sort_keys=True))
+          PYHOLD
+          else
+            python3 -m backend.production.zel_production_a1_jump_liquidity_economic_v1 --policy config/zel_production_a1_jump_liquidity_economic_v1.json
+          fi
           REMOTE
       - name: Verify receipt remains research-only
         run: |
@@ -91,7 +128,12 @@ jobs:
             'HOLD_A1_ECON_POST_SEAL_HISTORY_REQUIRED',
             'HOLD_A1_ECON_FUNDING_RATE_REQUIRED',
             'HOLD_A1_ECON_NO_QUALIFYING_EVENTS_YET',
+            'HOLD_A1_ECON_RESOURCE_BUDGET',
           }, r
+          if r['state']=='HOLD_A1_ECON_RESOURCE_BUDGET':
+            assert r['source_scan_performed'] is False
+            assert int(r['economic_events_evaluated'])==0
+            assert int(r['source_history_bytes'])<0 or int(r['source_history_bytes'])>int(r['resource_budget_bytes'])
           assert r['selection_authority'] is False and r['promotion_authority'] is False
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
           assert r['live_trade_authority']=='BLOCKED' and r['exchange_order_submitted'] is False

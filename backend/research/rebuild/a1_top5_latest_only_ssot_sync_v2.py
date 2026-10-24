@@ -9,10 +9,17 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_SSOT = ROOT / "backend/research/rebuild/a1_top5_latest_only_ssot_v1.json"
-DEFAULT_FREEZE = ROOT / "backend/research/contracts/a1_top5_replacement_child_freeze_v2.json"
-DEFAULT_PROSPECTIVE = ROOT / "backend/research/rebuild/a1_top5_replacement_child_prospective_v2_latest.json"
+DEFAULT_FREEZE = (
+    ROOT / "backend/research/contracts/a1_top5_replacement_child_freeze_v2.json"
+)
+DEFAULT_PROSPECTIVE = (
+    ROOT
+    / "backend/research/rebuild/a1_top5_replacement_child_prospective_v2_latest.json"
+)
 DEFAULT_G5 = ROOT / "backend/research/prep/g5_trendrider_broad30_product_latest.json"
-DEFAULT_SHADOW = ROOT / "backend/research/prep/g5_trendrider_atr_pct_shadow_probe_latest.json"
+DEFAULT_SHADOW = (
+    ROOT / "backend/research/prep/g5_trendrider_atr_pct_shadow_probe_latest.json"
+)
 DEFAULT_OUT = ROOT / "out/a1_top5_latest_only_ssot_v1.json"
 
 
@@ -25,23 +32,74 @@ def read(path: Path, *, optional: bool = False) -> dict[str, Any] | None:
     return x
 
 
-def sync(ssot: dict[str, Any], freeze: dict[str, Any], prospective: dict[str, Any], g5: dict[str, Any], shadow: dict[str, Any] | None) -> dict[str, Any]:
+def verify_g5_product_state(g5: dict[str, Any]) -> None:
+    """Allow a recorded forward economic failure, never reuse it as G5 PASS."""
+    assert g5["schema_version"] == "zel.g5.trendrider_broad30.product_oos.v1"
+    assert g5["policy_retune"] is False and g5["threshold_retune"] is False
+    assert g5["selection_authority"] is False
+    assert g5["promotion_authority"] is False
+    assert g5["execution_authority"] == "NONE"
+    assert g5["order_authority"] == "BLOCKED"
+    assert g5["live_trade_authority"] == "BLOCKED"
+    w2 = g5["windows"]["W2"]
+    w3 = g5["windows"]["W3"]
+    if g5["state"] == "WAIT_G5_W2_12":
+        assert int(g5["postlock_closed_T"]) == int(w2["metrics"]["trades"])
+        return
+    assert g5["state"] == "WAIT_G5_FORWARD_REAL_ECONOMICS"
+    assert g5["research_state"] == "FAIL_G5_W2_ECONOMICS_STOP_W3"
+    assert int(w2["metrics"]["trades"]) >= int(w2["target_T"]) >= 12
+    assert int(w3["metrics"]["trades"]) >= int(w3["target_T"]) >= 12
+    assert float(w2["metrics"]["net_pnl_bps"]) < 0
+    assert float(w2["metrics"]["profit_factor"]) < 1
+    assert int(g5["postlock_closed_T"]) >= (
+        int(w2["metrics"]["trades"]) + int(w3["metrics"]["trades"])
+    )
+    economic = g5["economic_ssot"]
+    assert economic["schema_version"] == "zel.g5.production_economic_ssot.v1"
+    assert economic["state"] == "WAIT_FORWARD_REAL_PRODUCTION_EVIDENCE"
+    assert economic["production_grade_ready"] is False
+    assert int(economic["production_grade_T"]) == 0
+    assert int(economic["replay_or_proxy_T"]) == int(g5["postlock_closed_T"])
+    assert int(economic["durable_trade_count"]) == int(economic["runtime_trade_count"])
+    assert economic["durable_trade_set_sha256"] == economic["runtime_trade_set_sha256"]
+    assert economic["durable_matches_runtime"] is True
+    assert g5["ai_gate"]["g6_promotion_eligible"] is False
+    assert g5["ai_gate"]["production_grade_claim_eligible"] is False
+    assert g5["ai_gate"]["g6_promotion_forbidden"] is True
+
+
+def sync(
+    ssot: dict[str, Any],
+    freeze: dict[str, Any],
+    prospective: dict[str, Any],
+    g5: dict[str, Any],
+    shadow: dict[str, Any] | None,
+) -> dict[str, Any]:
     out = copy.deepcopy(ssot)
     assert out["schema_version"] == "zel.a1.top5.latest_only_ssot.v1"
     assert out["state"] == "CURRENT_TOP5_ONLY"
     assert freeze["schema_version"] == "zel.a1.top5.replacement_child_freeze.v2"
     assert freeze["state"] == "FROZEN_REPLACEMENT_CHILDREN_V2_PRE_PROSPECTIVE"
-    assert prospective["schema_version"] == "zel.a1.top5.replacement_child.prospective.receipt.v2"
+    assert (
+        prospective["schema_version"]
+        == "zel.a1.top5.replacement_child.prospective.receipt.v2"
+    )
     assert prospective["state"] == "PASS_PROSPECTIVE_V2_CHILD_COLLECTION_ACTIVE"
-    assert prospective["contract_path"] == "backend/research/contracts/a1_top5_replacement_child_freeze_v2.json"
+    assert (
+        prospective["contract_path"]
+        == "backend/research/contracts/a1_top5_replacement_child_freeze_v2.json"
+    )
     assert prospective["boundary_utc"] == freeze["prospective_boundary"]["utc"]
     assert int(prospective["boundary_ms"]) == int(freeze["prospective_boundary"]["ms"])
-    assert list(prospective["frozen_symbol_universe"]) == list(freeze["frozen_symbol_universe"])
-    assert float(prospective["fixed_cost_bps_per_trade"]) == float(freeze["cost_model"]["cost_bps_per_trade"])
+    assert list(prospective["frozen_symbol_universe"]) == list(
+        freeze["frozen_symbol_universe"]
+    )
+    assert float(prospective["fixed_cost_bps_per_trade"]) == float(
+        freeze["cost_model"]["cost_bps_per_trade"]
+    )
     assert prospective["g5_broad_population_mutated"] is False
-    assert g5["state"] == "WAIT_G5_W2_12"
-    assert g5["policy_retune"] is False and g5["threshold_retune"] is False
-    assert int(g5["postlock_closed_T"]) == int(g5["windows"]["W2"]["metrics"]["trades"])
+    verify_g5_product_state(g5)
 
     out["replacement_child_sync"] = {
         "state": "THREE_DEVELOPMENT_PASS_CHILDREN_V2_FROZEN_FOR_FRESH_PROSPECTIVE_COLLECTION",
@@ -63,7 +121,11 @@ def sync(ssot: dict[str, Any], freeze: dict[str, Any], prospective: dict[str, An
 
     freeze_by_lane = {x["lane_id"]: x for x in freeze["children"]}
     prospect_by_lane = prospective["lanes"]
-    expected_lanes = {"break_and_continue_main", "keltner_trend_main", "supertrend_pullback_main"}
+    expected_lanes = {
+        "break_and_continue_main",
+        "keltner_trend_main",
+        "supertrend_pullback_main",
+    }
     assert set(freeze_by_lane) == expected_lanes
     assert set(prospect_by_lane) == expected_lanes
 
@@ -91,14 +153,20 @@ def sync(ssot: dict[str, Any], freeze: dict[str, Any], prospective: dict[str, An
                 "development_win_rate": dm["win_rate"],
                 "development_drawdown_bps": dm["drawdown_bps"],
                 "fixed_cost_bps_per_trade": dm["cost_bps_per_trade"],
-                "preboundary_arrival_rate_multiplier": f["preboundary_arrival_rate_multiplier"],
+                "preboundary_arrival_rate_multiplier": f[
+                    "preboundary_arrival_rate_multiplier"
+                ],
                 "frozen_symbol_universe": prospective["frozen_symbol_universe"],
                 "prospective_boundary_utc": p["boundary_utc"],
                 "prospective_boundary_ms": p["boundary_ms"],
                 "prospective_closed_T": p["closed_T"],
                 "prospective_metrics": p["metrics"],
-                "old_parent_raw_observer_burned_T": p["old_parent_raw_observer_burned_T"],
-                "old_parent_raw_observer_consumed_T": p["old_parent_raw_observer_consumed_T"],
+                "old_parent_raw_observer_burned_T": p[
+                    "old_parent_raw_observer_burned_T"
+                ],
+                "old_parent_raw_observer_consumed_T": p[
+                    "old_parent_raw_observer_consumed_T"
+                ],
                 "predecessor_v1_consumed_T": p["predecessor_v1_consumed_T"],
                 "selection_authority": False,
                 "promotion_authority": False,
@@ -117,7 +185,10 @@ def sync(ssot: dict[str, Any], freeze: dict[str, Any], prospective: dict[str, An
                 "threshold_retune": g5["threshold_retune"],
             }
             if shadow is not None:
-                assert shadow["schema_version"] == "zel.g5.trendrider.atr_pct.shadow_probe.receipt.v1"
+                assert (
+                    shadow["schema_version"]
+                    == "zel.g5.trendrider.atr_pct.shadow_probe.receipt.v1"
+                )
                 assert shadow["lane_id"] == lane
                 assert shadow["parent_mutated"] is False
                 assert shadow["current_w2_rows_reused_as_shadow_T"] == 0
@@ -127,7 +198,9 @@ def sync(ssot: dict[str, Any], freeze: dict[str, Any], prospective: dict[str, An
                     "source_path": "backend/research/prep/g5_trendrider_atr_pct_shadow_probe_latest.json",
                     "source_receipt_sha256": shadow.get("receipt_sha256"),
                     "probe_boundary_utc": shadow["probe_boundary_utc"],
-                    "parent_future_T_after_probe_boundary": shadow["parent_future_T_after_probe_boundary"],
+                    "parent_future_T_after_probe_boundary": shadow[
+                        "parent_future_T_after_probe_boundary"
+                    ],
                     "shadow_accepted_T": shadow["shadow_accepted_T"],
                     "shadow_rejected_T": shadow["shadow_rejected_T"],
                     "shadow_metrics": shadow["shadow_metrics"],
@@ -151,7 +224,10 @@ def sync(ssot: dict[str, Any], freeze: dict[str, Any], prospective: dict[str, An
 
 def self_test() -> int:
     assert DEFAULT_FREEZE.name == "a1_top5_replacement_child_freeze_v2.json"
-    assert DEFAULT_PROSPECTIVE.name == "a1_top5_replacement_child_prospective_v2_latest.json"
+    assert (
+        DEFAULT_PROSPECTIVE.name
+        == "a1_top5_replacement_child_prospective_v2_latest.json"
+    )
     print("PASS_TOP5_LATEST_ONLY_SSOT_SYNC_V2_SELF_TEST")
     return 0
 
@@ -168,15 +244,46 @@ def main() -> int:
     args = ap.parse_args()
     if args.self_test:
         return self_test()
-    out = sync(read(args.ssot), read(args.freeze), read(args.prospective), read(args.g5), read(args.shadow, optional=True))
+    source_ssot = read(args.ssot)
+    source_freeze = read(args.freeze)
+    source_prospective = read(args.prospective)
+    source_g5 = read(args.g5)
+    if (
+        source_ssot is None
+        or source_freeze is None
+        or source_prospective is None
+        or source_g5 is None
+    ):
+        raise RuntimeError("TOP5_MANDATORY_INPUT_MISSING")
+    out = sync(
+        source_ssot,
+        source_freeze,
+        source_prospective,
+        source_g5,
+        read(args.shadow, optional=True),
+    )
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(out, indent=2, sort_keys=False, allow_nan=False) + "\n", encoding="utf-8")
-    print(json.dumps({
-        "state": out["state"],
-        "replacement_owner": out["reporting_rules"]["replacement_child_current_owner"],
-        "replacement_total_T": out["replacement_child_sync"]["total_fresh_child_T"],
-        "g5_T": next(x for x in out["top5"] if x["lane_id"] == "trend_rider_broad_wr7000")["g5"]["postlock_closed_T"],
-    }, sort_keys=True))
+    args.out.write_text(
+        json.dumps(out, indent=2, sort_keys=False, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    print(
+        json.dumps(
+            {
+                "state": out["state"],
+                "replacement_owner": out["reporting_rules"][
+                    "replacement_child_current_owner"
+                ],
+                "replacement_total_T": out["replacement_child_sync"][
+                    "total_fresh_child_T"
+                ],
+                "g5_T": next(
+                    x for x in out["top5"] if x["lane_id"] == "trend_rider_broad_wr7000"
+                )["g5"]["postlock_closed_T"],
+            },
+            sort_keys=True,
+        )
+    )
     return 0
 
 

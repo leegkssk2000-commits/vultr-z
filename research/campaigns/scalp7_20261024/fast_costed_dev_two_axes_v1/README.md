@@ -1,0 +1,12 @@
+# Fast pre-frozen loss-control and independent RSI2 DEV — 2026-10-24
+
+Separate additive source branch, no master/economic owner change, market API, orders, active writer, or economic FULL. All results come from ALREADY USED historical data, not fresh OOS or account NAV.
+
+## K126 frozen 24h/12h loss cluster
+Original K126 126T winner-extension saved ledger recovered from immutable prior commit 308bd2de, input SHA e8ed07c3e8616814163e8b6e23a854cbb98b724b9c6ed1ad83c5cb28936382dc. At signal time, veto if at least two previously admitted and actually closed losses at cost2 appeared within preceding24h with latest less than12h ago. Same-time unavailable outcomes never count. One frozen candidate, 10 synthetic tests PASS. Baseline Net1 +7925.82 Net2 +6032.80 trade-bps. 37 blocked (21 losing, 16 winning), remaining89 Net1 +4151.83 Net2 +2806.73, PF2 1.405, max streak 13 to12, realized DD2 2059.61 to2518.97bps. Saved original-accepted-opportunities diagnostic ONLY; does not replay newly freed entry opportunities. REJECT without tuning. FREEZE, screen.py, test_screen.py, RESULT.json and DECISIONS.json included.
+
+## RSI2 trend bounce long only
+New experimental ZEL numeric rule, not a complete exact original by a cited trader. Pre-outcome freeze file. Six original 1h archived crypto symbols, EMA200 rising over24 bars, close above EMA200 but below EMA20, Wilder RSI(2)<=10. Signal after completed 1h bar, entry next open; fixed stop at 1.5 ATR14 and target3 ATR14, time exit at24 bars, stop-first same-bar, no shorts/pyramids. 20/40bp all-in modeled costs, actual fees/funding unknown. 9 deterministic tests PASS. Archived market bytes hashed in RESULT, no interpolation and no gap repair. TRAIN 88d 180T Net1 -6818.05 Net2 -10418.05bp PF2 .481 maxlosing16; later 90d 152T Net1 -6157.45 Net2 -9197.45bp PF2 .442 maxlosing15. Both NEGATIVE => REJECT without retuning. This used-archive result cannot claim independent OOS.
+
+## Actions & limitations
+No new acceptable positive survivor. A's authorized Squeeze signal-low FULL remains outstanding; the existing GitHub token request returned 403 Resource not accessible by personal access token. No alternate credential bypass attempted. D HGL1 remains HOLD input binding. Both negative cases are terminal for these exact frozen numeric variants. Preserve original K126 winner extension and all failed histories. No Shadow/Live changes. Files are source and result evidence only.

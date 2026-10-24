@@ -74,11 +74,25 @@ jobs:
               assert int(c['old_parent_raw_observer_consumed_T'])==0
               assert c['promotion_authority'] is False
           g5=lanes['trend_rider_broad_wr7000']['g5']
-          assert int(g5['postlock_closed_T'])==4
+          source_g5=json.load(open('backend/research/prep/g5_trendrider_broad30_product_latest.json'))
+          # The old immutable W2 snapshot counted 4; the forward product
+          # now contains 49 replay/proxy post-lock rows, not production T.
+          assert g5['state']==source_g5['state']=='WAIT_G5_FORWARD_REAL_ECONOMICS'
+          assert source_g5['research_state']=='FAIL_G5_W2_ECONOMICS_STOP_W3'
+          assert int(g5['postlock_closed_T'])==int(source_g5['postlock_closed_T'])
+          assert int(source_g5['economic_ssot']['production_grade_T'])==0
+          assert source_g5['economic_ssot']['production_grade_ready'] is False
+          assert source_g5['ai_gate']['g6_promotion_eligible'] is False
           assert g5['policy_retune'] is False and g5['threshold_retune'] is False
           sh=g5.get('causal_shadow')
           assert sh is not None and sh['axis']=='ATR_PCT'
-          assert int(sh['shadow_accepted_T'])==0
+          source_shadow=json.load(open('backend/research/prep/g5_trendrider_atr_pct_shadow_probe_latest.json'))
+          assert sh['state']==source_shadow['state']
+          assert sh['source_receipt_sha256']==source_shadow['receipt_sha256']
+          assert int(sh['shadow_accepted_T'])==int(source_shadow['shadow_accepted_T'])
+          assert int(sh['shadow_rejected_T'])==int(source_shadow['shadow_rejected_T'])
+          assert int(source_shadow['current_w2_rows_reused_as_shadow_T'])==0
+          assert int(sh['shadow_accepted_T'])+int(sh['shadow_rejected_T'])==int(sh['parent_future_T_after_probe_boundary'])
           assert sh['economic_roi_credit'] is False
           assert r['execution_authority']=='NONE'
           assert r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'

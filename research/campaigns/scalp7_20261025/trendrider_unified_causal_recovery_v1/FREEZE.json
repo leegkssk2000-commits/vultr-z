@@ -1,0 +1,100 @@
+{
+  "acceptance": "NO_AUTO_PROMOTION; robustness require net2>0/PF>1, DD and streak lower, AND no negative 10/2026 window OR winner top2 concentration failure, H4 placebo and H5 concentration, actual costs/time/funding, new untouched OOS",
+  "cost_contract": {
+    "DD": "realized exit-leg cohort sums, with new reverse leg booked only at actual future terminal, never instant recovery",
+    "baseline": "native saved modeled round trip cost ×2; normalized one-third portfolio units for all candidates",
+    "close_at": "candle close after market bar complete; next-open for decision-derived bail/reentry",
+    "companion_metrics": [
+      "T",
+      "Net2 trade bps",
+      "PF2",
+      "WR2",
+      "DD2",
+      "max original loss streak",
+      "max composite losing opportunity streak",
+      "largest loss",
+      "top2 winner dependence",
+      "per calendar month",
+      "leave-one-symbol-out",
+      "no_order_calls"
+    ],
+    "extension_carry": "model only, not actual historical signed funding",
+    "gap": "stop-first and worst of open/stop fill"
+  },
+  "created_utc": "2026-10-25T14:29:26.215264+00:00",
+  "new_work": 0,
+  "no_adjustable_grid": true,
+  "no_global_heavy": true,
+  "no_new_collector": true,
+  "no_paid_AI": true,
+  "no_paper_live": true,
+  "orders": 0,
+  "owner": "EXISTING_C_READONLY_UNIFIED_OFFLINE_DEVELOPMENT",
+  "parent_sources": {
+    "fusion_prior_freeze_sha256": "b062cd926ac2b727ecfca435a3c52b9af9362241058a4da9b4540c76b580dbf0",
+    "fusion_prior_result_sha256": "41c6386859158b5ddaf8a4785917cf4984c54f4362ae4899312e5bca4b7fb6bb",
+    "market_1h_gzip_sha256": "16198ac2a3db7849237028a5f5a0100e2033162a9d93b05ad171273215c9a592",
+    "only_source": "/home/z/z/runtime/zel_trendrider_family_dev_20261025",
+    "original_delayed_artifact": {
+      "T": 249,
+      "archive_sha256": "4ab634d853314d8427404d0ca722b6ce52d4d1f1561a68041ced0eff0d70d2e7",
+      "inner_path": "long_only_prospective.json",
+      "run": 40146310229,
+      "sha256": "85f417400887f85e57550561a5f0c4d1f34cb366c3929e25de5224cc826eb455",
+      "source": "GitHub_Actions_artifact_12588117211"
+    },
+    "original_liquid6_git": {
+      "T": 119,
+      "git_commit": "76f7ec69e1789126114b8bfbdcd6c55d3f640c3b",
+      "path": "backend/research/rebuild/a1_trend_rider_liquid6_risk_budget_child_latest.json",
+      "sha256": "ec542bb59161550a2c314c6f352493f88509b0df3b739448c8b3b3a169821938",
+      "source": "git"
+    },
+    "source_asof_authority": "READONLY_BINGX_OHLC_USED_HISTORICAL_QUOTE_RECEIVED_AT_UNKNOWN"
+  },
+  "production_authority": "BLOCKED",
+  "schema": "zel.trendrider.unified_one_owner_causal_rescue.v1",
+  "stages": [
+    {
+      "id": "S0_UNIFIED_BASELINE",
+      "mode": "merged positions only, corrected fill/stop geometry, no duplicate signals, native published stop/48h time close"
+    },
+    {
+      "condition": "native TIMEOUT at completed 48th 1h close, +1.0 original stop-price-R, close>EMA20 and EMA20 slope rising",
+      "extra_funding_model": "5 instrument bps per commenced8h hold, plus original native realized cost, with multiplier 2 model",
+      "floor": "max(sealed SL, entry+0.5R, previous completed high-water−1.25R); stop-first; gap worse at open",
+      "id": "S1_WINNER_EXTENSION",
+      "max_extend_hours": 12
+    },
+    {
+      "condition": "while original long still live AND native stop not touched, after >=2 completed bars close below EMA20, EMA20 slope negative, current close<previous close and price <= entry−0.5 initial stop-R; liquidate at next real 1h open",
+      "exit_cost": "retain original native already-modeled fee/funding even on shorter hold",
+      "id": "S2_EARLY_LOSS_ABORT",
+      "source_clock": "signal only after completed previous bar; no same-bar exit at previous close"
+    },
+    {
+      "condition": "only after a realized negative long from native stop or S2 abort; the LAST fully completed bar close<prior close and both last closes below EMA20 with EMA20 declining; next 1h open only",
+      "id": "S3_CONFIRM_REVERSAL_SHORT",
+      "risk": "at most same original 1/3 normalized size, never adding to a losing long, no DCA, no leverage increase; one short per long loss",
+      "short_limit_hours": 24,
+      "short_model_cost": "max(source long native instrument cost,14bps) ×1/3, stress doubled, plus 5 instrument bps per commenced8h hold ×1/3; no observed historical short funding",
+      "short_stop": "max(last2 completed highs+0.25ATR14, short_entry+1.5ATR14) from completed bars only",
+      "short_trailing": "once prior completed bar has +1R excursion, next-bar stop floor short min(native stop, short_entry−0.25R, prior completed lowest low+1.25R), never same-bar lookahead"
+    },
+    {
+      "condition": "if three prior COMPLETED opportunity outcomes are negative at stress2x and closed in 36h then block new entries for 6h after third loss; no post-result trade labels",
+      "id": "S4_STREAK_CIRCUIT",
+      "power": "do NOT retroactively remove losing trades; count skipped original winners and losers",
+      "suspension": "time stop new admissions only, never interrupt active positions; no forced 0-streak claims"
+    }
+  ],
+  "unified_signal_owner": {
+    "delayed_min_stop": "LONG only, native sealed SL < actual delayed entry (stop>=entry source invalid, exclude as ENTRY_GEOMETRY_FAIL; preserve raw count)",
+    "fixed_size": "each admitted original intent 1/3 instrument notional risk scaling, Liquid6 already 1/3, Delayed normalized from 1.0 to 1/3",
+    "identical_key": "symbol, side, signal_ts",
+    "no_new_signals": "all potential opportunities from union of existing saved completed parent receipts only; never synthesize missing new signals from freed capacity",
+    "optional_risk_factor": "only Stage4 streak exposure pause, no variable martingale",
+    "owner_guard": "per-symbol one position at a time incl cooling off 2h after terminal; among simultaneous different symbols alphabetical; max 6 open 1/3 units (2 gross risk units)",
+    "priority": "Liquid6 first confirmation owner when both exist; otherwise Delayed Fill as residual, NEVER both"
+  }
+}

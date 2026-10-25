@@ -25,6 +25,7 @@ import importlib
 
 k = importlib.import_module("k117_adapter")
 journal = importlib.import_module("k117_shadow_noorder_journal_v1")
+quotes = importlib.import_module("k117_existing_ws_quote_mark_v1")
 
 HALF_HOUR = 1_800_000
 MINUTE = 60_000
@@ -145,7 +146,7 @@ def main() -> int:
     if not args.enable_development_only:
         print("DEFAULT_OFF:EXPLICIT_DEVELOPMENT_ONLY_REQUIRED")
         return 0
-    if not (1 <= args.max_seconds <= 3600 and 30 <= args.poll_seconds <= 300):
+    if not (1 <= args.max_seconds <= 604800 and 30 <= args.poll_seconds <= 300):
         raise SystemExit("BOUNDED_WATCH_REQUIRED")
     # Original no-order isolation: scrub env before any K117 native dependencies.
     safe_env = {"PATH", "LANG", "LC_ALL", "TZ", "SYSTEMROOT"}
@@ -311,11 +312,19 @@ def main() -> int:
                         decision_ts_ms=now,
                         price_received_at_ms=int(bound[sym].iloc[-1].available_ts_ms),
                     )
+                    quote = (
+                        quotes.observe(
+                            sym, decision_ts_ms=now, read_at_ms=int(time.time() * 1000)
+                        )
+                        if item["status"] == "SIGNAL"
+                        else None
+                    )
                     results.append(
                         {
                             "symbol": sym,
                             "close_ts_ms": target_close,
                             "next_open_eligibility": timing,
+                            "post_decision_existing_ws_quote": quote,
                             "available_ts_ms": int(bound[sym].iloc[-1].available_ts_ms),
                             "status": item["status"],
                             "reason": item.get("reason"),

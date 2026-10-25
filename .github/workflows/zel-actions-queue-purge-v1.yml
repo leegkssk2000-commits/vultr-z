@@ -2,8 +2,7 @@ name: ZEL Actions Queue Purge V1
 
 on:
   push:
-    branches:
-      - master
+    branches: [master]
     paths:
       - backend/research/zel_actions_queue_purge_trigger_v1.json
   workflow_dispatch:
@@ -14,182 +13,28 @@ permissions:
 
 concurrency:
   group: zel-actions-queue-purge-v1
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   purge-obsolete-queued-runs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Read versioned, user-owned one-shot cancellation plan
+      - name: Checkout immutable user-owned plan
         uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Verify and cancel only pinned pre-Squeeze scheduled runs
+      - name: Validate pinned obsolete workflow queue and cancel only if separately authorized
         env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          CURRENT_RUN_ID: ${{ github.run_id }}
-          EVENT_NAME: ${{ github.event_name }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          python - <<'PY'
-          import datetime as dt
-          import json
-          import os
-          import urllib.error
-          import urllib.request
-          from pathlib import Path
-          
-          repo = os.environ["REPOSITORY"]
-          current = int(os.environ["CURRENT_RUN_ID"])
-          token = os.environ["GH_TOKEN"]
-          if os.environ["EVENT_NAME"] != "push":
-              raise SystemExit("ONLY_VERSIONED_TRIGGER_PUSH_CAN_PURGE")
-          plan = json.loads(Path("backend/research/zel_actions_queue_purge_trigger_v1.json").read_text())
-          assert plan["schema_version"] == "zel.actions.queue_purge.trigger.v1"
-          assert plan["state"] == "REQUEST_SQUEEZE496_QUEUE_PRIORITY"
-          assert plan["trigger_seq"] in (4, 5)
-          assert plan["mode"] in ("dry_run", "cancel")
-          assert int(plan["preserve_run_id"]) == 40122207006
-          assert len(plan["targets"]) <= 60 and len(plan["targets"]) >= 1
-          assert len({int(x["id"]) for x in plan["targets"]}) == len(plan["targets"])
-          if plan["mode"] == "cancel":
-              assert plan["trigger_seq"] == 5
-          else:
-              assert plan["trigger_seq"] == 4
-          
-          base = "https://api.github.com/repos/" + repo
-          headers = {
-              "Authorization": "Bearer " + token,
-              "Accept": "application/vnd.github+json",
-              "X-GitHub-Api-Version": "2022-11-28",
-              "User-Agent": "zel-actions-pinned-one-shot-queue-purge",
-          }
-          
-          def request(url, method="GET"):
-              req = urllib.request.Request(url, method=method, headers=headers)
-              try:
-                  with urllib.request.urlopen(req, timeout=20) as response:
-                      raw = response.read()
-                      return response.status, json.loads(raw) if raw else None
-              except urllib.error.HTTPError as exc:
-                  return exc.code, {"message": exc.read().decode("utf-8", errors="replace")[:220]}
-          
-          def get_run(run_id):
-              code, obj = request(base + "/actions/runs/" + str(run_id))
-              if code != 200 or not isinstance(obj, dict):
-                  raise RuntimeError("RUN_METADATA_GET_FAILED:" + str(run_id) + ":" + str(code))
-              return obj
-          
-          full = get_run(plan["preserve_run_id"])
-          assert full["id"] == 40122207006
-          assert full["event"] == "workflow_dispatch"
-          assert full["workflow_id"] == 374265721
-          assert full["head_branch"] == "master"
-          assert full["display_title"] == "Squeeze signal-low FULL CLOUD_WORK_COORDINATOR_ISSUE1358_V1"
-          assert full["status"] in ("pending", "queued", "in_progress", "completed")
-          assert full.get("conclusion") not in ("cancelled", "failure")
-          cutoff = dt.datetime.fromisoformat(full["created_at"].replace("Z", "+00:00"))
-          now = dt.datetime.now(dt.timezone.utc)
-          validated = []
-          skipped = []
-          
-          for target in plan["targets"]:
-              run_id = int(target["id"])
-              assert run_id not in (current, 40122207006)
-              assert target["event"] in ("schedule", "issue_comment")
-              assert target["expected_status"] in ("pending", "queued", "in_progress")
-              assert dt.datetime.fromisoformat(target["created_at"].replace("Z", "+00:00")) < cutoff
-              run = get_run(run_id)
-              assert run["id"] == run_id and run["workflow_id"] == int(target["workflow_id"])
-              assert run["event"] == target["event"]
-    if run["event"] == "issue_comment":
-        assert run["workflow_id"] == 374265721
-        assert run["name"] == "Keltner GitHub SSH read-only access diagnosis 20261004"
-        assert target["expected_status"] in ("pending", "queued")
-              assert run["head_branch"] == "master"
-              assert run["created_at"] == target["created_at"]
-              assert run["name"] == target["name"]
-              assert "Squeeze signal-low FULL" not in run.get("display_title", "")
-              assert "Structural Premium" not in run["name"]
-              assert "BingX WS" not in run["name"]
-              assert "Data B" not in run["name"]
-              if run["status"] in ("completed", "cancelled", "cancelling"):
-                  skipped.append({"id": run_id, "reason": "FINISHED_OR_CANCELLING"})
-                  continue
-              if target["expected_status"] in ("pending", "queued"):
-                  if run["status"] not in ("pending", "queued"):
-                      skipped.append({"id": run_id, "reason": "BECAME_ACTIVE_DO_NOT_INTERRUPT"})
-                      continue
-              else:
-                  assert run_id == 40093305834, "ONLY_PINNED_9H_STUCK_WORKFLOW_ALLOWED"
-                  if run["status"] != "in_progress":
-                      skipped.append({"id": run_id, "reason": "STUCK_RUN_NO_LONGER_ACTIVE"})
-                      continue
-                  if (now - dt.datetime.fromisoformat(run["created_at"].replace("Z", "+00:00"))).total_seconds() < 3 * 3600:
-                      raise RuntimeError("ACTIVE_RUN_NOT_STALE_ENOUGH")
-              validated.append(run_id)
-          
-          # All target identities and event types have been checked BEFORE the first cancellation.
-          sent = []
-          failures = []
-          if plan["mode"] == "cancel" and full["status"] not in ("in_progress", "completed"):
-              for run_id in validated:
-                  # Re-check status immediately before the action to avoid killing a new job.
-                  latest = get_run(run_id)
-                  if latest["status"] not in ("pending", "queued") and not (
-                      run_id == 40093305834 and latest["status"] == "in_progress"
-                  ):
-                      skipped.append({"id": run_id, "reason": "STARTED_BETWEEN_VALIDATION_AND_CANCEL"})
-                      continue
-                  code, info = request(base + "/actions/runs/" + str(run_id) + "/cancel", method="POST")
-                  if code == 202:
-                      sent.append({"id": run_id, "http_status": code})
-                  elif code == 409:
-                      skipped.append({"id": run_id, "reason": "CONFLICT_ALREADY_FINISHED"})
-                  else:
-                      failures.append({"id": run_id, "http_status": code, "response": info})
-          
-          end = get_run(plan["preserve_run_id"])
-          assert end["id"] == 40122207006
-          assert end.get("conclusion") != "cancelled"
-          receipt = {
-              "schema_version": "zel.actions.queue_purge.priority.v2",
-              "state": "DRY_RUN_VERIFIED" if plan["mode"] == "dry_run" else (
-                  "PASS_PINNED_QUEUE_CANCELLATION_REQUESTED" if not failures else "HOLD_PARTIAL_CANCELLATION"
-              ),
-              "target": 40122207006,
-              "target_status_before": full["status"],
-              "target_status_after": end["status"],
-              "mode": plan["mode"],
-              "trigger_seq": plan["trigger_seq"],
-              "checked_targets": len(plan["targets"]),
-              "eligible_ids": validated,
-              "skip": skipped,
-              "cancel_requested": sent,
-              "failures": failures,
-              "order_authority": "BLOCKED",
-              "promotion_authority": False,
-              "economic_FULL_launched": False,
-          }
-          Path("out").mkdir(exist_ok=True)
-          Path("out/queue_purge_receipt.json").write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
-          print(json.dumps({
-              "state": receipt["state"],
-              "mode": receipt["mode"],
-              "target": receipt["target"],
-              "target_status_after": receipt["target_status_after"],
-              "checked": receipt["checked_targets"],
-              "eligible": len(validated),
-              "cancel_requested": len(sent),
-              "failures": len(failures),
-              "skips": len(skipped),
-          }, sort_keys=True))
-          if failures:
-              raise SystemExit(2)
-          PY
-      - uses: actions/upload-artifact@v4
+          python3 backend/research/ops/zel_actions_queue_cleanup_safe_v2.py
+      - name: Preserve exact cleanup receipt
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: zel-actions-queue-purge-${{ github.run_id }}-${{ github.run_attempt }}

@@ -203,6 +203,7 @@ def main() -> int:
             ):
                 raise RuntimeError("CREDENTIAL_FILE_BLOCKED")
 
+    sys.meta_path.insert(0, k.NoOrderImports())
     sys.addaudithook(audit)
     labels = contract["orderless_action_symbols"]
     next_close = (started // HALF_HOUR + 1) * HALF_HOUR

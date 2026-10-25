@@ -30,9 +30,9 @@ All repo additions are self-contained within existing C research folder; no new 
 
 ## Exact SHA256 file pins
 FREEZE.json SHA256 99b17c9139e5fe4cee3412ee256ecb113ee3db880ce8d80826cbe78c2511ad8d
-evaluate.py SHA256 dc222273a98f47adf758b480d5c455afbd7d4aea26c06f76b49fbb068d283891
-test_evaluate.py SHA256 a0f1d7e8743f87c3363c2196f1f164df516b77b7b65535a722a2a4d1d874456b
-RESULT.json SHA256 6ef13e794fd9411cc5c4b4ed0053a13ab4729d557ce659d8e81d2feeadfb7d97
-coverage.py SHA256 ed935cc479acdf5da8f8303c7981acf5131722c92c1d64cf14e47e868034afb0
-COVERAGE.json SHA256 9a83bbe297794e01e518a7ed935619a90081c74361b0eb3d66aa5cc046c88a95
+evaluate.py SHA256 740706a840ba9daf1c6520469cfaedcd0a028faa748f880bd93ce7c9291dda44
+test_evaluate.py SHA256 88e304d9e61ef5c4419979a12a3796a3a839df4db61dcdd068d1c647f2579d16
+RESULT.json.gz SHA256 a378a6a51a6d94d611017fb782d6481f05b16b916e8d0f44bf4579c20fd2b42f
+coverage.py SHA256 1cac24e39462464703bdfd88555479b451fe5c4fd381d9c99e282540975e7411
+COVERAGE.json.gz SHA256 a31e31c066cf12fb63c89d92176c8a419d1725289ce08f8050d8bfe400c856e1
 Reproduce: python -B evaluate.py --output /tmp/bbandrsi-new-result.json ; python -B coverage.py --out /tmp/bbandrsi-new-coverage.json ; python -B -m unittest discover -s . -p test_*.py

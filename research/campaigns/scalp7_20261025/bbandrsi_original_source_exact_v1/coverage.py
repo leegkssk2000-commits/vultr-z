@@ -4,8 +4,16 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import gzip
 import json
 from pathlib import Path
+
+
+def deterministic_gzip(raw: bytes) -> bytes:
+    b = bytearray(gzip.compress(raw, compresslevel=7, mtime=0))
+    b[9] = 255
+    return bytes(b)
+
 
 ROOT = Path(__file__).resolve().parent
 CORES = ("BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT")
@@ -67,12 +75,12 @@ def group(source: dict, names: tuple[str, ...]) -> dict:
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--out", type=Path, default=ROOT / "COVERAGE.json")
+    p.add_argument("--out", type=Path, default=ROOT / "COVERAGE.json.gz")
     args = p.parse_args()
     if args.out.exists():
         raise SystemExit("OVERWRITE_FORBIDDEN")
-    raw = (ROOT / "RESULT.json").read_bytes()
-    allr = json.loads(raw)
+    raw = (ROOT / "RESULT.json.gz").read_bytes()
+    allr = json.loads(gzip.decompress(raw))
     scenarios = {}
     for name, z in allr["simulations"].items():
         u = z["per_symbol"]
@@ -93,7 +101,7 @@ def main() -> None:
         "orders": 0,
     }
     b = (json.dumps(output, indent=2, sort_keys=True, allow_nan=False) + "\n").encode()
-    args.out.write_bytes(b)
+    args.out.write_bytes(deterministic_gzip(b) if args.out.suffix == ".gz" else b)
     print("COVERAGE_SHA256", hashlib.sha256(b).hexdigest())
     for what in ("fee40_delay0h", "fee40_delay1h"):
         z = output["scenarios"][what]

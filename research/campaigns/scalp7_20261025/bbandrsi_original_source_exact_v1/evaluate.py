@@ -18,6 +18,13 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+
+def deterministic_gzip(raw: bytes) -> bytes:
+    b = bytearray(gzip.compress(raw, compresslevel=7, mtime=0))
+    b[9] = 255  # Stable GZIP OS byte on both Python 3.10 and 3.11.
+    return bytes(b)
+
+
 ROOT = Path(__file__).resolve().parent
 HOUR = 3_600_000
 ONE_UNIT_BPS = 10_000.0
@@ -370,14 +377,15 @@ def run(target: Path) -> dict[str, Any]:
     result = (
         json.dumps(output, sort_keys=True, indent=2, allow_nan=False) + "\n"
     ).encode()
-    target.write_bytes(result)
-    print("COMPLETE_READONLY_RESULT_SHA256", sha(result), flush=True)
+    stored = deterministic_gzip(result) if target.suffix == ".gz" else result
+    target.write_bytes(stored)
+    print("COMPLETE_READONLY_RESULT_SHA256", sha(stored), flush=True)
     return output
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", type=Path, default=ROOT / "RESULT.json")
+    parser.add_argument("--output", type=Path, default=ROOT / "RESULT.json.gz")
     args = parser.parse_args()
     if args.output.exists():
         raise SystemExit("EXISTING_RESULT_NOT_OVERWRITTEN")

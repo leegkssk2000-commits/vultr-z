@@ -215,4 +215,9 @@ def run():
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", type=Path, default=P)
+    P = parser.parse_args().root
     run()

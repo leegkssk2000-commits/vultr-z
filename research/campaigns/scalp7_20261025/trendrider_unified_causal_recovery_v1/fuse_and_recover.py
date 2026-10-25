@@ -48,6 +48,11 @@ def epoch(s: str) -> int:
     return int(dt.datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp() * 1000)
 
 
+def last_confirmed_closed_1h_open(retrieved_utc: str) -> int:
+    """Exclude a live forming hourly bar; available_at is NOT invented."""
+    return (epoch(retrieved_utc) // H) * H - H
+
+
 def month(ts: int) -> str:
     return dt.datetime.fromtimestamp(ts / 1000, tz=UTC).strftime("%Y-%m")
 
@@ -259,9 +264,9 @@ def new_short_leg(
     24 fully CLOSED hourly bars must be observed, else decline this leg.
     """
     s = trigger_j + 1
-    if s < 21 or s + 24 >= len(market):
+    if s < 21 or s + 23 >= len(market):
         return None
-    if int(market[s + 24]["ts_ms"]) > latest_closed_open_ms:
+    if int(market[s + 23]["ts_ms"]) > latest_closed_open_ms:
         return None
     entry = float(market[s]["open"])
     atr = atr_14(market, trigger_j)
@@ -280,7 +285,7 @@ def new_short_leg(
     exit_price = None
     terminal_i = None
     reason = None
-    for i in range(s, s + 25):
+    for i in range(s, s + 24):
         candle = market[i]
         floor = stop
         if entry - lowwater >= risk:
@@ -298,7 +303,7 @@ def new_short_leg(
             break
         lowwater = min(lowwater, float(candle["low"]))
     if terminal_i is None:
-        terminal_i = s + 24
+        terminal_i = s + 23
         exit_price = float(market[terminal_i]["close"])
         reason = "SHORT_TIME24_CLOSED"
     assert exit_price is not None and reason is not None
@@ -397,7 +402,7 @@ def entry_loss_streak_circuit(
     # the currently candidate trade. A signal starts its six-hour pause when
     # the third loss became observable after its actual close.
     done = sorted(
-        [x for x in completed if x["end_ms"] + H < at],
+        [x for x in completed if x["end_ms"] < at],
         key=lambda x: (x["end_ms"], x["key"]),
     )
     if len(done) < 3:
@@ -405,8 +410,8 @@ def entry_loss_streak_circuit(
     last = done[-3:]
     return (
         all(x["Net2_bps"] < 0 for x in last)
-        and at - (last[0]["end_ms"] + H) <= 36 * H
-        and at - (last[-1]["end_ms"] + H) < 6 * H
+        and at - last[0]["end_ms"] <= 36 * H
+        and at - last[-1]["end_ms"] < 6 * H
     )
 
 
@@ -604,10 +609,13 @@ def summary(path: Path) -> dict[str, Any]:
     latest_close_open = max(int(row["ts_ms"]) for row in bars["BTC-USDT"])
     if any(int(row[-1]["ts_ms"]) != latest_close_open for row in bars.values()):
         raise RuntimeError("FROZEN_SOURCE_ASOF_MISMATCH")
-    if latest_close_open > epoch(src["utc_retrieved_at"]):
-        raise RuntimeError("MARKET_HISTORY_HAS_UNOBSERVED_FUTURE_BAR")
+    latest_close_open = min(
+        latest_close_open, last_confirmed_closed_1h_open(src["utc_retrieved_at"])
+    )
     input_rows = old.original_inputs(SOURCE, json.loads(old_f.read_text()))
     candidates, input_stats = build_candidates(input_rows, old, bars, maps)
+    if any(int(row["exit_ts"]) > latest_close_open for row in candidates):
+        raise RuntimeError("SAVED_NATIVE_EXIT_HOUR_NOT_YET_CLOSED")
     result: dict[str, Any] = {
         "schema": "zel.trendrider.unified_one_owner_causal_rescue.result.v1",
         "freeze_sha256": sha(freeze_bytes),

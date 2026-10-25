@@ -70,3 +70,16 @@ Published BingX contract `pricePrecision` constraints do **not** prove a full qu
 ## Content SHA
 
 This exact packet contains `FREEZE.json` (H1,H2), `RESULT.json`, `FUNDING_RECONCILIATION_FREEZE.json`, `FUNDING_REPRICE_RESULT.json`, every signed funding history/contract RAW response, one public source receipt containing per-request SHA and response UTC, source-reconstruction and 12 anti-lookahead/side-cost regression tests. Canonical sha line output generated at publication, none overwritten.
+
+## Final exact packet SHA256
+
+- `FREEZE.json`: `afd689a36644a40bb62bca976680b3b15d1ffb76e002a7e1b31d089ff2fa4c28`
+- `RESULT.json`: `585a25380d81a735f2b08f08d4d4d06b3b92644f0bc9f36bf49c8d1a09e6f6f1`
+- `FUNDING_RECONCILIATION_FREEZE.json`: `b202d0a10f471c75317cb22f30f74d1e3ceefeed09ebfd338c22ec1dc811d1ce`
+- `FUNDING_REPRICE_RESULT.json`: `01158d63bc5c681306fa57a3899e7bb67092f72b1e803e197e8c1cf938440b23`
+- `BINGX_PUBLIC_CONTRACT_FUNDING_RECEIPT_V1.json`: `604b1ab3c33372646f4b26197c26f5007d623cb1a722890ca42ae7514985c950`
+- `collect_public_funding_once_v1.py`: `ba404e7c0dda09b15bcbf8f9acffcc9a9b38fccbafe8114c01cb492b8877c4f3`
+- `funding_signed_reprice_v1.py`: `c8e2a864832bcebf7241c738013b2f398ff1554601dc46ff7a6a3005c95db726`
+- `trend_and_cost_gate_v1.py`: `64705cc29fc4e50c1257f250fea01723547c241fc5f8aeafb3dd2324cc82bff3`
+- `test_repair.py`: `c4bf507c751a9b274ca66a10b33f0b3d5ce284e118cf3b7bb97c6dd9b8ebf8a0`
+- `WORK_B_SOURCE_ONLY_HANDOFF.md`: `05cac583f57b43092b26a7f6caae632d40f6293a26fcba1db448d3748347ea25`

@@ -484,4 +484,9 @@ def run(out: Path):
 
 
 if __name__ == "__main__":
-    run(HERE)
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", type=Path, default=HERE)
+    args = parser.parse_args()
+    run(args.root)

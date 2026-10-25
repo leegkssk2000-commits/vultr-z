@@ -24,6 +24,7 @@ import pandas as pd
 import importlib
 
 k = importlib.import_module("k117_adapter")
+journal = importlib.import_module("k117_shadow_noorder_journal_v1")
 
 HALF_HOUR = 1_800_000
 MINUTE = 60_000
@@ -135,6 +136,7 @@ def safe_status(out: Path, body: dict[str, Any]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--enable-development-only", action="store_true")
+    parser.add_argument("--resume", action="store_true")
     parser.add_argument("--source", type=Path, default=SOURCE_ROOT)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--max-seconds", type=int, default=1500)
@@ -145,11 +147,17 @@ def main() -> int:
         return 0
     if not (1 <= args.max_seconds <= 3600 and 30 <= args.poll_seconds <= 300):
         raise SystemExit("BOUNDED_WATCH_REQUIRED")
+    # Original no-order isolation: scrub env before any K117 native dependencies.
+    safe_env = {"PATH", "LANG", "LC_ALL", "TZ", "SYSTEMROOT"}
+    cleaned = {key: value for key, value in os.environ.items() if key in safe_env}
+    os.environ.clear()
+    os.environ.update(cleaned)
     # One and only one observer; does NOT claim original B4 producer.
-    args.out.mkdir(parents=True, exist_ok=False)
+    args.out.mkdir(parents=True, exist_ok=args.resume)
     lock = (args.out / "writer.lock").open("a+b")
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     started = int(time.time() * 1000)
+    observer_source_sha = file_sha(Path(__file__).read_bytes())
     contract_raw = k.PRICE_ONLY_CONTRACT.read_bytes()
     contract = json.loads(contract_raw)
     expected_sha = file_sha(contract_raw)
@@ -164,10 +172,22 @@ def main() -> int:
         FROZEN_ROOT
         / "research/campaigns/scalp7_20260915/cost_snapshot_v2/SCALP7_CURRENT_REFERENCE_COST_SNAPSHOT_V2.json"
     )
-    costs = json.loads(cost_path.read_text())["costs_bps"]
+    raw_costs = cost_path.read_bytes()
+    cost_data = json.loads(raw_costs)
+    costs = cost_data["costs_bps"]
     d = k.dependencies()
+    saved_checkpoint = None
+    if args.resume:
+        saved_checkpoint = journal.read_checkpoint(
+            args.out, expected_sha, observer_source_sha
+        )
+        started = int(saved_checkpoint["status"]["started_at_ms"])
     observer = k.Adapter(
-        enabled=True, fixture=False, development=True, started_at_ms=started
+        enabled=True,
+        fixture=False,
+        development=True,
+        started_at_ms=started,
+        state=None if saved_checkpoint is None else saved_checkpoint["adapter"],
     )
     guard = {
         "volume_units": "UNKNOWN",
@@ -224,13 +244,28 @@ def main() -> int:
         "formal_fresh_credit": False,
         "full_funding_verified": False,
         "cost_is_reference_model": True,
+        "reference_cost_snapshot_sha256": file_sha(raw_costs),
+        "reference_cost_components": {
+            sym: cost_data["snapshots"][sym] for sym in labels
+        },
         "virtual_fills": 0,
         "order_calls": 0,
         "signals": [],
         "decisions": [],
+        "next_open_entry_holds": [],
         "reason": "DEVELOPMENT_ONLY_NO_FORMAL_PREAUTO",
     }
-    safe_status(args.out, status)
+    if saved_checkpoint is not None:
+        status = saved_checkpoint["status"]
+        next_close = int(status["next_expected_complete_close_ms"])
+        first_context_open = int(status["first_context_open_ms"])
+        if status.get("next_open_entry_holds"):
+            raise ValueError("UNRESOLVED_PREVIOUS_NEXT_OPEN_HOLD_CANNOT_RESUME")
+        status["phase"] = "RESUMED_DEVELOPMENT_OBSERVATION_NO_ORDER"
+    state_sha = journal.commit_checkpoint(
+        args.out, status, observer.state, expected_sha, observer_source_sha
+    )
+    safe_status(args.out, {**status, "checkpoint_sha256": state_sha})
     deadline = time.monotonic() + args.max_seconds
     try:
         while time.monotonic() < deadline:
@@ -239,6 +274,16 @@ def main() -> int:
             if target_close > (now // HALF_HOUR) * HALF_HOUR:
                 time.sleep(args.poll_seconds)
                 continue
+            # A stale or interrupted observer is not permitted to label
+            # historical bars as a fresh executable 30m signal on restart.
+            if now - target_close >= HALF_HOUR:
+                status["phase"] = "HOLD_EXPIRED_SOURCE_CLOSED_BAR"
+                status["reason"] = "NEXT_OPEN_WITNESS_EXPIRED_NO_RETRO_EVALUATION"
+                seal = journal.commit_checkpoint(
+                    args.out, status, observer.state, expected_sha, observer_source_sha
+                )
+                safe_status(args.out, {**status, "checkpoint_sha256": seal})
+                break
             try:
                 frames = source_snapshot(
                     args.source, now, target_close, first_context_open
@@ -261,10 +306,16 @@ def main() -> int:
                         fit=fit,
                         frozen_cost_bps=costs[sym],
                     )
+                    timing = journal.next_open_eligibility(
+                        expected_open_ms=target_close,
+                        decision_ts_ms=now,
+                        price_received_at_ms=int(bound[sym].iloc[-1].available_ts_ms),
+                    )
                     results.append(
                         {
                             "symbol": sym,
                             "close_ts_ms": target_close,
+                            "next_open_eligibility": timing,
                             "available_ts_ms": int(bound[sym].iloc[-1].available_ts_ms),
                             "status": item["status"],
                             "reason": item.get("reason"),
@@ -275,7 +326,23 @@ def main() -> int:
                 status["next_expected_complete_close_ms"] = next_close
                 status["decisions"].extend(results)
                 status["signals"].extend(x for x in results if x["status"] == "SIGNAL")
-                status["phase"] = "ACTIVE_DEVELOPMENT_OBSERVATION_NO_ORDER"
+                for item in results:
+                    if item["status"] == "SIGNAL":
+                        status["next_open_entry_holds"].append(
+                            {
+                                "symbol": item["symbol"],
+                                "close_ts_ms": target_close,
+                                "reason": item["next_open_eligibility"],
+                                "signal_sha256": k.digest(item["signal"]),
+                                "actual_order_calls": 0,
+                                "virtual_fill": False,
+                            }
+                        )
+                status["phase"] = (
+                    "HOLD_SIGNAL_NEXT_OPEN_UNVERIFIED"
+                    if status["next_open_entry_holds"]
+                    else "ACTIVE_DEVELOPMENT_OBSERVATION_NO_ORDER"
+                )
                 status["last_complete_30m_close_ms"] = target_close
                 status["last_native_decision_ms"] = now
                 status["source_six_context_bars"] = len(
@@ -284,7 +351,10 @@ def main() -> int:
                 status["source_cursor_atomic_verified"] = True
                 status["adapter_event_hash"] = k.digest(observer.state["events"])
                 status["reason"] = "REAL_POST_START_COMPLETED_30M_OBSERVED_NO_ORDER"
-                safe_status(args.out, status)
+                state_sha = journal.commit_checkpoint(
+                    args.out, status, observer.state, expected_sha, observer_source_sha
+                )
+                safe_status(args.out, {**status, "checkpoint_sha256": state_sha})
                 print(
                     json.dumps(
                         {
@@ -299,10 +369,15 @@ def main() -> int:
                     ),
                     flush=True,
                 )
+                if status["next_open_entry_holds"]:
+                    break  # Fail closed: do NOT backfill this unresolved entry.
             except (ValueError, RuntimeError, OSError, KeyError) as exc:
                 status["reason"] = type(exc).__name__ + ":" + str(exc)
                 status["phase"] = "WAIT_SOURCE_OR_NATIVE_GUARD"
-                safe_status(args.out, status)
+                state_sha = journal.commit_checkpoint(
+                    args.out, status, observer.state, expected_sha, observer_source_sha
+                )
+                safe_status(args.out, {**status, "checkpoint_sha256": state_sha})
                 print(
                     json.dumps({"state": status["phase"], "reason": status["reason"]}),
                     flush=True,
@@ -310,7 +385,10 @@ def main() -> int:
             time.sleep(args.poll_seconds)
     finally:
         status["phase"] = "BOUNDED_DEVELOPMENT_OBSERVATION_STOPPED"
-        safe_status(args.out, status)
+        state_sha = journal.commit_checkpoint(
+            args.out, status, observer.state, expected_sha, observer_source_sha
+        )
+        safe_status(args.out, {**status, "checkpoint_sha256": state_sha})
         lock.close()
     return 0
 

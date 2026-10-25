@@ -12,6 +12,7 @@ from fuse_and_recover import (
     short_confirmation,
     metrics_stage,
     epoch,
+    last_confirmed_closed_1h_open,
 )
 
 
@@ -168,8 +169,10 @@ class FrozenRiskTests(unittest.TestCase):
 
     def test_circuit_needs_three_finished_losses(self):
         done = [{"key": str(i), "end_ms": i * H, "Net2_bps": -10.0} for i in (2, 3, 4)]
-        self.assertFalse(entry_loss_streak_circuit(at=5 * H, completed=done))
+        self.assertFalse(entry_loss_streak_circuit(at=4 * H, completed=done))
+        self.assertTrue(entry_loss_streak_circuit(at=5 * H, completed=done))
         self.assertTrue(entry_loss_streak_circuit(at=6 * H, completed=done))
+        self.assertFalse(entry_loss_streak_circuit(at=10 * H, completed=done))
         self.assertFalse(entry_loss_streak_circuit(at=12 * H, completed=done))
 
     def test_circuit_ignores_future_known_outcomes(self):
@@ -227,6 +230,42 @@ class FrozenRiskTests(unittest.TestCase):
         self.assertEqual(m["total_legs"], 2)
         self.assertEqual(m["reverse_short_legs"], 1)
         self.assertAlmostEqual(m["Net2_sum_trade_bps"], a["Net2_bps"] + b["Net2_bps"])
+
+    def test_short_24h_time_limit_not_25th_candle(self):
+        t = trade()
+        bars = candles(120)
+        bars[50]["open"] = 100
+        bars[50]["high"] = 9999  # the forbidden 25th hourly candle
+        leg = new_short_leg(
+            trade=t, market=bars, trigger_j=25, latest_closed_open_ms=119 * H
+        )
+        self.assertIsNotNone(leg)
+        self.assertEqual(leg["reason"], "SHORT_TIME24_CLOSED")
+        self.assertEqual(leg["short_held_bar_count"], 24)
+        self.assertEqual(leg["entry_ts"], 26 * H)
+        self.assertEqual(leg["effective_closed_at"], 50 * H)
+        self.assertLessEqual(leg["effective_closed_at"] - leg["entry_ts"], 24 * H)
+
+    def test_short_requires_last_24th_bar_closed(self):
+        t = trade()
+        bars = candles(120)
+        self.assertIsNone(
+            new_short_leg(
+                trade=t, market=bars, trigger_j=25, latest_closed_open_ms=48 * H
+            )
+        )
+        self.assertIsNotNone(
+            new_short_leg(
+                trade=t, market=bars, trigger_j=25, latest_closed_open_ms=49 * H
+            )
+        )
+
+    def test_no_unfinished_source_candle(self):
+        self.assertEqual(
+            last_confirmed_closed_1h_open("2026-10-25T08:01:20.410374Z"),
+            1792911600000,
+        )
+        self.assertEqual(last_confirmed_closed_1h_open("1970-01-01T01:00:00Z"), 0)
 
     def test_no_future_availability_epoch_conversion(self):
         self.assertEqual(epoch("1970-01-01T01:00:00Z"), H)

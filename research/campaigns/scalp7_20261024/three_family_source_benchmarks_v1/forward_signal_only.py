@@ -23,6 +23,7 @@ from typing import Any
 import pandas as pd
 
 import benchmark as native
+import forward_asof_quote as book
 
 SOURCE = Path("/home/z/z/runtime/scalp7_broad_v2_20260915/fresh_1m_verified")
 SYMBOLS = ("BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT")
@@ -287,7 +288,31 @@ def main() -> int:
                         }
                         decisions.append(event)
                         if is_signal:
+                            # Quote is a new post-decision mark, never retroactive
+                            # to the theoretical native next 4h OPEN.
+                            atr = float(context.iloc[-1]["atr14"])
+                            close_price = float(row["close"])
+                            stop_atr_multiple, _ = native.safety(family)
+                            event["native_stop_distance_reference_bps"] = (
+                                10000 * atr * stop_atr_multiple / close_price
+                            )
+                            event["native_signal_close_reference_price"] = close_price
+                            event["quote_evidence"] = book.observe(
+                                sym,
+                                decision_ts_ms=now,
+                                read_at_ms=int(time.time() * 1000),
+                            )
                             status["signals"].append(event)
+                    same_symbol = [
+                        event
+                        for event in decisions
+                        if event["symbol"] == sym
+                        and event["state"] == "SIGNAL_ONLY_NO_ORDER_NO_FILL"
+                    ]
+                    if len(same_symbol) > 1:
+                        for event in same_symbol:
+                            event["overlap_same_symbol_both_strategies"] = True
+                            event["independent_position_credit"] = False
                     source_frames[sym] = history
                 status["decisions"].extend(decisions)
                 status["last_complete_native_4h_close_ms"] = next_close

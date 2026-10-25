@@ -1,0 +1,539 @@
+"""Two frozen causal stage screens on pinned TrendRider saved trades, not a new full economics owner."""
+
+from __future__ import annotations
+
+import gzip
+import hashlib
+import json
+import math
+import subprocess
+import zipfile
+from collections import defaultdict
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Mapping
+
+H = 3_600_000
+TWELVE = 12 * H
+TWENTY_FOUR = 24 * H
+
+
+def sha(b: bytes) -> str:
+    return hashlib.sha256(b).hexdigest()
+
+
+def source(path: Path) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
+    b = gzip.decompress((path / "MARKET_1H_SNAPSHOT.json.gz").read_bytes())
+    content = json.loads(b)
+    assert content["schema"] == "zel.trendrider.single_batch_bingx_1h.snapshot.v1"
+    data: dict[str, list[dict[str, Any]]] = content["symbols"]
+    assert len(data) == 12 and set(data) == set(content["pins"])
+    for symbol, rows in data.items():
+        stamps = [x["ts_ms"] for x in rows]
+        assert len(rows) == 1000 and all(n - p == H for p, n in zip(stamps, stamps[1:]))
+        bound = (
+            json.dumps(rows, sort_keys=True, separators=(",", ":"), allow_nan=False)
+            + "\n"
+        ).encode()
+        assert sha(bound) == content["pins"][symbol]["rows_sha256"]
+    return content, data
+
+
+def original_inputs(
+    path: Path, freeze: Mapping[str, Any]
+) -> dict[str, list[dict[str, Any]]]:
+    git = freeze["inputs"]["liquid6"]
+    raw = subprocess.check_output(
+        ["git", "-C", "/home/z/z", "show", git["git_commit"] + ":" + git["path"]]
+    )
+    assert sha(raw) == git["sha256"]
+    liquid = json.loads(raw)
+    assert liquid["completed_trades"] == len(liquid["trades"]) == git["T"]
+    dest = freeze["inputs"]["delayed_long"]
+    archive = path / "delayed_prospective_40146310229.zip"
+    assert sha(archive.read_bytes()) == dest["archive_sha256"]
+    with zipfile.ZipFile(archive) as z:
+        b = z.read(dest["inner_path"])
+    assert sha(b) == dest["sha256"]
+    d = json.loads(b)
+    assert d["completed_trades"] == len(d["trades"]) == dest["T"]
+    assert liquid["cost_authority_sha256"] == d["cost_authority_sha256"]
+    assert liquid["order_authority"] == d["order_authority"] == "BLOCKED"
+    return {"Liquid6": liquid["trades"], "Delayed": d["trades"]}
+
+
+def index_bars(
+    data: Mapping[str, list[dict[str, Any]]]
+) -> tuple[dict[str, dict[int, int]], dict[str, list[float]]]:
+    idx: dict[str, dict[int, int]] = {}
+    ema: dict[str, list[float]] = {}
+    alpha = 2 / 21
+    for symbol, rows in data.items():
+        idx[symbol] = {int(x["ts_ms"]): i for i, x in enumerate(rows)}
+        values: list[float] = []
+        for bar in rows:
+            close = float(bar["close"])
+            values.append(
+                close if not values else alpha * close + (1 - alpha) * values[-1]
+            )
+        ema[symbol] = values
+    return idx, ema
+
+
+def risk_of(trade: Mapping[str, Any]) -> float:
+    if trade["side"] != "long":
+        raise ValueError("UNEXPECTED_SHORT_IN_LONG_ONLY")
+    stop = float(trade["intent_geometry"]["sl"])
+    risk = float(trade["entry"]) - stop
+    if not risk > 0:
+        raise ValueError("NONPOSITIVE_NATIVE_INITIAL_R")
+    return risk
+
+
+def terminal_source_parity(
+    trades: list[dict[str, Any]],
+    data: Mapping[str, list[dict[str, Any]]],
+    index: Mapping[str, Mapping[int, int]],
+) -> None:
+    for row in trades:
+        s = row["symbol"]
+        idx_e = index[s].get(int(row["entry_ts"]))
+        idx_x = index[s].get(int(row["exit_ts"]))
+        if idx_e is None or idx_x is None:
+            raise RuntimeError("ORIGINAL_SOURCE_BAR_MISSING")
+        bar = data[s][idx_e]
+        terminal = data[s][idx_x]
+        entry, exit_px = float(row["entry"]), float(row["exit"])
+        if not math.isclose(entry, float(bar["open"]), rel_tol=1e-7, abs_tol=1e-6):
+            raise RuntimeError("ORIGINAL_ENTRY_FILL_PRICE_PARITY_FAIL")
+        if row["reason"] == "TIMEOUT":
+            if idx_x - idx_e != 48:
+                raise RuntimeError("ORIGINAL_TIMEOUT_48BAR_DRIFT")
+            if not math.isclose(
+                exit_px, float(terminal["close"]), rel_tol=1e-7, abs_tol=1e-6
+            ):
+                raise RuntimeError("ORIGINAL_TIMEOUT_CLOSE_PARITY_FAIL")
+        elif row["reason"] == "SL":
+            if not math.isclose(
+                exit_px, float(row["intent_geometry"]["sl"]), rel_tol=1e-7, abs_tol=1e-6
+            ):
+                raise RuntimeError("ORIGINAL_SL_GEOMETRY_DRIFT")
+            if not float(terminal["low"]) <= exit_px <= float(terminal["high"]):
+                raise RuntimeError("ORIGINAL_STOP_OUTSIDE_BAR")
+        else:
+            raise RuntimeError("UNSUPPORTED_EXISTING_EXIT_REASON")
+        scale = float(row.get("portfolio_risk_scale", 1.0))
+        gross_instrument = (exit_px / entry - 1) * 10000
+        if not math.isclose(
+            scale * gross_instrument,
+            float(row["gross_bps"]),
+            rel_tol=1e-7,
+            abs_tol=1e-5,
+        ):
+            raise RuntimeError("ORIGINAL_GROSS_PRICE_PARITY_FAIL")
+        if not math.isclose(
+            float(row["net_bps"]),
+            float(row["gross_bps"]) - float(row["realized_cost_bps"]),
+            abs_tol=1e-7,
+        ):
+            raise RuntimeError("ORIGINAL_GROSS_COST_NET_PARITY_FAIL")
+        # Original delayed model can admit a LONG with stop>=entry.
+        # Do not silently pretend an initial price-R exists for that trade.
+
+
+def extension_winner_rule(
+    trade: Mapping[str, Any],
+    market: list[dict[str, Any]],
+    exit_index: int,
+    ema: list[float],
+    confirmed_last_open: int,
+) -> bool:
+    """Only the already completed original timeout bar can trigger extension."""
+    if trade["reason"] != "TIMEOUT" or exit_index < 20:
+        return False
+    entry = float(trade["entry"])
+    px = float(trade["exit"])
+    risk = risk_of(trade)
+    last = market[exit_index]
+    if int(last["ts_ms"]) + H > confirmed_last_open + H:
+        return False
+    return (
+        px - entry >= risk
+        and px > ema[exit_index]
+        and ema[exit_index] > ema[exit_index - 1]
+    )
+
+
+def trailing_extension(
+    trade: Mapping[str, Any],
+    market: list[dict[str, Any]],
+    exit_index: int,
+    ema: list[float],
+    confirmed_last_open: int,
+) -> dict[str, Any]:
+    """Bar t stop uses pre-t information only; conservative stop-first and gaps."""
+    if not extension_winner_rule(trade, market, exit_index, ema, confirmed_last_open):
+        return {
+            "attempted": False,
+            "exit_index": exit_index,
+            "exit": float(trade["exit"]),
+            "reason": str(trade["reason"]),
+            "extra_bars": 0,
+        }
+    end = exit_index + 12
+    # Must have every future completed bar, not quote a live forming candle.
+    if end >= len(market) or int(market[end]["ts_ms"]) > confirmed_last_open:
+        return {
+            "attempted": False,
+            "exit_index": exit_index,
+            "exit": float(trade["exit"]),
+            "reason": "UNOBSERVED_12H_EXTENSION_INELIGIBLE",
+            "extra_bars": 0,
+        }
+    entry = float(trade["entry"])
+    risk = risk_of(trade)
+    stop = float(trade["intent_geometry"]["sl"])
+    highwater = float(trade["exit"])
+    for i in range(exit_index + 1, end + 1):
+        candle = market[i]
+        # Don't use current high before testing the stop; only PREVIOUS highwater.
+        floor = max(stop, entry + 0.5 * risk, highwater - 1.25 * risk)
+        open_px = float(candle["open"])
+        if open_px <= floor:
+            return {
+                "attempted": True,
+                "exit_index": i,
+                "exit": open_px,
+                "reason": "EXT_GAP_STOP",
+                "extra_bars": i - exit_index,
+            }
+        if float(candle["low"]) <= floor:
+            return {
+                "attempted": True,
+                "exit_index": i,
+                "exit": floor,
+                "reason": "EXT_STOP_FIRST",
+                "extra_bars": i - exit_index,
+            }
+        highwater = max(highwater, float(candle["high"]))
+    return {
+        "attempted": True,
+        "exit_index": end,
+        "exit": float(market[end]["close"]),
+        "reason": "EXT_TIMEOUT_12H_CLOSE",
+        "extra_bars": 12,
+    }
+
+
+def make_stage1(
+    trades: list[dict[str, Any]],
+    data: Mapping[str, list[dict[str, Any]]],
+    maps: Mapping[str, Mapping[int, int]],
+    ema: Mapping[str, list[float]],
+    now: datetime,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    confirmed_last_open = int(now.timestamp() * 1000 // H) * H - H
+    out = []
+    stats: dict[str, int] = defaultdict(int)
+    by_symbol: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for t in trades:
+        by_symbol[str(t["symbol"])].append(t)
+    for symbol, tlist in sorted(by_symbol.items()):
+        occupied_to = -1
+        for row in sorted(tlist, key=lambda x: (x["entry_ts"], x["signal_ts"])):
+            if int(row["entry_ts"]) <= occupied_to:
+                stats["saved_opportunities_blocked_by_new_exit"] += 1
+                continue
+            idx = maps[symbol][int(row["exit_ts"])]
+            effect = trailing_extension(
+                row, data[symbol], idx, ema[symbol], confirmed_last_open
+            )
+            if effect["attempted"]:
+                stats["extended"] += 1
+            elif effect["reason"] == "UNOBSERVED_12H_EXTENSION_INELIGIBLE":
+                stats["future_continuation_unavailable"] += 1
+            row_out = dict(row)
+            row_out["old_exit_ts"] = int(row["exit_ts"])
+            row_out["old_net_bps"] = float(row["net_bps"])
+            row_out["old_cost_bps"] = float(row["realized_cost_bps"])
+            row_out["exit_ts"] = int(data[symbol][effect["exit_index"]]["ts_ms"])
+            row_out["exit"] = float(effect["exit"])
+            row_out["reason"] = effect["reason"]
+            extension_h = int(effect["extra_bars"])
+            scale = float(row.get("portfolio_risk_scale", 1.0))
+            original_cost = float(row["realized_cost_bps"])
+            # Bounded MODEL carry, not observed historical funding.
+            add_cost = (
+                (math.ceil(extension_h / 8) * 5.0 * scale)
+                if effect["attempted"]
+                else 0.0
+            )
+            row_out["modeled_incremental_carry_bps"] = add_cost
+            row_out["realized_cost_bps"] = original_cost + add_cost
+            gross = (float(effect["exit"]) / float(row["entry"]) - 1) * 10000 * scale
+            row_out["gross_bps"] = gross
+            row_out["net_bps"] = gross - original_cost - add_cost
+            row_out["net2_bps"] = gross - 2 * (original_cost + add_cost)
+            out.append(row_out)
+            # Native same-symbol no pyramid / 2h cooldown; never invent freed signals.
+            occupied_to = row_out["exit_ts"] + 2 * H
+    return out, dict(stats)
+
+
+def original_rows(trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out = []
+    for t in trades:
+        x = dict(t)
+        x["net2_bps"] = float(x["gross_bps"]) - 2 * float(x["realized_cost_bps"])
+        x["modeled_incremental_carry_bps"] = 0.0
+        out.append(x)
+    return out
+
+
+def loss_risk_factor(entry_ts: int, closed: list[dict[str, Any]]) -> float:
+    """Causal open decision: recent 2 distinct completed past-loss trades only."""
+    known = sorted(
+        (x for x in closed if int(x["exit_ts"]) + H < entry_ts),
+        key=lambda x: (int(x["exit_ts"]), str(x["symbol"])),
+    )
+    if len(known) < 2:
+        return 1.0
+    last_two = known[-2:]
+    losses = all(float(x["net2_bps"]) < 0 for x in last_two)
+    close_enough = entry_ts - (int(last_two[0]["exit_ts"]) + H) <= TWENTY_FOUR
+    latest_recent = entry_ts - (int(last_two[-1]["exit_ts"]) + H) <= TWELVE
+    return 0.75 if losses and close_enough and latest_recent else 1.0
+
+
+def stage2_soft_risk(
+    trades: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    out = []
+    stats: dict[str, int] = defaultdict(int)
+    # Per ENTRY choose using only previously CLOSED trade outcomes. Same-hour
+    # future exits remain excluded even if a saved PnL label is available in file.
+    original = sorted(
+        original_rows(trades),
+        key=lambda x: (x["entry_ts"], x["symbol"], x["signal_ts"]),
+    )
+    for row in original:
+        factor = loss_risk_factor(int(row["entry_ts"]), original)
+        x = dict(row)
+        x["stage2_risk_factor"] = factor
+        for key in ("gross_bps", "realized_cost_bps", "net_bps", "net2_bps"):
+            x[key] = float(x[key]) * factor
+        out.append(x)
+        if factor < 1:
+            stats["reduce25_executions"] += 1
+            if float(row["net2_bps"]) < 0:
+                stats["reduced_losing_rows"] += 1
+            else:
+                stats["reduced_winning_rows"] += 1
+    return out, dict(stats)
+
+
+def metrics(trades: list[dict[str, Any]]) -> dict[str, Any]:
+    ordered = sorted(trades, key=lambda t: (t["exit_ts"], t["entry_ts"], t["symbol"]))
+    gross = sum(float(x["gross_bps"]) for x in ordered)
+    costs = sum(float(x["realized_cost_bps"]) for x in ordered)
+    vals = [float(x["net2_bps"]) for x in ordered]
+    pos = sorted((x for x in vals if x > 0), reverse=True)
+    gains, loss = sum(pos), -sum(x for x in vals if x < 0)
+    cohorts: dict[int, float] = defaultdict(float)
+    for t in ordered:
+        cohorts[int(t["exit_ts"])] += float(t["net2_bps"])
+    eq = peak = dd = 0.0
+    for ts in sorted(cohorts):
+        eq += cohorts[ts]
+        peak = max(peak, eq)
+        dd = max(dd, peak - eq)
+    streak = high_streak = 0
+    for value in vals:
+        streak = streak + 1 if value < 0 else 0
+        high_streak = max(high_streak, streak)
+    return {
+        "T": len(ordered),
+        "Net1_sum_trade_bps": gross - costs,
+        "Net2_sum_trade_bps": gross - 2 * costs,
+        "Net2_profit_factor": gains / loss if loss else None,
+        "Net2_win_rate": len(pos) / len(vals) if vals else None,
+        "Net2_max_loss_streak": high_streak,
+        "Net2_exit_cohort_DD_trade_bps": dd,
+        "Net2_top2_profit_sum": sum(pos[:2]),
+        "Net2_excluding_top2_profit": sum(vals) - sum(pos[:2]),
+        "Net2_worst_trade_bps": min(vals) if vals else None,
+    }
+
+
+def overlap(a: list[dict[str, Any]], b: list[dict[str, Any]]) -> dict[str, int]:
+    def key(row: dict[str, Any]) -> tuple[str, str, int]:
+        return (str(row["symbol"]), str(row["side"]), int(row["signal_ts"]))
+
+    common = len({key(x) for x in a} & {key(y) for y in b})
+    periods = [
+        (x, y)
+        for x in a
+        for y in b
+        if int(x["entry_ts"]) < int(y["exit_ts"])
+        and int(y["entry_ts"]) < int(x["exit_ts"])
+    ]
+    return {
+        "same_symbol_side_signal_T": common,
+        "cross_hold_overlap_pairs": len(periods),
+        "same_symbol_overlap_pairs": sum(
+            x["symbol"] == y["symbol"] for x, y in periods
+        ),
+    }
+
+
+def evaluate(path: Path) -> dict[str, Any]:
+    freeze_bytes = (path / "FREEZE.json").read_bytes()
+    freeze = json.loads(freeze_bytes)
+    if freeze["schema"] != "zel.trendrider.two_child_causal_axes_v1":
+        raise ValueError("FREEZE_SCHEMA_DRIFT")
+    if freeze["stage1_predeclared_rule"]["extra_bars_max"] != 12:
+        raise ValueError("FROZEN_TRAIL_CHANGED")
+    if (
+        freeze["stage2_predeclared_rule"]["action"]
+        != "reduce25 (0.75x existing position risk/notional), no skip, no order call"
+    ):
+        raise ValueError("FROZEN_RISK_ACTION_CHANGED")
+    market, data = source(path)
+    rows = original_inputs(path, freeze)
+    maps, ema = index_bars(data)
+    now = datetime.fromisoformat(market["utc_retrieved_at"].replace("Z", "+00:00"))
+    if now.tzinfo is None:
+        raise RuntimeError("RECEIVED_AT_TIMEZONE_MISSING")
+    output = {
+        "schema": "zel.trendrider.causal_two_axes_useddev_result.v1",
+        "frozen_sha256": sha(freeze_bytes),
+        "source_zip_sha256": freeze["inputs"]["delayed_long"]["archive_sha256"],
+        "source_liquid_sha256": freeze["inputs"]["liquid6"]["sha256"],
+        "market_snapshot_gzip_sha256": sha(
+            (path / "MARKET_1H_SNAPSHOT.json.gz").read_bytes()
+        ),
+        "market_retrieved_at": market["utc_retrieved_at"],
+        "market_sha_by_symbol": market["pins"],
+        "strategy_family": "SAME_TREND_RIDER",
+        "results": {},
+        "overlap": overlap(rows["Liquid6"], rows["Delayed"]),
+        "restriction": {
+            "used_historical": True,
+            "actual_historical_quote_available_at": False,
+            "funding_ledger_verified": False,
+            "account_NAV": False,
+            "production_authority": False,
+            "economic_FULL": 0,
+            "source_market_API_calls_for_repro_snapshot": 12,
+            "order_calls": 0,
+            "new_strategy_identity": 0,
+            "new_work": 0,
+        },
+    }
+    for key, trades in rows.items():
+        terminal_source_parity(trades, data, maps)
+        # Stop at/beyond LONG entry invalidates a causal native initial R.
+        # Keep the original receipt for audit; test a separate valid-entry
+        # diagnostic cohort, never hide the defect as a "winning improvement".
+        invalid = [
+            x for x in trades if float(x["entry"]) <= float(x["intent_geometry"]["sl"])
+        ]
+        admitted = [
+            x for x in trades if float(x["entry"]) > float(x["intent_geometry"]["sl"])
+        ]
+        baseline = original_rows(trades)
+        s1, stats1 = make_stage1(trades, data, maps, ema, now)
+        s2, stats2 = stage2_soft_risk(trades)
+        stats = {
+            "original": metrics(baseline),
+            "stage1_winner_extension": metrics(s1),
+            "stage2_reduce25_losscluster": metrics(s2),
+        }
+        a = stats["original"]
+        for stage in ("stage1_winner_extension", "stage2_reduce25_losscluster"):
+            m = stats[stage]
+            m["Net2_delta_bps"] = m["Net2_sum_trade_bps"] - a["Net2_sum_trade_bps"]
+            m["DD2_delta_bps"] = (
+                m["Net2_exit_cohort_DD_trade_bps"] - a["Net2_exit_cohort_DD_trade_bps"]
+            )
+            m["PF2_delta"] = (m["Net2_profit_factor"] or 0) - (
+                a["Net2_profit_factor"] or 0
+            )
+            m["economic_improvement_pass"] = (
+                m["Net2_delta_bps"] > 0
+                and m["DD2_delta_bps"] <= 0
+                and m["PF2_delta"] >= 0
+            )
+        if invalid:
+            for stage in ("stage1_winner_extension", "stage2_reduce25_losscluster"):
+                stats[stage]["economic_improvement_pass"] = False
+            valid_base = original_rows(admitted)
+            valid_s1, valid_s1_diag = make_stage1(admitted, data, maps, ema, now)
+            valid_s2, valid_s2_diag = stage2_soft_risk(admitted)
+            admitted_metrics = {
+                "original": metrics(valid_base),
+                "stage1_winner_extension": metrics(valid_s1),
+                "stage2_reduce25_losscluster": metrics(valid_s2),
+                "stage1_diag": valid_s1_diag,
+                "stage2_diag": valid_s2_diag,
+            }
+        else:
+            admitted_metrics = None
+        output["results"][key] = {
+            "metrics": stats,
+            "stage1_diagnostics": stats1,
+            "stage2_diagnostics": stats2,
+            "source_parity_trade_T": len(trades),
+            "risk_geometry_invalid_T": len(invalid),
+            "risk_geometry_invalid_net2_trade_bps": sum(
+                float(x["gross_bps"]) - 2 * float(x["realized_cost_bps"])
+                for x in invalid
+            ),
+            "risk_geometry_admitted_secondary_diagnostic": admitted_metrics,
+            "promotion_gate": (
+                "HOLD_NATIVE_RISK_GEOMETRY"
+                if invalid
+                else "HOLD_COST2_NEAR_BREAKEVEN_AND_USED_HISTORY"
+            ),
+            "stage1_changed_trade_evidence": [
+                {
+                    "symbol": x["symbol"],
+                    "signal_ts": x["signal_ts"],
+                    "old_exit_ts": x["old_exit_ts"],
+                    "new_exit_ts": x["exit_ts"],
+                    "old_net1": x["old_net_bps"],
+                    "new_net1": x["net_bps"],
+                    "new_net2": x["net2_bps"],
+                    "reason": x["reason"],
+                    "extra_carry_bps": x["modeled_incremental_carry_bps"],
+                }
+                for x in s1
+                if x["exit_ts"] != x["old_exit_ts"]
+            ],
+        }
+        print(
+            "COSTED",
+            key,
+            json.dumps(
+                {
+                    "stats": stats,
+                    "stage1_diagnostics": stats1,
+                    "stage2_diagnostics": stats2,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+    encoded = (
+        json.dumps(output, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    ).encode()
+    with (path / "RESULT.json").open("xb") as out:
+        out.write(encoded)
+    print(
+        "COMPLETE_RESULT_SHA256", sha(encoded), "OVERLAP", output["overlap"], flush=True
+    )
+    return output
+
+
+if __name__ == "__main__":
+    evaluate(Path("/home/z/z/runtime/zel_trendrider_family_dev_20261025"))

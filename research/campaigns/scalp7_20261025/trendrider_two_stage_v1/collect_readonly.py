@@ -7,14 +7,18 @@ import json
 import subprocess
 from pathlib import Path
 
-from backend.research.rebuild import a1_exact25_generic_evaluator_v1 as native
-
 
 def sha(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
 def once(path):
+    import sys
+
+    repo = Path(__file__).resolve().parents[4]
+    sys.path.insert(0, str(repo))
+    from backend.research.rebuild import a1_exact25_generic_evaluator_v1 as native
+
     f = Path(path)
     s = json.loads((f / "FREEZE.json").read_text())
     c = s["inputs"]["market_reader"]
@@ -105,4 +109,13 @@ def once(path):
 
 
 if __name__ == "__main__":
-    once("/home/z/z/runtime/zel_trendrider_family_dev_20261025")
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent)
+    parser.add_argument("--explicit-one-batch-public-read", action="store_true")
+    args = parser.parse_args()
+    if not args.explicit_one_batch_public_read:
+        print("DEFAULT_OFF_NO_NETWORK_READ")
+    else:
+        once(args.root)

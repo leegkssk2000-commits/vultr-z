@@ -536,4 +536,9 @@ def evaluate(path: Path) -> dict[str, Any]:
 
 
 if __name__ == "__main__":
-    evaluate(Path("/home/z/z/runtime/zel_trendrider_family_dev_20261025"))
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent)
+    args = parser.parse_args()
+    evaluate(args.root)

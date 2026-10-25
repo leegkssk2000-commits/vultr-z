@@ -16,7 +16,7 @@ from stages import (
     sha,
 )
 
-ROOT = Path("/home/z/z/runtime/zel_trendrider_family_dev_20261025")
+ROOT = Path(__file__).resolve().parent
 
 
 def run():
@@ -194,4 +194,10 @@ def run():
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent)
+    args = parser.parse_args()
+    ROOT = args.root
     run()

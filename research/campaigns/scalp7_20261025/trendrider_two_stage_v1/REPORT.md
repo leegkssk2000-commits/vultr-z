@@ -51,9 +51,14 @@ Stage1 extends 41 old TIMEOUT positions, excludes 22 later saved entries, raises
 - delayed_prospective_40146310229.zip: SHA256 4ab634d853314d8427404d0ca722b6ce52d4d1f1561a68041ced0eff0d70d2e7
 - RESULT.json: SHA256 41c6386859158b5ddaf8a4785917cf4984c54f4362ae4899312e5bca4b7fb6bb
 - ROBUSTNESS.json: SHA256 4156b919216b328d279ca5152179581155445bb217cf19744f3d65c140bdb6bf
-- stages.py: SHA256 53e43ff24b6c72f53f8ed38c305675063f71c98f52f65cea9e4aeb0b1925cae2
-- robustness.py: SHA256 cb2fd6b7ec791f9c2f00158ff74ac05e6555a694a5fd9bb0c36a50355e57e740
-- test_stages.py: SHA256 a765ccf528cd989a6daf7fdd724362edb99214a90b4f8ddbbb7275dea23d869c
+- stages.py: SHA256 b55b6db23a7b3842bda097a23a119a15eb612eb6db24043f51a1b94e201616c5
+- robustness.py: SHA256 65319b5f4257dbae7ebbef65dc3bac99f904ec4285cf059753aa62d8de721479
+- test_stages.py: SHA256 dcedeff2451c764f893e7c3ed01719efbdba5329cb84c55353d93fd58d30b599
 
 Underlying Liquid6 original JSON: SHA256 ec542bb59161550a2c314c6f352493f88509b0df3b739448c8b3b3a169821938
 Underlying Delayed saved artifact internal JSON: SHA256 85f417400887f85e57550561a5f0c4d1f34cb366c3929e25de5224cc826eb455
+
+Reproduction on the authorized VPS after fully checking out the pinned source Git object:
+  PYTHONPATH=. python -B stages.py --root .
+  PYTHONPATH=. python -B robustness.py --root .
+Results reproduced byte-for-byte AFTER Python formatting and safe CLI wrappers (RESULT and ROBUSTNESS SHA unchanged). Native public OHLC collector stays default OFF; no second fetch required.

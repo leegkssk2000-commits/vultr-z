@@ -208,6 +208,19 @@ class VirtualIntegration(unittest.TestCase):
 
 
 class ReadinessTests(unittest.TestCase):
+    def test_readiness_holds_survive_recovery_without_duplicate_history(self):
+        state = r.new_state(ANCHOR)
+        state["shadow_readiness"] = "HOLD_SOURCE_PRODUCER"
+        source = {"phase": "WAIT_SOURCE_OR_NATIVE_GUARD", "reason": "MISSING_MINUTE"}
+        r.record_readiness(state, ANCHOR, source117=source)
+        r.record_readiness(state, ANCHOR+1, source117=source)
+        self.assertEqual(len(state["readiness_transitions"]), 1)
+        state["shadow_readiness"] = "PASS_RUNNING"
+        r.record_readiness(state, ANCHOR+2, source117={"phase": "ACTIVE"})
+        self.assertEqual(len(state["readiness_transitions"]), 2)
+        self.assertEqual(state["readiness_transitions"][0]["sources"]["k117"]["reason"], "MISSING_MINUTE")
+        self.assertEqual(state["readiness_transitions"][0]["observed_at_ms"], ANCHOR)
+
     def test_code_upgrade_requires_explicit_pin_and_empty_ledger(self):
         old, new, native = {"code": "old"}, {"code": "new"}, {"native": "fixed"}
         state = r.new_state(ANCHOR)

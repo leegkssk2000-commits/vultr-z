@@ -334,6 +334,18 @@ def pin_contract(state, code_pins, native_pins, expected_previous=None):
             "next": code_pins, "observed_at_ms": int(time.time()*1000), "reason": "EXPLICIT_PINNED_EMPTY_LEDGER_CODE_UPGRADE"})
     state["code_sha256"], state["k117_native_pins"] = code_pins, native_pins
 
+def record_readiness(state, now, source4=None, source117=None):
+    health = {"readiness": state["shadow_readiness"], "error": state.get("last_source_error"),
+              "quote_states": {k: v.get("state") for k, v in state.get("quote_health", {}).items()},
+              "sources": {name: None if value is None else
+                          {k: value.get(k) for k in ("phase", "reason", "source_hold_reason", "virtual_ack_health")}
+                          for name, value in (("four_hour", source4), ("k117", source117))}}
+    signature = digest(health)
+    history = state.setdefault("readiness_transitions", [])
+    if not history or history[-1]["health_sha256"] != signature:
+        history.append({**health, "observed_at_ms": now, "health_sha256": signature,
+                        "source_status_sha256": deepcopy(state.get("source_status_sha256", {}))})
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--enable-observational-rr-only", action="store_true")
@@ -405,12 +417,14 @@ def main():
                 candidate["shadow_readiness"] = ("PASS_RUNNING" if quotes_ready and all(candidate["source_producer_readiness"].values())
                                                  else "HOLD_SOURCE_PRODUCER" if quotes_ready else "HOLD_QUOTE_SOURCE")
                 candidate.pop("last_source_error", None)
+                record_readiness(candidate, now, source4, source117)
             except (OSError, RuntimeError, TypeError, KeyError, ValueError) as exc:
                 candidate = deepcopy(state)
                 error = type(exc).__name__ + ":" + str(exc)
                 if candidate.get("last_source_error") != error:
                     candidate["faults"].append({"observed_at_ms": now, "reason": error})
                 candidate.update(last_source_error=error, state="HOLD_SOURCE_CLOCK_OR_AUTHORITY", shadow_readiness="HOLD_SOURCE")
+                record_readiness(candidate, now)
                 for symbol in list(candidate["positions"]):
                     for track, item in list(candidate["positions"][symbol]["tracks"].items()):
                         if now - item["last_quote_read_at_ms"] > 30000:

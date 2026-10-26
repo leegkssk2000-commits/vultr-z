@@ -144,7 +144,80 @@ def classify(family: str, enriched: pd.DataFrame) -> bool:
     return native.signal_for(family, rows, len(rows) - 1)
 
 
+def frame_digest(frame: pd.DataFrame) -> str:
+    """Commit the verified OHLC prefix, not an indicator's NaN warmup rows."""
+    return digest(frame.to_json(orient="records", double_precision=15).encode())
+
+
+def decision_event(family: str, symbol: str, history: pd.DataFrame,
+                   context: pd.DataFrame) -> dict[str, Any]:
+    """Native predicates only; the quote consumer owns all virtual positions."""
+    is_signal = classify(family, context)
+    row = history.iloc[-1]
+    enriched = context.iloc[-1]
+    multiple, bars = native.safety(family)
+    distance = float(enriched["atr14"]) * multiple
+    exit_on_close = bool(native.take_exit_on_close(family, enriched))
+    bar = {key: int(row[key]) for key in
+           ("open_ts_ms", "close_ts_ms", "observed_source_last_received_ms")}
+    bar.update({key: float(row[key]) for key in ("open", "high", "low", "close")})
+    if not math.isfinite(distance) or distance <= 0:
+        raise RuntimeError("NATIVE_STOP_DISTANCE_INVALID")
+    event = {
+        "rule_id": family, "symbol": symbol,
+        "closed_native_4h_ts_ms": int(row.close_ts_ms),
+        "first_actual_source_received_ms": int(row.observed_source_last_received_ms),
+        "state": "SIGNAL_ONLY_NO_ORDER_NO_FILL" if is_signal else "NO_SIGNAL",
+        "native_exit_on_close": exit_on_close,
+        "native_safety_max_hold_bars": bars,
+        "native_safety_stop_distance_price": distance,
+        "native_stop_distance_reference_bps": 10000 * distance / float(row["close"]),
+        "native_signal_close_reference_price": float(row["close"]),
+        "native_exit_input": {"bar": bar, "source_bar_sha256": digest(
+            json.dumps(bar, sort_keys=True, separators=(",", ":")).encode())},
+        "native_exit_status": "INPUT_ONLY_NO_POSITION_STATE",
+        "context_first_open_ms": int(history.iloc[0].open_ts_ms),
+        "context_source_sha256": frame_digest(history),
+        "source_identity_sha256": IDENTITY_SHA,
+        "order_calls": 0, "virtual_fills": 0,
+        "native_next_open_fill_verified": False,
+    }
+    # Stamp after the native computation and evidence digests have completed.
+    event["decision_ts_ms"] = int(time.time() * 1000)
+    if event["decision_ts_ms"] < max(event["first_actual_source_received_ms"],
+                                       event["closed_native_4h_ts_ms"]):
+        raise RuntimeError("NATIVE_DECISION_BEFORE_SOURCE")
+    return event
+
+
+def resume_plan(status: dict[str, Any], now_ms: int) -> tuple[int, int, int]:
+    """Restore the original EMA seed and cursor; never emit old decisions again."""
+    expected = {
+        "schema": "zel.existing_gmma_tsmom.4h.orderless_forward.v1",
+        "source_identity_sha256": IDENTITY_SHA,
+        "native_frozen_source_sha256": digest(Path(__file__).with_name("benchmark.py").read_bytes()),
+        "native_freeze_sha256": digest(Path(__file__).with_name("FREEZE.json").read_bytes()),
+        "orders": 0, "order_calls": 0, "virtual_fills": 0, "formal_shadow": False,
+    }
+    if any(status.get(key) != val for key, val in expected.items()):
+        raise RuntimeError("RESUME_AUTHORITY_OR_SOURCE_CHANGED")
+    if list(status.get("action_symbols", [])) != list(SYMBOLS) or list(status.get("rule_ids", [])) != list(FAMILIES):
+        raise RuntimeError("RESUME_RULE_OR_SYMBOL_CHANGED")
+    initial_close = int(status["started_ms"]) // FOUR * FOUR
+    start = int(status.get("context_first_open_ms", initial_close - WARMUP * FOUR))
+    next_close = int(status["next_expected_bar_close_ms"])
+    last_close = int(status.get("last_complete_native_4h_close_ms", initial_close))
+    if (start != initial_close - WARMUP * FOUR or start % FOUR or
+            last_close % FOUR or next_close != last_close + FOUR or
+            last_close < initial_close or now_ms < last_close or
+            now_ms >= next_close + FOUR):
+        raise RuntimeError("RESUME_CONTEXT_OR_CURSOR_GAP_NO_BACKFILL")
+    return start, last_close, next_close
+
+
 def atomic_status(out: Path, status: dict[str, Any]) -> None:
+    status["pid"] = os.getpid()
+    status["updated_at_ms"] = int(time.time() * 1000)
     if (
         status.get("orders") != 0
         or status.get("order_calls") != 0
@@ -167,6 +240,7 @@ def main() -> int:
     ap.add_argument("--source", type=Path, default=SOURCE)
     ap.add_argument("--max-seconds", type=int, default=86400)
     ap.add_argument("--poll-seconds", type=int, default=180)
+    ap.add_argument("--resume-existing", action="store_true")
     a = ap.parse_args()
     if not a.enable_signal_only:
         print("DEFAULT_OFF")
@@ -180,7 +254,7 @@ def main() -> int:
     }
     os.environ.clear()
     os.environ.update(safe_env)
-    a.out.mkdir(parents=True, exist_ok=False)
+    a.out.mkdir(parents=True, exist_ok=a.resume_existing)
     lock = (a.out / "writer.lock").open("a+b")
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
@@ -224,14 +298,30 @@ def main() -> int:
         "signals": [],
         "decisions": [],
     }
+    context_start = last_close - WARMUP * FOUR
+    if a.resume_existing:
+        old = json.loads((a.out / "STATUS.json").read_bytes())
+        context_start, last_close, next_close = resume_plan(old, started)
+        status = old
+        status["resumed_at_ms"] = started
+        status["stopped"] = False
+        status["phase"] = "RESTORE_ORIGINAL_CONTEXT_NO_SIGNAL_REISSUE"
+    status["context_first_open_ms"] = context_start
+    status["native_exit_contract"] = "FROZEN_NATIVE_COMPLETED_BAR_CONDITIONS_V1"
+    status["producer_poll_seconds"] = a.poll_seconds
     atomic_status(a.out, status)
     try:
         # One time warmup on real older source; no old signal is future-credited.
         source_frames = load_period(
-            a.source, last_close - WARMUP * FOUR, last_close, started
+            a.source, context_start, last_close, started
         )
-        if any(len(f) != WARMUP for f in source_frames.values()):
+        if any(len(f) != (last_close - context_start) // FOUR for f in source_frames.values()):
             raise RuntimeError("SOURCE_CONTEXT_TOO_SHORT")
+        prior_hashes = status.get("context_source_sha256_by_symbol", {})
+        restored_hashes = {sym: frame_digest(df) for sym, df in source_frames.items()}
+        if prior_hashes and prior_hashes != restored_hashes:
+            raise RuntimeError("RESUME_CONTEXT_SOURCE_CHANGED")
+        status["context_source_sha256_by_symbol"] = restored_hashes
         status["context_source_closed_4h_by_symbol"] = {
             sym: len(df) for sym, df in source_frames.items()
         }
@@ -252,6 +342,7 @@ def main() -> int:
         while time.monotonic() < deadline:
             now = int(time.time() * 1000)
             if now < next_close:
+                atomic_status(a.out, status)
                 time.sleep(a.poll_seconds)
                 continue
             if now >= next_close + FOUR:
@@ -261,48 +352,23 @@ def main() -> int:
             try:
                 new_frames = load_period(a.source, next_close - FOUR, next_close, now)
                 decisions = []
+                next_histories = {}
                 for sym in SYMBOLS:
                     history = pd.concat(
                         [source_frames[sym], new_frames[sym]], ignore_index=True
                     )
                     context = native.enrich(history)
                     for family in FAMILIES:
-                        is_signal = classify(family, context)
-                        row = history.iloc[-1]
-                        event = {
-                            "rule_id": family,
-                            "symbol": sym,
-                            "closed_native_4h_ts_ms": next_close,
-                            "first_actual_source_received_ms": int(
-                                row.observed_source_last_received_ms
-                            ),
-                            "decision_ts_ms": now,
-                            "state": (
-                                "SIGNAL_ONLY_NO_ORDER_NO_FILL"
-                                if is_signal
-                                else "NO_SIGNAL"
-                            ),
-                            "order_calls": 0,
-                            "virtual_fills": 0,
-                            "native_next_open_fill_verified": False,
-                        }
+                        event = decision_event(family, sym, history, context)
                         decisions.append(event)
-                        if is_signal:
+                        if event["state"] == "SIGNAL_ONLY_NO_ORDER_NO_FILL":
                             # Quote is a new post-decision mark, never retroactive
                             # to the theoretical native next 4h OPEN.
-                            atr = float(context.iloc[-1]["atr14"])
-                            close_price = float(row["close"])
-                            stop_atr_multiple, _ = native.safety(family)
-                            event["native_stop_distance_reference_bps"] = (
-                                10000 * atr * stop_atr_multiple / close_price
-                            )
-                            event["native_signal_close_reference_price"] = close_price
                             event["quote_evidence"] = book.observe(
                                 sym,
-                                decision_ts_ms=now,
+                                decision_ts_ms=event["decision_ts_ms"],
                                 read_at_ms=int(time.time() * 1000),
                             )
-                            status["signals"].append(event)
                     same_symbol = [
                         event
                         for event in decisions
@@ -313,8 +379,13 @@ def main() -> int:
                         for event in same_symbol:
                             event["overlap_same_symbol_both_strategies"] = True
                             event["independent_position_credit"] = False
-                    source_frames[sym] = history
+                    next_histories[sym] = history
+                source_frames = next_histories
+                status["signals"].extend(event for event in decisions
+                                         if event["state"] == "SIGNAL_ONLY_NO_ORDER_NO_FILL")
                 status["decisions"].extend(decisions)
+                status["context_source_sha256_by_symbol"] = {
+                    sym: frame_digest(df) for sym, df in source_frames.items()}
                 status["last_complete_native_4h_close_ms"] = next_close
                 next_close += FOUR
                 status["next_expected_bar_close_ms"] = next_close

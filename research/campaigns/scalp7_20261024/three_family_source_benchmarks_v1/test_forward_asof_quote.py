@@ -27,6 +27,7 @@ class ForwardQuoteTests(unittest.TestCase):
             {
                 "symbol": "BTC-USDT",
                 "bucket_end_ms": stamp,
+                "bucket_start_ms": stamp - 1000,
                 "best_bid_last": 99.5,
                 "best_ask_last": 100.0,
                 "depth_messages": 20,
@@ -76,7 +77,7 @@ class ForwardQuoteTests(unittest.TestCase):
             p, h = self.fixture(Path(tmp))
             result = q.observe(
                 "BTC-USDT",
-                decision_ts_ms=12000,
+                decision_ts_ms=11999,
                 read_at_ms=14000,
                 history=p,
                 heartbeat=h,

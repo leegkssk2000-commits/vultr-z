@@ -14,9 +14,10 @@ def signal(family: str = r.TSMOM) -> dict:
         "rule_id": family,
         "symbol": "BTC-USDT",
         "decision_ms": 1000,
-        "risk_bps": 100,
+        "risk_distance_price": 1,
+        "signal_close_ts_ms": 900,
         "max_hold_ms": r.FOUR * 24,
-        "original_signal_digest": "signal123",
+        "original_signal_digest": "a" * 64,
     }
 
 
@@ -26,14 +27,17 @@ def quote(bid: float, ask: float, ts: int) -> dict:
         "best_bid": bid,
         "best_ask": ask,
         "source_quote_ts_ms": ts,
-        "source_quote_sha256": "qsha256",
+        "source_bucket_start_ms": ts - 1,
+        "observed_at_ms": ts + 1,
+        "source_quote_clock_kind": "BUCKET_END",
+        "source_quote_sha256": "b" * 64,
     }
 
 
 class RROrderless(unittest.TestCase):
     def test_no_predecision_entry(self):
         self.assertIsNone(r.quote_entry(signal(), quote(100, 100, 999)))
-        self.assertIsNotNone(r.quote_entry(signal(), quote(100, 100, 1001)))
+        self.assertIsNotNone(r.quote_entry(signal(), quote(100, 100, 1002)))
 
     def test_no_unsupported_book_fill(self):
         self.assertIsNone(
@@ -41,7 +45,7 @@ class RROrderless(unittest.TestCase):
         )
 
     def test_native_long_risk_distance_is_quote_anchored_and_no_real_fill(self):
-        p = r.quote_entry(signal(), quote(100, 100, 1001))
+        p = r.quote_entry(signal(), quote(100, 100, 1002))
         self.assertIsNotNone(p)
         self.assertEqual(p["entry_ask_price"], 100)
         self.assertAlmostEqual(p["base_stop_price"], 99)
@@ -49,11 +53,11 @@ class RROrderless(unittest.TestCase):
         self.assertFalse(p["original_next_open_fill_verified"])
 
     def test_2r_only_arms_for_subsequent_quote(self):
-        p = r.quote_entry(signal(), quote(100, 100, 1001))
+        p = r.quote_entry(signal(), quote(100, 100, 1002))
         p, terminal = r.sample_position(p, quote(102.2, 102.25, 1100))
         self.assertIsNone(terminal)
         self.assertEqual(p["active_floor_stop_price"], 99)
-        self.assertEqual(p["floor_pending_after_ts_ms"], 1100)
+        self.assertEqual(p["floor_pending_after_ts_ms"], 1101)
         p, terminal = r.sample_position(p, quote(102, 102.1, 1200))
         self.assertIsNone(terminal)
         self.assertEqual(p["active_floor_stop_price"], 100.5)
@@ -64,20 +68,20 @@ class RROrderless(unittest.TestCase):
         self.assertFalse(terminal["real_trade"])
 
     def test_initial_stop_is_not_weakened(self):
-        p = r.quote_entry(signal(), quote(100, 100, 1001))
+        p = r.quote_entry(signal(), quote(100, 100, 1002))
         p, terminal = r.sample_position(p, quote(98.9, 99, 1200))
         self.assertIsNotNone(terminal)
         self.assertLess(terminal["observational_net_bps_at_40bp"], 0)
 
     def test_big_winner_is_not_hard_capped(self):
-        p = r.quote_entry(signal(), quote(100, 100, 1001))
+        p = r.quote_entry(signal(), quote(100, 100, 1002))
         p, terminal = r.sample_position(p, quote(117, 117.01, 1200))
         self.assertIsNone(terminal)
         self.assertGreater(p["last_observed_R"], 16)
 
     def test_no_stale_or_repeated_quote_accounting(self):
-        p = r.quote_entry(signal(), quote(100, 100, 1001))
-        q = quote(98, 99, 1001)
+        p = r.quote_entry(signal(), quote(100, 100, 1002))
+        q = quote(98, 99, 1002)
         p2, term = r.sample_position(p, q)
         self.assertIsNone(term)
         self.assertEqual(p, p2)
@@ -104,7 +108,11 @@ class RROrderless(unittest.TestCase):
         self.assertEqual(r.native_events(fake, k), [])
         k["last_complete_30m_close_ms"] = 2000
         k["last_native_decision_ms"] = 2500
+        self.assertEqual(r.native_events(fake, k), [])
+        k["signals"][0]["decision_ts_ms"] = 2400
+        k["last_complete_30m_close_ms"] = 9000
         a = r.native_events(fake, k)
+        self.assertEqual(a[0]["decision_ms"], 2400)
         self.assertEqual(len(a), 1)
         self.assertEqual(a[0]["signal_stop_px"], 80)
 
@@ -119,6 +127,7 @@ class RROrderless(unittest.TestCase):
                     "rule_id": r.GMMA,
                     "symbol": "ETH-USDT",
                     "decision_ts_ms": 2000,
+                    "closed_native_4h_ts_ms": 1900,
                     "native_stop_distance_reference_bps": 350,
                 }
             ],

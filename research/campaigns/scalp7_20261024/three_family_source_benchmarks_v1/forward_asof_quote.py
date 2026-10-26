@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -64,9 +65,12 @@ def observe(
             try:
                 x = json.loads(line)
                 ts = int(x.get("bucket_end_ms", 0))
+                bucket_start = int(x.get("bucket_start_ms", 0))
                 if (
                     x.get("symbol") != symbol
-                    or not decision_ts_ms <= ts <= read_at_ms
+                    # Every depth update in this bucket must follow the decision.
+                    # A bucket ending later may still contain a pre-decision BBO.
+                    or not decision_ts_ms < bucket_start < ts <= read_at_ms
                     or read_at_ms - ts > 15_000
                     or x.get("order_authority") != "BLOCKED"
                     or x.get("execution_authority") != "NONE"
@@ -76,20 +80,26 @@ def observe(
                     continue
                 bid = float(x["best_bid_last"])
                 ask = float(x["best_ask_last"])
-                if not 0 < bid <= ask:
+                if not (math.isfinite(bid) and math.isfinite(ask) and 0 < bid <= ask):
                     continue
-                eligible.append((ts, bid, ask, line))
+                eligible.append((ts, bid, ask, line, bucket_start))
             except (TypeError, ValueError, KeyError, OverflowError):
                 continue
         if not eligible:
             return {"state": "HOLD_NO_POST_DECISION_QUOTE", "symbol": symbol}
-        ts, bid, ask, quoted_raw = max(eligible, key=lambda y: y[0])
+        ts, bid, ask, quoted_raw, bucket_start = max(eligible, key=lambda y: y[0])
         return {
             "state": "OBSERVED_REAL_POST_DECISION_BOOK_ONLY_NO_FILL",
             "symbol": symbol,
             "source_quote_ts_ms": ts,
             "native_signal_decision_ts_ms": decision_ts_ms,
             "observed_at_ms": read_at_ms,
+            "source_bucket_start_ms": bucket_start,
+            "source_quote_clock_kind": "BUCKET_END",
+            "source_quote_received_at_ms": None,
+            "quote_receive_clock_verified": False,
+            "virtual_fill_clock_basis": "ACTUAL_SHADOW_READ_NOT_RETRO_BUCKET_END",
+            "source_path": str(history),
             "best_bid": bid,
             "best_ask": ask,
             "spread_bps": (ask - bid) / ((ask + bid) / 2) * 10000,

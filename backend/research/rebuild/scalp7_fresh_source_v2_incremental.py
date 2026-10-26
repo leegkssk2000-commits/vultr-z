@@ -239,7 +239,24 @@ def collect_once(
                 requested += 1
                 if status != 200:
                     raise SourceDataError(f"INCREMENTAL_HTTP_STATUS:{status}")
-                rows, missing = v2.normalize_closed(raw, first, last, received)
+                try:
+                    rows, missing = v2.normalize_closed(raw, first, last, received)
+                except SourceDataError as exc:
+                    # BingX returns HTTP 200 + code 100410 ("try later") under
+                    # transient provider pressure. The raw body and HTTP proof
+                    # above are already saved immutably; do NOT advance CURSOR.
+                    try:
+                        response = json.loads(raw)
+                    except (ValueError, UnicodeDecodeError):
+                        raise exc
+                    if (
+                        isinstance(response, dict)
+                        and str(response.get("code")) == "100410"
+                    ):
+                        raise SourceDataError(
+                            "INCREMENTAL_UPSTREAM_TRANSIENT_100410"
+                        ) from exc
+                    raise
                 normalized_path = stem + ".csv.gz"
                 normalized = v2.csv_gzip(rows)
                 v2.immutable_bytes(out / normalized_path, normalized)
@@ -290,11 +307,34 @@ def main() -> int:
     args = p.parse_args()
     t0 = time.monotonic()
     while True:
-        receipt = collect_once(
-            args.out,
-            start_ms=args.start_ms,
-            bootstrap_prior_v2=args.bootstrap_prior_v2,
-        )
+        try:
+            receipt = collect_once(
+                args.out,
+                start_ms=args.start_ms,
+                bootstrap_prior_v2=args.bootstrap_prior_v2,
+            )
+        except SourceDataError as exc:
+            if str(exc) != "INCREMENTAL_UPSTREAM_TRANSIENT_100410":
+                raise
+            print(
+                json.dumps(
+                    {
+                        "at": datetime.now(timezone.utc).isoformat(),
+                        "state": "HOLD_TRANSIENT_PROVIDER_100410_RAW_SAVED",
+                        "source": SOURCE,
+                        "order_authority": "BLOCKED",
+                        "historical_fill_backfill": False,
+                        "committed_failed_response_as_candle": False,
+                        "retry_after_seconds": 60,
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+            if args.max_seconds and time.monotonic() - t0 >= args.max_seconds:
+                return 0
+            time.sleep(60)
+            continue
         print(
             json.dumps(
                 {"at": datetime.now(timezone.utc).isoformat(), **receipt},

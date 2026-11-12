@@ -10,6 +10,7 @@ from typing import Any, Mapping
 
 from backend.research.architecture_factory import a1_failure_economics_v1 as failure_econ
 from backend.research.architecture_factory import a1_gen2_generic_dev_econ_v3 as econ
+from backend.research.architecture_factory import a1_a5_static_admission_v1 as static_admission
 from backend.research.architecture_factory import a1_strategy_architecture_factory_v1 as af
 from backend.research.architecture_factory import a1_terminal_repair_swarm_v4 as v4
 from backend.research.architecture_factory import a1_a5_economic_improvement_v1 as v1
@@ -316,7 +317,7 @@ def run(output: Path) -> dict[str, Any]:
         prompt = _prompt("INITIAL_A5_REPAIR_BATCH", fps, axes, evidence, readiness, prior)
         queue, providers["openai_initial"] = _attempt("openai", prompt, source_ids, axes, readiness)
         paid += 1; queue = af.dedup(queue, 0.85)
-        dev = econ.evaluate_queue(queue) if queue else _empty_dev()
+        dev = static_admission.evaluate_queue(econ, queue) if queue else _empty_dev()
 
         rejected_ids = _spec_rejected_ids(dev)
         rejected = [x for x in queue if str(x.get("candidate_id") or "") in rejected_ids]
@@ -328,14 +329,14 @@ def run(output: Path) -> dict[str, Any]:
             paid += 1
             fixed_by_id = {str(x.get("candidate_id") or ""): x for x in fixed}
             queue = [fixed_by_id.get(str(x.get("candidate_id") or ""), x) for x in queue]
-            dev = econ.evaluate_queue(queue) if queue else _empty_dev()
+            dev = static_admission.evaluate_queue(econ, queue) if queue else _empty_dev()
         else:
             providers["openai_spec_repair"] = {"successful": False, "skipped": True, "reason": "NO_SPEC_REJECT_OR_REQUEST_BUDGET", "request_count": 0}
 
         # Gemini is a transport/provider rescue only when OpenAI produced no usable queue.
         if not queue and os.environ.get("GEMINI_API_KEY", "").strip() and paid < MAX_PAID_REQUESTS:
             queue, providers["gemini_transport_rescue"] = _attempt("gemini", prompt, source_ids, axes, readiness)
-            paid += 1; queue = af.dedup(queue, 0.85); dev = econ.evaluate_queue(queue) if queue else _empty_dev()
+            paid += 1; queue = af.dedup(queue, 0.85); dev = static_admission.evaluate_queue(econ, queue) if queue else _empty_dev()
         else:
             providers["gemini_transport_rescue"] = {"successful": False, "skipped": True, "reason": "OPENAI_QUEUE_PRESENT_OR_GEMINI_UNAVAILABLE", "request_count": 0}
 
@@ -345,7 +346,7 @@ def run(output: Path) -> dict[str, Any]:
         if remaining and paid < MAX_PAID_REQUESTS:
             rfps = v1._fingerprints(ledger, [sid for sid in active if sid in remaining])
             repairs, providers["openai_second_step"] = _attempt("openai", _prompt("SECOND_STEP_DISTINCT_AXIS_BATCH", rfps, remaining, evidence, readiness, prior, selected), source_ids, remaining, readiness)
-            paid += 1; repairs = af.dedup(repairs, 0.85); repair_dev = econ.evaluate_queue(repairs) if repairs else _empty_dev()
+            paid += 1; repairs = af.dedup(repairs, 0.85); repair_dev = static_admission.evaluate_queue(econ, repairs) if repairs else _empty_dev()
         else:
             providers["openai_second_step"] = {"successful": False, "skipped": True, "reason": "NO_SELECTED_FAILURE_OR_REQUEST_BUDGET", "request_count": 0}
     else:
